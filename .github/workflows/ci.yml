@@ -1,0 +1,27 @@
+name: offline checks
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Python and Bash syntax
+        run: |
+          python3 -m compileall -q scripts tests
+          bash -n scripts/*.sh
+          python3 -m json.tool config/projects.json >/dev/null
+          python3 -m json.tool config/agent-roles.json >/dev/null
+          python3 -m json.tool config/gates.example.json >/dev/null
+      - name: Unit tests (CPU only)
+        run: python3 -m unittest discover -s tests -v
+      - name: CLI doctor (no installs)
+        run: python3 scripts/researchctl.py doctor

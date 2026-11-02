@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "notice": "These are policies, not Herdr model IDs or automatically installed agents.",
+  "roles": {
+    "orchestrator": {
+      "kind_examples": [
+        "codex",
+        "claude",
+        "hermes"
+      ],
+      "responsibilities": [
+        "task DAG",
+        "delegation",
+        "integration",
+        "owner approval requests"
+      ],
+      "can_self_approve": false
+    },
+    "worker": {
+      "kind_examples": [
+        "codex",
+        "claude"
+      ],
+      "responsibilities": [
+        "isolated worktree",
+        "implementation",
+        "tests",
+        "evidence handoff"
+      ],
+      "can_self_approve": false
+    },
+    "reviewer": {
+      "kind_examples": [
+        "claude",
+        "codex"
+      ],
+      "responsibilities": [
+        "independent science/code/security review",
+        "evidence verification",
+        "PASS/FAIL/BLOCKED finding"
+      ],
+      "can_self_approve": false
+    }
+  },
+  "routing": {
+    "manager": "configure in provider CLI",
+    "worker": "configure in provider CLI",
+    "reviewer": "configure in provider CLI"
+  },
+  "limits": {
+    "max_parallel_gpu_heavy_jobs": 1,
+    "require_owner_approval_for": [
+      "push protected branch",
+      "merge",
+      "destructive operations",
+      "official GPU runs",
+      "publish research claim"
+    ]
+  }
+}
