@@ -6,6 +6,7 @@ proves that a job actually reads these bytes. Concurrent writers and changes
 between verification and use require a separate immutable execution boundary.
 """
 import hashlib
+import json
 import os
 import re
 from pathlib import Path
@@ -32,6 +33,14 @@ def snapshot(root, max_entries=100000):
     if not isinstance(max_entries, int) or isinstance(max_entries, bool) or max_entries < 1:
         raise ArtifactError('invalid entry limit')
     records = []
+    estimated_manifest_bytes = 512
+    def append_record(record):
+        nonlocal estimated_manifest_bytes
+        # Account for JSON escapes and conservative outer indentation/comma.
+        estimated_manifest_bytes += len(json.dumps(record, ensure_ascii=True, sort_keys=True, indent=2).encode('ascii')) + 32
+        if estimated_manifest_bytes > MAX_MANIFEST_BYTES:
+            raise ArtifactError('manifest size limit exceeded')
+        records.append(record)
     enumerated = 0
     name_bytes = 0
     def walk(fd, prefix, depth=0):
@@ -59,7 +68,7 @@ def snapshot(root, max_entries=100000):
                 try:
                     if (info.st_dev, info.st_ino) != (os.fstat(child).st_dev, os.fstat(child).st_ino):
                         raise ArtifactError('directory changed during scan')
-                    records.append({'path': rel, 'type': 'directory'})
+                    append_record({'path': rel, 'type': 'directory'})
                     walk(child, rel + '/', depth + 1)
                 finally:
                     os.close(child)
@@ -86,7 +95,7 @@ def snapshot(root, max_entries=100000):
                             digest.update(chunk)
                         if _identity(opened) != _identity(os.fstat(child)):
                             raise ArtifactError('file changed during read')
-                        records.append({'path': rel, 'type': 'file', 'size': opened.st_size,
+                        append_record({'path': rel, 'type': 'file', 'size': opened.st_size,
                                         'sha256': digest.hexdigest()})
                     finally:
                         os.close(child)
@@ -134,6 +143,38 @@ def verify(root, manifest):
     return snapshot(root) == manifest
 
 
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ArtifactError('duplicate manifest key')
+        result[key] = value
+    return result
+
+
+def read_manifest(path):
+    """Read a bounded regular file without following a final symlink."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ArtifactError('manifest must be a regular file')
+        if before.st_size > MAX_MANIFEST_BYTES:
+            raise ArtifactError('manifest too large')
+        with os.fdopen(fd, 'rb') as source:
+            fd = None
+            raw = source.read(MAX_MANIFEST_BYTES + 1)
+            after = os.fstat(source.fileno())
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ArtifactError('manifest too large')
+        if _identity(before) != _identity(after):
+            raise ArtifactError('manifest changed during read')
+        return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def main():
     import argparse
     import json
@@ -145,11 +186,7 @@ def main():
     try:
         actual = snapshot(args.root)
         if args.verify:
-            with args.verify.open('rb') as source:
-                raw = source.read(MAX_MANIFEST_BYTES + 1)
-            if len(raw) > MAX_MANIFEST_BYTES:
-                raise ArtifactError('manifest too large')
-            expected = json.loads(raw.decode('utf-8'))
+            expected = read_manifest(args.verify)
             validate_manifest(expected)
             if actual != expected:
                 print('Artifact tree differs', file=sys.stderr)

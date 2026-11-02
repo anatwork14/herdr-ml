@@ -125,3 +125,35 @@ class ArtifactTreeTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(script), str(root), '--verify', str(expected)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
             self.assertIn('manifest too large', result.stderr)
+
+    def test_snapshot_output_budget_and_round_trip(self):
+        import json
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for number in range(30):
+                (root / ('file-%03d' % number)).write_bytes(b'')
+            with patch.object(m, 'MAX_MANIFEST_BYTES', 1024):
+                with self.assertRaisesRegex(m.ArtifactError, 'manifest size limit'):
+                    m.snapshot(root)
+            record = m.snapshot(root)
+            encoded = json.dumps(record, ensure_ascii=True, sort_keys=True, indent=2).encode()
+            self.assertLessEqual(len(encoded), m.MAX_MANIFEST_BYTES)
+            self.assertTrue(m.verify(root, json.loads(encoded)))
+
+    def test_fifo_symlink_and_duplicate_manifest_are_blocked(self):
+        import os
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / 'tree'
+            root.mkdir()
+            script = pathlib.Path(__file__).resolve().parents[1] / 'scripts' / 'artifact_tree.py'
+            target = pathlib.Path(tmp) / 'manifest'
+            for kind in ('fifo', 'symlink', 'duplicate'):
+                if kind == 'fifo': os.mkfifo(target)
+                elif kind == 'symlink': target.symlink_to('/dev/null')
+                else: target.write_text('{"schema_version":1,"schema_version":1,"entries":[]}')
+                result = subprocess.run([sys.executable, str(script), str(root), '--verify', str(target)], capture_output=True, text=True, timeout=3)
+                self.assertEqual(result.returncode, 2, kind)
+                target.unlink()
