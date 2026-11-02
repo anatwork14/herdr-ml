@@ -89,3 +89,39 @@ class ArtifactTreeTests(unittest.TestCase):
                 (root / name).write_bytes(b'')
             with self.assertRaisesRegex(m.ArtifactError, 'entry limit'):
                 m.snapshot(root, max_entries=2)
+
+    def test_deep_wide_enumeration_respects_global_budget(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            node = pathlib.Path(tmp)
+            for depth in range(8):
+                for number in range(20): (node / ('z%03d' % number)).write_bytes(b'')
+                node = node / 'a'
+                node.mkdir()
+            original = m.os.scandir
+            seen = []
+            class CountEntries:
+                def __init__(self, fd): self.inner = original(fd)
+                def __enter__(self): self.inner.__enter__(); return self
+                def __exit__(self, *args): return self.inner.__exit__(*args)
+                def __iter__(self):
+                    for entry in self.inner:
+                        seen.append(entry.name)
+                        yield entry
+            with patch.object(m.os, 'scandir', side_effect=CountEntries):
+                with self.assertRaisesRegex(m.ArtifactError, 'entry limit'):
+                    m.snapshot(tmp, max_entries=30)
+            self.assertLessEqual(len(seen), 31)
+
+    def test_oversized_manifest_is_blocked(self):
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / 'tree'
+            root.mkdir()
+            expected = pathlib.Path(tmp) / 'too-large.json'
+            expected.write_bytes(b' ' * (m.MAX_MANIFEST_BYTES + 1))
+            script = pathlib.Path(__file__).resolve().parents[1] / 'scripts' / 'artifact_tree.py'
+            result = subprocess.run([sys.executable, str(script), str(root), '--verify', str(expected)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertIn('manifest too large', result.stderr)

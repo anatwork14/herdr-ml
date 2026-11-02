@@ -12,6 +12,12 @@ from pathlib import Path
 import stat
 
 
+MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_PATH_BYTES = 4096
+MAX_ENUMERATED_NAME_BYTES = 16 * 1024 * 1024
+MAX_DEPTH = 128
+
+
 class ArtifactError(Exception):
     pass
 
@@ -26,18 +32,27 @@ def snapshot(root, max_entries=100000):
     if not isinstance(max_entries, int) or isinstance(max_entries, bool) or max_entries < 1:
         raise ArtifactError('invalid entry limit')
     records = []
-    def walk(fd, prefix):
+    enumerated = 0
+    name_bytes = 0
+    def walk(fd, prefix, depth=0):
+        nonlocal enumerated, name_bytes
+        if depth > MAX_DEPTH:
+            raise ArtifactError('directory depth limit exceeded')
         before = os.fstat(fd)
         names = []
         with os.scandir(fd) as entries:
             for entry in entries:
-                if len(records) + len(names) >= max_entries:
+                enumerated += 1
+                name_bytes += len(os.fsencode(entry.name))
+                if enumerated > max_entries or name_bytes > MAX_ENUMERATED_NAME_BYTES:
                     raise ArtifactError('entry limit exceeded')
                 names.append(entry.name)
         for name in sorted(names):
             if len(records) >= max_entries:
                 raise ArtifactError('entry limit exceeded')
             rel = prefix + name
+            if len(os.fsencode(rel)) > MAX_PATH_BYTES:
+                raise ArtifactError('path length limit exceeded')
             info = os.stat(name, dir_fd=fd, follow_symlinks=False)
             if stat.S_ISDIR(info.st_mode):
                 child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
@@ -45,7 +60,7 @@ def snapshot(root, max_entries=100000):
                     if (info.st_dev, info.st_ino) != (os.fstat(child).st_dev, os.fstat(child).st_ino):
                         raise ArtifactError('directory changed during scan')
                     records.append({'path': rel, 'type': 'directory'})
-                    walk(child, rel + '/')
+                    walk(child, rel + '/', depth + 1)
                 finally:
                     os.close(child)
             elif stat.S_ISREG(info.st_mode):
@@ -96,7 +111,7 @@ def snapshot(root, max_entries=100000):
 def validate_manifest(manifest):
     if not isinstance(manifest, dict) or set(manifest) != {'schema_version', 'entries'}:
         raise ArtifactError('invalid manifest schema')
-    if type(manifest['schema_version']) is not int or manifest['schema_version'] != 1 or not isinstance(manifest['entries'], list):
+    if type(manifest['schema_version']) is not int or manifest['schema_version'] != 1 or not isinstance(manifest['entries'], list) or len(manifest['entries']) > 100000:
         raise ArtifactError('invalid manifest schema')
     for entry in manifest['entries']:
         if not isinstance(entry, dict) or not isinstance(entry.get('path'), str) or not entry['path']:
@@ -130,14 +145,18 @@ def main():
     try:
         actual = snapshot(args.root)
         if args.verify:
-            expected = json.loads(args.verify.read_text(encoding='utf-8'))
+            with args.verify.open('rb') as source:
+                raw = source.read(MAX_MANIFEST_BYTES + 1)
+            if len(raw) > MAX_MANIFEST_BYTES:
+                raise ArtifactError('manifest too large')
+            expected = json.loads(raw.decode('utf-8'))
             validate_manifest(expected)
             if actual != expected:
                 print('Artifact tree differs', file=sys.stderr)
                 return 1
         print(json.dumps(actual, ensure_ascii=True, sort_keys=True, indent=2))
         return 0
-    except (ArtifactError, OSError, ValueError) as exc:
+    except (ArtifactError, OSError, ValueError, RecursionError) as exc:
         print('BLOCKED: %s' % exc, file=sys.stderr)
         return 2
 
