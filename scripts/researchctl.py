@@ -259,21 +259,47 @@ def execute(project_id, run_id):
     atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
     child = None
     interrupted = False
+    interruption_signal = None
 
     def terminate(_signum, _frame):
-        nonlocal interrupted
+        nonlocal interrupted, interruption_signal
         interrupted = True
+        interruption_signal = interruption_signal or _signum
         if child and child.poll() is None:
-            child.terminate()
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
-    old_handler = signal.signal(signal.SIGTERM, terminate)
+    old_handlers = {sig: signal.signal(sig, terminate) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         with (folder / "stdout.log").open("wb") as stdout, (folder / "stderr.log").open("wb") as stderr:
             try:
                 child = subprocess.Popen(submission["argv"], cwd=checkout,
                                          stdin=subprocess.DEVNULL, stdout=stdout,
-                                         stderr=stderr, shell=False)
-                code = child.wait()
+                                         stderr=stderr, shell=False, start_new_session=True)
+                if interrupted:
+                    terminate(signal.SIGTERM, None)
+                while True:
+                    try:
+                        code = child.wait(timeout=0.2)
+                        break
+                    except subprocess.TimeoutExpired:
+                        if interrupted:
+                            try:
+                                code = child.wait(timeout=3)
+                            except subprocess.TimeoutExpired:
+                                try:
+                                    os.killpg(child.pid, signal.SIGKILL)
+                                except ProcessLookupError:
+                                    pass
+                                code = child.wait()
+                            break
+                if interrupted:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
             except OSError as exc:
                 stderr.write((str(exc) + "\n").encode("utf-8", errors="replace"))
                 code = 127
@@ -284,9 +310,10 @@ def execute(project_id, run_id):
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
-        return code if code >= 0 else 128 + abs(code)
+        return 128 + interruption_signal if interrupted else (code if code >= 0 else 128 + abs(code))
     finally:
-        signal.signal(signal.SIGTERM, old_handler)
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
 
 
 def main(argv=None):

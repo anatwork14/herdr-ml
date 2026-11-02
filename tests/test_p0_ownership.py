@@ -50,3 +50,42 @@ class OwnershipTests(unittest.TestCase):
             outcomes = [results.get(timeout=2), results.get(timeout=2)]
             self.assertEqual(sum(x[0] == 'ok' for x in outcomes), 1, outcomes)
             self.assertEqual(marker.read_text().splitlines(), ['run'])
+
+class CancellationTests(unittest.TestCase):
+    def test_sigterm_stops_stubborn_descendant(self):
+        import signal
+        import subprocess
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / 'demo'
+            (repo / '.git').mkdir(parents=True)
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id': 'demo', 'directory': 'demo'}]}))
+            marker = root / 'pid'
+            env = dict(os.environ, RESEARCH_ROOT=str(root), HERDR_ML_CONFIG=str(config))
+            grandchild = 'import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path(%r).write_text(str(os.getpid())); time.sleep(60)' % str(marker)
+            program = 'import subprocess,sys,time; subprocess.Popen([sys.executable,"-c",%r]); time.sleep(60)' % grandchild
+            proc = subprocess.Popen([sys.executable, str(MODULE), 'init-run', '--project', 'demo', '--mode', 'diagnostic', '--dataset-version', 'test', '--split-hash', 'test', '--seed', '1', '--', sys.executable, '-c', program], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 10
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(marker.exists())
+                pid = int(marker.read_text())
+                proc.send_signal(signal.SIGTERM)
+                proc.communicate(timeout=10)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    stat = Path('/proc/%d/stat' % pid)
+                    if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                        break
+                    time.sleep(.02)
+                else:
+                    self.fail('stubborn descendant remained running')
+                folder, = (root / '.runtime/demo/runs').iterdir()
+                self.assertEqual(json.loads((folder / 'status.json').read_text())['state'], 'INTERRUPTED')
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
