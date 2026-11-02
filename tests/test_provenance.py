@@ -172,3 +172,40 @@ class SignedProvenanceTests(unittest.TestCase):
         self.manifest['artifacts']['validation_split']['sha256'] = hashlib.sha256(train).hexdigest()
         self.write_signed()
         with self.assertRaises(p.ProvenanceError): self.verify()
+
+    def test_valid_bundle_and_clean_checkout_cannot_bypass_official_hold(self):
+        research_root = self.root / 'research'
+        checkout = research_root / 'demo'
+        gates_dir = checkout / '.research'
+        gates_dir.mkdir(parents=True)
+        (gates_dir / 'evidence.md').write_text('Independent review fixture\n')
+        gates = {name: {'status': 'PASS', 'reviewer': 'reviewer',
+                        'reviewed_at': '2026-11-02', 'evidence': ['.research/evidence.md']}
+                 for name in ('DATA_READY', 'BASELINE_READY', 'GPU_READY')}
+        (gates_dir / 'gates.json').write_text(json.dumps({'schema_version': 1, 'gates': gates}))
+        subprocess.run(['git', 'init', '-q', str(checkout)], check=True)
+        subprocess.run(['git', '-C', str(checkout), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(checkout), '-c', 'user.name=Test',
+                        '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false',
+                        'commit', '-q', '-m', 'fixture'], check=True)
+        sha = subprocess.check_output(['git', '-C', str(checkout), 'rev-parse', 'HEAD'], text=True).strip()
+        self.assertEqual(subprocess.check_output(['git', '-C', str(checkout), 'status', '--porcelain'], text=True), '')
+        marker = self.root / 'payload-executed'
+        payload = [sys.executable, '-c', 'from pathlib import Path; Path(%r).touch()' % str(marker)]
+        self.manifest['source_git_sha'] = sha
+        self.manifest['argv'] = payload
+        self.write_signed()
+        # The current CLI does not consume this bundle; verifying it here must
+        # never be mistaken for execution-time provenance binding.
+        self.assertEqual(self.verify()['source_git_sha'], sha)
+        config = self.root / 'projects.json'
+        config.write_text(json.dumps({'version': 1, 'projects': [{'id': 'demo', 'directory': 'demo'}]}))
+        environment = dict(os.environ, RESEARCH_ROOT=str(research_root), HERDR_ML_CONFIG=str(config))
+        result = subprocess.run([sys.executable, str(MODULE.parent / 'researchctl.py'),
+            'init-run', '--project', 'demo', '--mode', 'official', '--dataset-version', 'fixture',
+            '--split-hash', 'fixture', '--seed', '42', '--approve-official', '--', *payload],
+            env=environment, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('Official execution BLOCKED', result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertFalse((research_root / '.runtime' / 'demo' / 'runs').exists())
