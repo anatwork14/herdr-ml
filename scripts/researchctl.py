@@ -369,8 +369,9 @@ def execute(project_id, run_id):
         end_state = "UNKNOWN"
         result = {"state": end_state, "leader_state": leader_state,
                   "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
-                  "stdout_sha256": sha_file(folder / "stdout.log"),
-                  "stderr_sha256": sha_file(folder / "stderr.log")}
+                  "stdout_sha256_after_leader_exit": sha_file(folder / "stdout.log"),
+                  "stderr_sha256_after_leader_exit": sha_file(folder / "stderr.log"),
+                  "log_hash_observed_at": now()}
         run_registry.finish(folder, token, result)
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})

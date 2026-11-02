@@ -54,6 +54,10 @@ class ResearchCtlTests(unittest.TestCase):
         self.assertEqual(state["state"], "UNKNOWN")
         self.assertEqual(result["leader_state"], "COMPLETED")
         self.assertEqual(result["exit_code"], 0)
+        self.assertIn("stdout_sha256_after_leader_exit", result)
+        self.assertIn("stderr_sha256_after_leader_exit", result)
+        self.assertNotIn("stdout_sha256", result)
+        self.assertNotIn("stderr_sha256", result)
         self.assertEqual(submission["mode"], "diagnostic")
         self.assertIn("hello", (folder / "stdout.log").read_text())
         self.assertEqual(

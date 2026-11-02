@@ -45,8 +45,8 @@ class RegistryTests(unittest.TestCase):
         with self.assertRaises(registry.RegistryError):
             registry.advance(self.folder, 'incorrect', 'CLAIMED', 'DISPATCHING')
         registry.advance(self.folder, token, 'CLAIMED', 'DISPATCHING')
-        with self.assertRaises(registry.RegistryError):
-            registry.finish(self.folder, 'incorrect', {'state': 'COMPLETED', 'exit_code': 0})
+        with self.assertRaisesRegex(registry.RegistryError, 'Stale owner'):
+            registry.finish(self.folder, 'incorrect', {'state': 'UNKNOWN', 'exit_code': 0})
         self.assertEqual(registry.inspect(self.folder)['state'], 'DISPATCHING')
 
     def test_abandoned_claim_is_never_reclaimed_on_retry(self):
