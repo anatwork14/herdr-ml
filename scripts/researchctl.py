@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 BASE = Path(__file__).resolve().parents[1]
@@ -186,10 +187,10 @@ def cmd_reconcile(args):
     return 2 if result["state"] == "UNKNOWN" else 0
 
 
-def require_supported_execution(mode, queue):
-    if mode == "official":
-        raise ResearchError("Official execution BLOCKED: authenticated approval and immutable provenance not implemented")
-    if queue and queue != "local":
+def require_supported_execution(mode, queue, *, submission=False):
+    if mode != "diagnostic":
+        raise ResearchError("Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented")
+    if (submission and queue != "local") or (not submission and queue is not None):
         raise ResearchError("Queued execution BLOCKED: process containment and daemon interpreter validation not implemented")
 
 
@@ -268,7 +269,7 @@ def execute(project_id, run_id):
     submission = load_json(folder / "submission.json")
     expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
     actual = sha_file(folder / "submission.json")
-    require_supported_execution(submission.get("mode"), submission.get("queue"))
+    require_supported_execution(submission.get("mode"), submission.get("queue"), submission=True)
     if expected != actual or submission.get("project") != project_id:
         raise ResearchError("Submission manifest integrity mismatch")
     status_file = folder / "status.json"
@@ -291,67 +292,83 @@ def execute(project_id, run_id):
     child = None
     interrupted = False
     interruption_signal = None
+    group_owned = False
 
-    def terminate(_signum, _frame):
-        nonlocal interrupted, interruption_signal
-        interrupted = True
-        interruption_signal = interruption_signal or _signum
-        if child and child.poll() is None:
+    def signal_group(sig):
+        # The unreaped leader pins its PID/PGID. Never signal after reaping.
+        if group_owned:
             try:
-                os.killpg(child.pid, signal.SIGTERM)
+                os.killpg(child.pid, sig)
             except ProcessLookupError:
                 pass
 
-    old_handlers = {sig: signal.signal(sig, terminate) for sig in (signal.SIGTERM, signal.SIGINT)}
+    def terminate(signum, _frame):
+        nonlocal interrupted, interruption_signal
+        interrupted = True
+        interruption_signal = interruption_signal or signum
+        signal_group(signal.SIGTERM)
+
+    def stop_and_reap():
+        nonlocal group_owned
+        if group_owned:
+            signal_group(signal.SIGKILL)
+            # No process-group signal is sent after wait() reaps the leader.
+            group_owned = False
+            return child.wait()
+        return None
+
+    old_handlers = {sig: signal.signal(sig, terminate)
+                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
     try:
         with (folder / "stdout.log").open("wb") as stdout, (folder / "stderr.log").open("wb") as stderr:
             try:
-                child = subprocess.Popen(submission["argv"], cwd=checkout,
-                                         stdin=subprocess.DEVNULL, stdout=stdout,
-                                         stderr=stderr, shell=False, start_new_session=True)
-                run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
-                atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
                 if interrupted:
-                    terminate(signal.SIGTERM, None)
-                while True:
-                    try:
-                        code = child.wait(timeout=0.2)
-                        break
-                    except subprocess.TimeoutExpired:
-                        if interrupted:
-                            try:
-                                code = child.wait(timeout=3)
-                            except subprocess.TimeoutExpired:
-                                try:
-                                    os.killpg(child.pid, signal.SIGKILL)
-                                except ProcessLookupError:
-                                    pass
-                                code = child.wait()
+                    code = 128 + interruption_signal
+                else:
+                    child = subprocess.Popen(submission["argv"], cwd=checkout,
+                                             stdin=subprocess.DEVNULL, stdout=stdout,
+                                             stderr=stderr, shell=False, start_new_session=True)
+                    group_owned = True
+                    run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
+                    atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+                    if interrupted:
+                        signal_group(signal.SIGTERM)
+                    deadline = None
+                    while True:
+                        # WNOWAIT keeps the exited leader as a zombie, preventing
+                        # its PID and process group ID from being reused.
+                        result = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if result is not None:
                             break
-                if interrupted:
-                    try:
-                        os.killpg(child.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                        if interrupted and deadline is None:
+                            deadline = time.monotonic() + 3
+                        if deadline is not None and time.monotonic() >= deadline:
+                            signal_group(signal.SIGKILL)
+                        time.sleep(0.05)
+                    code = stop_and_reap()
             except OSError as exc:
                 if child is not None:
-                    # A post-dispatch failure is uncertain, never a launch failure.
+                    stop_and_reap()
                     raise
                 stderr.write((str(exc) + "\n").encode("utf-8", errors="replace"))
                 code = 127
+            except BaseException:
+                stop_and_reap()
+                raise
         end_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
         result = {"state": end_state, "exit_code": code, "completed_at": now(),
                   "stdout_sha256": sha_file(folder / "stdout.log"),
                   "stderr_sha256": sha_file(folder / "stderr.log")}
-        # Completion and result commit together; JSON files are projections.
         run_registry.finish(folder, token, result)
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
         return 128 + interruption_signal if interrupted else (code if code >= 0 else 128 + abs(code))
     finally:
+        stop_and_reap()
         for sig, handler in old_handlers.items():
             signal.signal(sig, handler)
+
 
 
 def main(argv=None):

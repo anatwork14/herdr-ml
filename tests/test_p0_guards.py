@@ -16,3 +16,10 @@ class GuardTests(unittest.TestCase):
 
     def test_local_diagnostic_allowed(self):
         m.require_supported_execution('diagnostic', None)
+
+    def test_explicit_local_queue_is_blocked_but_ledger_local_is_allowed(self):
+        with self.assertRaises(m.ResearchError):
+            m.require_supported_execution('diagnostic', 'local')
+        m.require_supported_execution('diagnostic', 'local', submission=True)
+        with self.assertRaises(m.ResearchError):
+            m.require_supported_execution('diagnostic', None, submission=True)

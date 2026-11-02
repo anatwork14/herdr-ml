@@ -46,12 +46,22 @@ def claim(folder, run_id, project, digest, initial_state):
     """Atomically create a run and claim it exactly once, never stealing owners."""
     if initial_state not in ('SUBMITTED', 'QUEUED'):
         raise RegistryError('Run is not eligible for execution')
+    # Older deployed workers claim with mkdir. Acquire the same marker first,
+    # atomically, so mixed versions cannot execute concurrently. Never delete
+    # it automatically: a crash here needs manual investigation.
+    try:
+        (Path(folder) / 'execution.claim').mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise RegistryError('Execution already claimed; reconcile before retry') from exc
+    directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
     db = _connect(folder)
     token = uuid.uuid4().hex
     try:
         db.execute('BEGIN IMMEDIATE')
-        if (Path(folder) / 'execution.claim').exists():
-            raise RegistryError('Legacy execution claim requires manual reconciliation')
         if db.execute('SELECT 1 FROM run WHERE id=1').fetchone():
             raise RegistryError('Run already claimed; do not retry without reconciliation')
         boot, start = _identity()

@@ -111,3 +111,36 @@ class CrashTests(unittest.TestCase):
                     if proc.is_alive():
                         proc.kill()
                         proc.join()
+
+
+def legacy_claim(folder, start, results):
+    start.wait()
+    try:
+        (Path(folder) / 'execution.claim').mkdir(mode=0o700)
+        results.put('legacy')
+    except FileExistsError:
+        results.put('lost')
+
+
+def new_claim(folder, start, results):
+    start.wait()
+    try:
+        registry.claim(Path(folder), 'run', 'project', 'a' * 64, 'SUBMITTED')
+        results.put('new')
+    except registry.RegistryError:
+        results.put('lost')
+
+
+class MixedVersionTests(unittest.TestCase):
+    def test_legacy_and_new_workers_cannot_both_claim(self):
+        for _ in range(10):
+            with tempfile.TemporaryDirectory() as tmp:
+                start = multiprocessing.Event()
+                results = multiprocessing.Queue()
+                processes = [multiprocessing.Process(target=fn, args=(tmp, start, results))
+                             for fn in (legacy_claim, new_claim)]
+                for process in processes: process.start()
+                start.set()
+                for process in processes: process.join(10)
+                self.assertTrue(all(process.exitcode == 0 for process in processes))
+                self.assertEqual(sum(results.get(timeout=2) != 'lost' for _ in processes), 1)
