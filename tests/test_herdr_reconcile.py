@@ -102,6 +102,26 @@ class ReconciliationTests(unittest.TestCase):
         with self.assertRaises(m.ReconcileBlocked): self.run_once()
         self.assertEqual(len(self.api.calls), before)
 
+    def test_missing_state_does_not_create_duplicate(self):
+        self.run_once()
+        self.path.unlink()
+        before = list(self.api.calls)
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.api.calls, before)
+        self.assertEqual(len(self.api.ws), 1)
+
+    def test_initial_state_without_workspace_detects_other_managed_layout(self):
+        self.run_once()
+        record = json.loads(self.path.read_text())
+        record['workspace_id'] = None
+        record['pending'] = None
+        record['token'] = 'a' * 32
+        self.path.write_text(json.dumps(record))
+        before = list(self.api.calls)
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertEqual(self.api.calls, before)
+
     def test_duplicate_or_wrong_checkout_blocks(self):
         self.run_once()
         self.api.ws.append(dict(self.api.ws[0]))
@@ -146,7 +166,10 @@ class ProcessCrashTests(unittest.TestCase):
             def create_workspace(self, label, cwd): self._create('workspace', label, cwd)
             def create_tab(self, wid, label, cwd): self._create('tab', label, cwd, wid)
 
-        with tempfile.TemporaryDirectory() as td, multiprocessing.Manager() as manager:
+        if 'fork' not in multiprocessing.get_all_start_methods():
+            self.skipTest('abrupt-exit harness requires fork multiprocessing context')
+        ctx = multiprocessing.get_context('fork')
+        with tempfile.TemporaryDirectory() as td, ctx.Manager() as manager:
             root = Path(td)
             checkout = root / 'repo'
             (checkout / '.git').mkdir(parents=True)
@@ -155,7 +178,7 @@ class ProcessCrashTests(unittest.TestCase):
                     shared = manager.dict(workspaces='[]', tabs='{}', count=0)
                     state = root / ('state-%s.json' % stage)
                     args = (SharedFake(shared, stage), state, 'demo', 'Demo', checkout, ['Control', 'Runs', 'Logs'])
-                    process = multiprocessing.Process(target=m.reconcile, args=args)
+                    process = ctx.Process(target=m.reconcile, args=args)
                     process.start()
                     process.join(10)
                     self.assertEqual(process.exitcode, 71)

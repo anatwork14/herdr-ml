@@ -20,6 +20,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import tempfile
 import uuid
@@ -96,6 +97,25 @@ def _check_identity(adapter, record):
         raise ReconcileBlocked("Server/session identity changed during reconciliation")
 
 
+def _reject_untracked_workspace(objects, label, checkout):
+    # State may be lost while the corresponding live workspace survives. Never
+    # create a new marker until the authoritative inventory proves there is no
+    # managed workspace for this label OR checkout. Conservative blocking also
+    # covers an unavailable cwd, since ownership cannot then be disproved.
+    pattern = re.compile(r'^(.*) \[herdr-ml:workspace:[0-9a-f]{32}\]$')
+    for obj in objects:
+        object_label = obj.get('label')
+        match = pattern.fullmatch(object_label) if isinstance(object_label, str) else None
+        if not match:
+            continue
+        try:
+            existing_checkout = _canonical(obj['cwd'])
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise ReconcileBlocked('Managed workspace has unverifiable checkout') from exc
+        if match.group(1) == label or existing_checkout == checkout:
+            raise ReconcileBlocked('Managed workspace exists but local ownership state is missing')
+
+
 def _complete_intent(adapter, record, state_path):
     """Resolve a persisted intent without ever blindly repeating a mutation."""
     _check_identity(adapter, record)
@@ -161,6 +181,10 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
                     record.get('checkout') != checkout or record.get('label') != label):
                 raise ReconcileBlocked('Stored project, checkout, label, or server identity changed')
         else:
+            existing_workspaces = list(adapter.workspaces())
+            if adapter.identity() != identity:
+                raise ReconcileBlocked('Server/session identity changed during discovery')
+            _reject_untracked_workspace(existing_workspaces, label, checkout)
             token = uuid.uuid4().hex
             record = {'version': 1, 'server': identity, 'project': project_id,
                       'label': label, 'checkout': checkout, 'token': token,
@@ -172,6 +196,8 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
         workspace_label = marker('workspace', record['token'], label)
         observed = _one(adapter.workspaces(), workspace_label, checkout)
         if record['workspace_id'] is None:
+            _reject_untracked_workspace(adapter.workspaces(), label, checkout)
+            _check_identity(adapter, record)
             if observed:
                 raise ReconcileBlocked('Unrecorded workspace without matching intent')
             _intent_then_create(adapter, record, path, 'workspace', workspace_label)
