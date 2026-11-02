@@ -1,0 +1,15 @@
+# Herdr reconciliation core (not connected to live CLI)
+
+`scripts/herdr_reconcile.py` implements a mock-tested, fail-closed state machine. It is not a Herdr adapter and cannot bootstrap anything by itself. `scripts/bootstrap-herdr.sh` remains blocked. Do not remove the hold based on unit tests.
+
+A future live adapter must authenticate and pin every read and mutation to the same actual Herdr server **incarnation**, not merely a socket path, server name, client-supplied token, process ID or session name. It must establish the installed CLI/API's server identity and actual workspace/tab metadata and make an atomic server identity check with every operation, or fail closed if that cannot be established. It must normalize API data to the contract in the module and produce complete, authoritative workspace and tab inventories with stable IDs, labels, and canonical cwd. A multi-call identity check in this core does not itself prevent a server swap inside a single adapter operation. API timeouts or missing/partial metadata must raise, never return an empty successful listing. A single canonical state path and shared locking protocol are required for all bootstrap invocations managing a given project and server; state and lock files must reside on a filesystem providing local `flock`, atomic rename, and fsync semantics. The protected state directory is part of the single-user trust boundary.
+
+The core persists and fsyncs unique ownership markers and an operation intent before creating a workspace or tab. On restart, it adopts exactly one matching object only if its server, marker and checkout match. A missing object after an uncertain operation is **BLOCKED**, including the crash-before-dispatch case: lack of a result does not prove a remote mutation failed. Operator investigation and an audited recovery procedure are required; deleting state or retrying blindly is unsafe. Matching duplicate markers, changed identity, missing workspace, changed checkout and reused IDs also block. It never deletes, renames, focuses, or starts commands. The core restores a missing managed tab with a new ID only after a complete authoritative inventory and with no unresolved intent. Existing unrelated tabs are left intact.
+
+Mock-only verification:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_herdr_reconcile.py' -v
+```
+
+The tests exercise simulated API failures and actual abrupt exit of a mock client after each remote mutation. They do not prove installed Herdr compatibility, permissions, server incarnation identity, actual pane layout, or recovery on a live server. A real adapter and an authorized, isolated Herdr session are mandatory before release. Reconciliation of panes/watchers beyond existence of a tab remains unimplemented.
