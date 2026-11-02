@@ -85,6 +85,34 @@ class ReconciliationTests(unittest.TestCase):
                 self.assertEqual(len(self.api.ts[result['workspace_id']]), 3)
                 self.assertEqual(len(self.api.calls), 4)
 
+    def test_pending_tab_is_not_adopted_when_workspace_ownership_changes(self):
+        self.api.fail_after = 2
+        with self.assertRaises(TimeoutError):
+            self.run_once()
+        self.api.fail_after = None
+        before = json.loads(self.path.read_text())
+        self.assertEqual(before['pending']['kind'], 'tab')
+        self.api.ws[0]['label'] = 'Unrelated workspace with reused ID'
+        with self.assertRaises(m.ReconcileBlocked):
+            self.run_once()
+        self.assertEqual(json.loads(self.path.read_text()), before)
+
+    def test_pending_tab_inventory_cannot_hide_workspace_replacement(self):
+        self.api.fail_after = 2
+        with self.assertRaises(TimeoutError):
+            self.run_once()
+        self.api.fail_after = None
+        before = json.loads(self.path.read_text())
+        original_tabs = self.api.tabs
+        def replaced_after_tabs(workspace):
+            tabs = original_tabs(workspace)
+            self.api.ws[0]['label'] = 'Unrelated workspace with reused ID'
+            return tabs
+        self.api.tabs = replaced_after_tabs
+        with self.assertRaises(m.ReconcileBlocked):
+            self.run_once()
+        self.assertEqual(json.loads(self.path.read_text()), before)
+
     def test_uncertain_absent_operation_is_never_retried(self):
         self.api.fail_before = True
         with self.assertRaises(TimeoutError): self.run_once()

@@ -13,3 +13,5 @@ python3 -m unittest discover -s tests -p 'test_herdr_reconcile.py' -v
 ```
 
 The tests exercise simulated API failures and actual abrupt exit of a mock client after each remote mutation. They do not prove installed Herdr compatibility, permissions, server incarnation identity, actual pane layout, or recovery on a live server. A real adapter and an authorized, isolated Herdr session are mandatory before release. Reconciliation of panes/watchers beyond existence of a tab remains unimplemented.
+
+Pending tab adoption and creation recheck the recorded workspace marker, checkout and ID before use; adoption also rechecks the parent after fetching the tab inventory. These checks prevent persisting an observed replacement in the mock model, but they are not atomic with remote server operations. A live adapter still needs a server-enforced incarnation/ownership condition, or must remain blocked.

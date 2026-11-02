@@ -144,6 +144,17 @@ def _reject_untracked_workspace(objects, label, checkout):
             raise ReconcileBlocked('Workspace exists but local ownership state is missing')
 
 
+def _verify_parent_workspace(adapter, record):
+    """Do not adopt or create tabs under a missing or replaced parent."""
+    _check_identity(adapter, record)
+    objects = list(adapter.workspaces())
+    _check_identity(adapter, record)
+    expected = marker('workspace', record['token'], record['label'])
+    observed = _one(objects, expected, record['checkout'])
+    if not record.get('workspace_id') or observed != record['workspace_id']:
+        raise ReconcileBlocked('Workspace missing, moved, or ID reused')
+
+
 def _complete_intent(adapter, record, state_path):
     """Resolve a persisted intent without ever blindly repeating a mutation."""
     _check_identity(adapter, record)
@@ -151,10 +162,13 @@ def _complete_intent(adapter, record, state_path):
     if pending['kind'] == 'workspace':
         objects = list(adapter.workspaces())
     elif pending['kind'] == 'tab':
+        _verify_parent_workspace(adapter, record)
         objects = list(adapter.tabs(record['workspace_id']))
     else:
         raise ReconcileBlocked('Unknown pending operation')
     _check_identity(adapter, record)
+    if pending['kind'] == 'tab':
+        _verify_parent_workspace(adapter, record)
     found = _one(objects, pending['label'], record['checkout'])
     if found is None:
         raise ReconcileBlocked('Ambiguous operation: no matching object; do not retry automatically')
@@ -176,6 +190,7 @@ def _intent_then_create(adapter, record, path, kind, label, key=None):
     if kind == 'workspace':
         adapter.create_workspace(label, record['checkout'])
     else:
+        _verify_parent_workspace(adapter, record)
         adapter.create_tab(record['workspace_id'], label, record['checkout'])
     _complete_intent(adapter, record, path)
 
