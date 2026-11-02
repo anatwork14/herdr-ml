@@ -46,12 +46,13 @@ class ResearchCtlTests(unittest.TestCase):
         return list((self.root / ".runtime" / "demo" / "runs").glob("*"))
 
     def test_diagnostic_success_writes_evidence(self):
-        self.assertEqual(self._run(), 0)
+        self.assertEqual(self._run(), 2)
         folder, = self._records()
         state = researchctl.load_json(folder / "status.json")
         submission = researchctl.load_json(folder / "submission.json")
         result = researchctl.load_json(folder / "result.json")
-        self.assertEqual(state["state"], "COMPLETED")
+        self.assertEqual(state["state"], "UNKNOWN")
+        self.assertEqual(result["leader_state"], "COMPLETED")
         self.assertEqual(result["exit_code"], 0)
         self.assertEqual(submission["mode"], "diagnostic")
         self.assertIn("hello", (folder / "stdout.log").read_text())
@@ -62,7 +63,8 @@ class ResearchCtlTests(unittest.TestCase):
     def test_failed_run_keeps_logs(self):
         self.assertEqual(self._run("import sys;sys.stderr.write('bad');sys.exit(9)"), 9)
         folder, = self._records()
-        self.assertEqual(researchctl.load_json(folder / "status.json")["state"], "FAILED")
+        self.assertEqual(researchctl.load_json(folder / "status.json")["state"], "UNKNOWN")
+        self.assertEqual(researchctl.load_json(folder / "result.json")["leader_state"], "FAILED")
         self.assertIn("bad", (folder / "stderr.log").read_text())
 
     def test_missing_gate_blocks_official_before_submission(self):
@@ -101,20 +103,24 @@ class ResearchCtlTests(unittest.TestCase):
         self.assertEqual(self._records(), [])
 
     def test_registry_is_authoritative_over_stale_or_missing_json(self):
-        self.assertEqual(self._run(), 0)
+        self.assertEqual(self._run(), 2)
         folder, = self._records()
         (folder / "status.json").unlink()
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             self.assertEqual(researchctl.main(["status", "--project", "demo"]), 0)
-        self.assertIn("COMPLETED", output.getvalue())
+        self.assertIn("UNKNOWN", output.getvalue())
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", folder.name]), 0)
-        self.assertEqual(json.loads(output.getvalue())["state"], "COMPLETED")
+            self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", folder.name]), 2)
+        self.assertEqual(json.loads(output.getvalue())["state"], "UNKNOWN")
+        child = json.loads(output.getvalue())["registry"]["child"]
+        self.assertGreater(child["pid"], 0)
+        self.assertTrue(child["boot"])
+        self.assertTrue(child["start_ticks"])
 
     def test_worker_cannot_rerun_a_completed_run(self):
-        self.assertEqual(self._run(), 0)
+        self.assertEqual(self._run(), 2)
         folder, = self._records()
         self.assertEqual(researchctl.main(["_execute", "--project", "demo",
                                            "--run-id", folder.name]), 2)

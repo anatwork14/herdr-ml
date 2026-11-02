@@ -60,10 +60,10 @@ class RegistryTests(unittest.TestCase):
         token = self.claim()
         registry.advance(self.folder, token, 'CLAIMED', 'DISPATCHING')
         registry.advance(self.folder, token, 'DISPATCHING', 'RUNNING')
-        result = {'state': 'COMPLETED', 'exit_code': 0}
+        result = {'state': 'UNKNOWN', 'leader_state': 'COMPLETED', 'exit_code': 0}
         registry.finish(self.folder, token, result)
         item = registry.inspect(self.folder)
-        self.assertEqual(item['state'], 'COMPLETED')
+        self.assertEqual(item['state'], 'UNKNOWN')
         self.assertEqual(item['result'], result)
         with self.assertRaises(registry.RegistryError): registry.finish(self.folder, token, result)
 

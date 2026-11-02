@@ -60,6 +60,10 @@ class CancellationTests(unittest.TestCase):
         import signal
         self._cancel_stubborn_descendant(signal.SIGHUP)
 
+    def test_sigquit_stops_stubborn_descendant(self):
+        import signal
+        self._cancel_stubborn_descendant(signal.SIGQUIT)
+
     def _cancel_stubborn_descendant(self, sig):
         import signal
         import subprocess
@@ -92,7 +96,8 @@ class CancellationTests(unittest.TestCase):
                 else:
                     self.fail('stubborn descendant remained running')
                 folder, = (root / '.runtime/demo/runs').iterdir()
-                self.assertEqual(json.loads((folder / 'status.json').read_text())['state'], 'INTERRUPTED')
+                self.assertEqual(json.loads((folder / 'status.json').read_text())['state'], 'UNKNOWN')
+                self.assertEqual(json.loads((folder / 'result.json').read_text())['leader_state'], 'INTERRUPTED')
             finally:
                 if proc.poll() is None:
                     proc.kill()
@@ -111,7 +116,11 @@ class CancellationTests(unittest.TestCase):
             program = 'import subprocess,sys,time,pathlib; subprocess.Popen([sys.executable,"-c",%r]); p=pathlib.Path(%r); exec("while not p.exists(): time.sleep(.01)")' % (grandchild, str(marker))
             env = dict(os.environ, RESEARCH_ROOT=str(root), HERDR_ML_CONFIG=str(config))
             proc = subprocess.run([sys.executable,str(MODULE),'init-run','--project','demo','--mode','diagnostic','--dataset-version','test','--split-hash','test','--seed','1','--',sys.executable,'-c',program], env=env, capture_output=True, timeout=10)
-            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertEqual(proc.returncode, 2, proc.stderr)
+            folder, = (root / '.runtime/demo/runs').iterdir()
+            result = json.loads((folder / 'result.json').read_text())
+            self.assertEqual(result['state'], 'UNKNOWN')
+            self.assertEqual(result['leader_state'], 'COMPLETED')
             pid = int(marker.read_text())
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
@@ -155,3 +164,12 @@ class CancellationTests(unittest.TestCase):
             self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z')
             self.assertEqual(m.run_registry.inspect(folder)['state'], 'RUNNING')
             self.assertIsNone(m.run_registry.inspect(folder)['result'])
+
+    def test_ignored_sigchld_is_rejected_without_execution(self):
+        import signal
+        old = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        try:
+            with self.assertRaises(m.ResearchError):
+                m.execute('demo', 'unused')
+        finally:
+            signal.signal(signal.SIGCHLD, old)

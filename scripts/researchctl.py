@@ -165,7 +165,11 @@ def cmd_status(args):
         except (OSError, json.JSONDecodeError):
             print(f"{folder.name}\tINVALID\tmissing/corrupt record")
             continue
-        print(f"{folder.name}\t{state.get('state', 'UNKNOWN')}\t{submission.get('mode')}")
+        # Historical terminal JSON/registry records did not verify containment.
+        label = state.get("state", "UNKNOWN")
+        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
+            label = "UNKNOWN"
+        print(f"{folder.name}\t{label}\t{submission.get('mode')}")
     return 0
 
 
@@ -179,8 +183,8 @@ def cmd_reconcile(args):
     entry = run_registry.inspect(folder)
     if entry is None:
         result = {"state": "UNKNOWN", "reason": "No registry record; legacy or pre-claim run needs investigation"}
-    elif entry["state"] in ("CLAIMED", "DISPATCHING", "RUNNING"):
-        result = {"state": "UNKNOWN", "reason": "Claim may own live descendants; no automatic recovery", "registry": entry}
+    elif entry["state"] in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "UNKNOWN"):
+        result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
     else:
         result = {"state": entry["state"], "registry": entry}
     print(json.dumps(result, indent=2))
@@ -262,6 +266,8 @@ def cmd_init_run(args):
 
 
 def execute(project_id, run_id):
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise ResearchError("SIGCHLD disposition is not default; cannot safely pin and reap child identity")
     _, checkout, runtime = select_project(project_id)
     if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
         raise ResearchError("Unsafe run ID")
@@ -319,7 +325,7 @@ def execute(project_id, run_id):
         return None
 
     old_handlers = {sig: signal.signal(sig, terminate)
-                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
+                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)}
     try:
         with (folder / "stdout.log").open("wb") as stdout, (folder / "stderr.log").open("wb") as stderr:
             try:
@@ -330,6 +336,7 @@ def execute(project_id, run_id):
                                              stdin=subprocess.DEVNULL, stdout=stdout,
                                              stderr=stderr, shell=False, start_new_session=True)
                     group_owned = True
+                    run_registry.record_child(folder, token, child.pid)
                     run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
                     atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
                     if interrupted:
@@ -356,15 +363,19 @@ def execute(project_id, run_id):
             except BaseException:
                 stop_and_reap()
                 raise
-        end_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
-        result = {"state": end_state, "exit_code": code, "completed_at": now(),
+        # Process groups cannot establish whether detached descendants survive.
+        # Record the leader outcome without asserting whole-workload completion.
+        leader_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
+        end_state = "UNKNOWN"
+        result = {"state": end_state, "leader_state": leader_state,
+                  "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
                   "stdout_sha256": sha_file(folder / "stdout.log"),
                   "stderr_sha256": sha_file(folder / "stderr.log")}
         run_registry.finish(folder, token, result)
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
-        return 128 + interruption_signal if interrupted else (code if code >= 0 else 128 + abs(code))
+        return 128 + interruption_signal if interrupted else (2 if code == 0 else (code if code >= 0 else 128 + abs(code)))
     finally:
         stop_and_reap()
         for sig, handler in old_handlers.items():

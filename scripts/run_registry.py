@@ -26,6 +26,9 @@ def _connect(folder):
         state TEXT NOT NULL, owner TEXT NOT NULL, owner_pid INTEGER NOT NULL,
         owner_host TEXT NOT NULL, owner_boot TEXT, owner_start TEXT,
         queue_task_id TEXT, result_json TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
+        id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
+        boot TEXT, start_ticks TEXT)''')
     db.execute('''CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         owner TEXT, state TEXT NOT NULL, detail TEXT)''')
@@ -86,6 +89,31 @@ def claim(folder, run_id, project, digest, initial_state):
         db.close()
 
 
+def record_child(folder, token, pid):
+    """Record forensic identity; this is not evidence of containment."""
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        stat = Path('/proc/%d/stat' % pid).read_text()
+        start = stat[stat.rfind(')') + 2:].split()[19]
+    except (OSError, IndexError):
+        boot, start = None, None
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND state='DISPATCHING'", (token,)).fetchone():
+            raise RegistryError('Stale owner or illegal child registration')
+        db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (token, 'CHILD_IDENTIFIED', json.dumps({'pid': pid, 'boot': boot, 'start_ticks': start})))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
 def advance(folder, token, expected, target):
     if (expected, target) not in {('CLAIMED', 'DISPATCHING'), ('DISPATCHING', 'RUNNING')}:
         raise RegistryError('Illegal execution transition')
@@ -108,7 +136,7 @@ def advance(folder, token, expected, target):
 
 def finish(folder, token, result):
     state = result.get('state')
-    if state not in ('COMPLETED', 'FAILED', 'INTERRUPTED'):
+    if state != 'UNKNOWN':
         raise RegistryError('Invalid terminal state')
     data = json.dumps(result, sort_keys=True)
     db = _connect(folder)
@@ -141,6 +169,8 @@ def inspect(folder):
         result = dict(zip(fields, row))
         if result['result'] is not None:
             result['result'] = json.loads(result['result'])
+        child = db.execute('SELECT pid,boot,start_ticks FROM child_identity WHERE id=1').fetchone()
+        result['child'] = dict(zip(('pid','boot','start_ticks'), child)) if child else None
         result['events'] = [dict(zip(('seq','at','state','detail'), item)) for item in db.execute('SELECT seq,at,state,detail FROM events ORDER BY seq')]
         return result
     finally:
