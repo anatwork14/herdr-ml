@@ -27,6 +27,7 @@ REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
 # Explicit path enables direct execution and importlib-based test loading.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_registry
+import process_identity
 
 
 class ResearchError(Exception):
@@ -189,6 +190,15 @@ def cmd_reconcile(args):
         result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
     else:
         result = {"state": entry["state"], "registry": entry}
+    if entry is not None:
+        host = entry.get("owner_host")
+        owner = {"pid": entry.get("owner_pid"), "boot": entry.get("owner_boot"),
+                 "start_ticks": entry.get("owner_start")}
+        result["identity_observations"] = {
+            "owner": process_identity.observe_process(owner, host),
+            "child": process_identity.observe_process(entry.get("child"), host),
+            "limitation": "Snapshots only; no observation proves descendants stopped or permits reclaim",
+        }
     print(json.dumps(result, indent=2))
     return 2 if result["state"] == "UNKNOWN" else 0
 

@@ -123,6 +123,21 @@ class ResearchCtlTests(unittest.TestCase):
         self.assertTrue(child["boot"])
         self.assertTrue(child["start_ticks"])
 
+    def test_reconcile_reports_read_only_process_identity_without_reclaim(self):
+        self.assertEqual(self._run(), 2)
+        folder, = self._records()
+        output = io.StringIO()
+        before = researchctl.run_registry.inspect(folder)
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", folder.name]), 2)
+        response = json.loads(output.getvalue())
+        self.assertEqual(response["state"], "UNKNOWN")
+        self.assertEqual(response["identity_observations"]["owner"]["observation"], "MATCH")
+        self.assertIn(response["identity_observations"]["child"]["observation"],
+                      ("NOT_VISIBLE", "IDENTITY_MISMATCH", "MATCH_ZOMBIE", "UNKNOWN"))
+        self.assertEqual(researchctl.run_registry.inspect(folder), before)
+        self.assertTrue((folder / "execution.claim").exists())
+
     def test_worker_cannot_rerun_a_completed_run(self):
         self.assertEqual(self._run(), 2)
         folder, = self._records()
