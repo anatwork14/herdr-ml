@@ -162,6 +162,13 @@ def cmd_status(args):
     return 0
 
 
+def require_supported_execution(mode, queue):
+    if mode == "official":
+        raise ResearchError("Official execution BLOCKED: authenticated approval and immutable provenance not implemented")
+    if queue and queue != "local":
+        raise ResearchError("Queued execution BLOCKED: process containment and daemon interpreter validation not implemented")
+
+
 def cmd_init_run(args):
     project, checkout, runtime = select_project(args.project)
     argv = list(args.command)
@@ -181,6 +188,7 @@ def cmd_init_run(args):
         raise ResearchError("Queue must match project GPU group (shared across all projects)")
     if args.queue and not args.approve_cost:
         raise ResearchError("Queued execution requires --approve-cost")
+    require_supported_execution(args.mode, args.queue)
     git = git_metadata(checkout)
     if args.mode == "official" and (not git["sha"] or git["dirty"] is not False):
         raise ResearchError("Official runs require a clean, pinned Git checkout")
@@ -236,6 +244,7 @@ def execute(project_id, run_id):
     submission = load_json(folder / "submission.json")
     expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
     actual = sha_file(folder / "submission.json")
+    require_supported_execution(submission.get("mode"), submission.get("queue"))
     if expected != actual or submission.get("project") != project_id:
         raise ResearchError("Submission manifest integrity mismatch")
     status_file = folder / "status.json"
@@ -356,4 +365,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    if sys.version_info < (3, 10):
+        print("ERROR: Python 3.10 or later is required", file=sys.stderr)
+        sys.exit(2)
     sys.exit(main())

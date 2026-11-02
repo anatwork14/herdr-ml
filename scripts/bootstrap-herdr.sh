@@ -2,6 +2,10 @@
 # Creates workspace/tabs for existing Git checkouts only. No cloning/training.
 set -euo pipefail
 
+# Fail closed until server-scoped identity and crash reconciliation exist.
+echo "BLOCKED: Herdr bootstrap reconciliation is not implemented; do not create or reuse workspaces with this script" >&2
+exit 2
+
 for bin in herdr jq python3; do
   command -v "$bin" >/dev/null || { echo "Missing command: $bin" >&2; exit 2; }
 done

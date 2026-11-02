@@ -1,5 +1,7 @@
 # Operator runbook
 
+**P0 safety hold:** workspace bootstrap, queued runs, and official runs are blocked pending reconciliation, process containment, authenticated approval, provenance binding, and independent validation. Do not use this starter for GPU workloads. Local CPU diagnostics only. The commands below describe intended future operation where applicable.
+
 ## Prerequisites and setup
 Linux server (headless), SSH, Python 3.10+, git, jq, bash, Herdr TUI. Optional: Pueue/pueued, uv, MLflow, nvidia-smi, nvtop, btop. Most tools can use user space; NVIDIA driver and Docker GPU runtime may need administrator installation.
 
