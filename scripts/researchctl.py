@@ -230,6 +230,8 @@ def cmd_init_run(args):
 
 def execute(project_id, run_id):
     _, checkout, runtime = select_project(project_id)
+    if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
     folder = runtime / "runs" / run_id
     submission = load_json(folder / "submission.json")
     expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
@@ -240,6 +242,13 @@ def execute(project_id, run_id):
     state = load_json(status_file).get("state")
     if state not in ("QUEUED", "SUBMITTED"):
         raise ResearchError(f"Refusing repeated execution: state={state}")
+    # Never remove this claim automatically: a killed worker may still own work.
+    # mkdir is an atomic, durable-at-the-filesystem-namespace claim, unlike
+    # a read followed by os.replace. Recovery needs explicit reconciliation.
+    try:
+        (folder / "execution.claim").mkdir(mode=0o700)
+    except FileExistsError:
+        raise ResearchError("Execution already claimed; reconcile before retry")
     if submission.get("mode") == "official":
         gate = gate_report(checkout, submission.get("gate_manifest"))
         current_git = git_metadata(checkout)
