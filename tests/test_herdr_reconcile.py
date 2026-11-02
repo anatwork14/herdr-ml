@@ -21,6 +21,7 @@ class FakeHerdr:
         self.calls = []
 
     def identity(self): return self.server
+    def creation_cwd_verified(self): return True
     def workspaces(self): return list(self.ws)
     def tabs(self, workspace): return list(self.ts[workspace])
     def _id(self):
@@ -124,6 +125,30 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(self.api.calls, before)
         self.assertEqual(len(self.api.ws), 1)
 
+    def test_unmarked_legacy_workspace_at_checkout_blocks(self):
+        self.api.ws.append({'id': 'legacy', 'label': 'Project', 'cwd': str(self.checkout)})
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.api.calls, [])
+
+    def test_creation_bound_cwd_capability_required(self):
+        self.api.creation_cwd_verified = lambda: False
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.api.calls, [])
+
+    def test_lazy_inventory_server_change_blocks_before_adoption(self):
+        self.api.fail_after = 1
+        with self.assertRaises(TimeoutError): self.run_once()
+        self.api.fail_after = None
+        def changed_listing():
+            yield from self.api.ws
+            self.api.server = 'different-server'
+        self.api.workspaces = changed_listing
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertIsNotNone(json.loads(self.path.read_text())['pending'])
+        self.assertEqual(self.api.calls, ['workspace'])
+
     def test_initial_state_without_workspace_detects_other_managed_layout(self):
         self.run_once()
         record = json.loads(self.path.read_text())
@@ -159,6 +184,7 @@ class ProcessCrashTests(unittest.TestCase):
                 self.shared = shared
                 self.crash_at = crash_at
             def identity(self): return 'server-1'
+            def creation_cwd_verified(self): return True
             def workspaces(self): return json.loads(self.shared['workspaces'])
             def tabs(self, wid): return json.loads(self.shared['tabs'])[wid]
             def _create(self, kind, label, cwd, wid=None):

@@ -6,6 +6,9 @@ CLI data contracts are established and integration-tested in an authorized pane.
 
 Adapter contract (a future adapter MUST obtain these values from the same server):
   identity() -> nonempty stable server/session incarnation identifier
+  creation_cwd_verified() -> True only when adapter can establish immutable,
+      server-provided creation-bound cwd for all workspaces and tabs; live pane
+      cwd, caller assertions and unverifiable inferred paths are insufficient
   workspaces() -> iterable of {id, label, cwd}
   tabs(workspace_id) -> iterable of {id, label, cwd}
   create_workspace(label, cwd) -> None
@@ -100,23 +103,22 @@ def _check_identity(adapter, record):
 def _reject_untracked_workspace(objects, label, checkout):
     # State may be lost while the corresponding live workspace survives. Never
     # create a new marker until the authoritative inventory proves there is no
-    # managed workspace for this label OR checkout. Conservative blocking also
+    # workspace, including a legacy unmarked one, for this checkout, or a
+    # managed workspace for this label. Conservative blocking also
     # covers an unavailable cwd, since ownership cannot then be disproved.
     pattern = re.compile(r'^(.*) \[herdr-ml:workspace:[0-9a-f]{32}\]$')
     for obj in objects:
         object_label = obj.get('label')
         match = pattern.fullmatch(object_label) if isinstance(object_label, str) else None
-        if not match:
-            continue
         try:
             existing_checkout = _canonical(obj['cwd'])
         except (KeyError, OSError, TypeError, ValueError) as exc:
             raise ReconcileBlocked(
-                f"Managed workspace id={obj.get('id')!r} label={object_label!r} "
+                f"Workspace id={obj.get('id')!r} label={object_label!r} "
                 'has unverifiable checkout; operator reconciliation required'
             ) from exc
-        if match.group(1) == label or existing_checkout == checkout:
-            raise ReconcileBlocked('Managed workspace exists but local ownership state is missing')
+        if existing_checkout == checkout or (match and match.group(1) == label):
+            raise ReconcileBlocked('Workspace exists but local ownership state is missing')
 
 
 def _complete_intent(adapter, record, state_path):
@@ -124,9 +126,9 @@ def _complete_intent(adapter, record, state_path):
     _check_identity(adapter, record)
     pending = record['pending']
     if pending['kind'] == 'workspace':
-        objects = adapter.workspaces()
+        objects = list(adapter.workspaces())
     elif pending['kind'] == 'tab':
-        objects = adapter.tabs(record['workspace_id'])
+        objects = list(adapter.tabs(record['workspace_id']))
     else:
         raise ReconcileBlocked('Unknown pending operation')
     _check_identity(adapter, record)
@@ -170,6 +172,12 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
     if not (Path(checkout) / '.git').exists():
         raise ReconcileBlocked('Checkout is not a Git worktree')
     with _locked(path):
+        try:
+            cwd_verified = adapter.creation_cwd_verified()
+        except (AttributeError, NotImplementedError) as exc:
+            raise ReconcileBlocked('Creation-bound cwd capability unavailable') from exc
+        if cwd_verified is not True:
+            raise ReconcileBlocked('Creation-bound cwd capability unverified')
         identity = adapter.identity()
         if not isinstance(identity, str) or not identity:
             raise ReconcileBlocked('Server/session incarnation identity is unavailable')
@@ -197,10 +205,11 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
             _complete_intent(adapter, record, path)
         _check_identity(adapter, record)
         workspace_label = marker('workspace', record['token'], label)
-        observed = _one(adapter.workspaces(), workspace_label, checkout)
+        current_workspaces = list(adapter.workspaces())
+        _check_identity(adapter, record)
+        observed = _one(current_workspaces, workspace_label, checkout)
         if record['workspace_id'] is None:
-            _reject_untracked_workspace(adapter.workspaces(), label, checkout)
-            _check_identity(adapter, record)
+            _reject_untracked_workspace(current_workspaces, label, checkout)
             if observed:
                 raise ReconcileBlocked('Unrecorded workspace without matching intent')
             _intent_then_create(adapter, record, path, 'workspace', workspace_label)
