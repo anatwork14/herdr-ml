@@ -186,10 +186,10 @@ def cmd_reconcile(args):
     entry = run_registry.inspect(folder)
     if entry is None:
         result = {"state": "UNKNOWN", "reason": "No registry record; legacy or pre-claim run needs investigation"}
-    elif entry["state"] in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "UNKNOWN"):
-        result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
     else:
-        result = {"state": entry["state"], "registry": entry}
+        # No registry state currently proves containment. Unknown, future,
+        # legacy and corrupt values must never become a successful outcome.
+        result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
     if entry is not None:
         host = entry.get("owner_host")
         owner = {"pid": entry.get("owner_pid"), "boot": entry.get("owner_boot"),

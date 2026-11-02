@@ -138,6 +138,18 @@ class ResearchCtlTests(unittest.TestCase):
         self.assertEqual(researchctl.run_registry.inspect(folder), before)
         self.assertTrue((folder / "execution.claim").exists())
 
+    def test_reconcile_never_accepts_unrecognized_registry_state(self):
+        folder = self.root / ".runtime" / "demo" / "runs" / "forged"
+        folder.mkdir(parents=True)
+        for state in ("SAFE", "SUBMITTED", "BLOCKED", "", None):
+            with self.subTest(state=state):
+                entry = {"state": state, "owner_host": "host", "child": None}
+                output = io.StringIO()
+                with patch.object(researchctl.run_registry, "inspect", return_value=entry), \
+                     contextlib.redirect_stdout(output):
+                    self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", "forged"]), 2)
+                self.assertEqual(json.loads(output.getvalue())["state"], "UNKNOWN")
+
     def test_worker_cannot_rerun_a_completed_run(self):
         self.assertEqual(self._run(), 2)
         folder, = self._records()
