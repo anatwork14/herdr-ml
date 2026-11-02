@@ -97,3 +97,42 @@ class SignedProvenanceTests(unittest.TestCase):
                 artifact.write_bytes(before + b' altered')
                 with self.assertRaises(p.ProvenanceError): self.verify()
                 artifact.write_bytes(before)
+
+    def sign_bytes(self, data, namespace='herdr-ml-official-v1'):
+        self.path.write_bytes(data)
+        signature = Path(str(self.path) + '.sig')
+        if signature.exists(): signature.unlink()
+        subprocess.run(['ssh-keygen', '-Y', 'sign', '-q', '-n', namespace, '-f', str(self.key), str(self.path)], check=True)
+
+    def test_rejects_non_utf8_nonstandard_and_unknown_fields(self):
+        canonical = json.dumps(self.manifest, sort_keys=True).encode()
+        self.sign_bytes(canonical.decode().encode('utf-16'))
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.manifest['extra'] = 123
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.manifest.pop('extra')
+        self.manifest['seed'] = float('nan')
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.manifest['seed'] = float('inf')
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()
+
+    def test_wrong_namespace_signature_and_oversize_rejected(self):
+        data = self.path.read_bytes()
+        self.sign_bytes(data, namespace='other-purpose')
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.sign_bytes(data + b' ' * (1024 * 1024))
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.sign_bytes(data)
+        Path(str(self.path) + '.sig').write_text('invalid')
+        with self.assertRaises(p.ProvenanceError): self.verify()
+
+    def test_identical_train_validation_test_content_rejected(self):
+        train = (self.bundle / self.artifacts['train_split']['path']).read_bytes()
+        validation = self.bundle / self.artifacts['validation_split']['path']
+        validation.write_bytes(train)
+        self.manifest['artifacts']['validation_split']['sha256'] = hashlib.sha256(train).hexdigest()
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()

@@ -33,6 +33,10 @@ def _object(pairs):
     return result
 
 
+def _reject_constant(_value):
+    raise ProvenanceError('nonstandard JSON constant')
+
+
 def _hash_relative(root, name):
     if not isinstance(name, str) or not name or '\\' in name or '\x00' in name:
         raise ProvenanceError('invalid artifact path')
@@ -89,11 +93,14 @@ def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
         if verified.returncode:
             raise ProvenanceError('signature verification failed')
-        manifest = json.loads(data, object_pairs_hook=_object)
+        manifest = json.loads(data.decode('utf-8', errors='strict'),
+                              object_pairs_hook=_object, parse_constant=_reject_constant)
     except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError) as exc:
         raise ProvenanceError('unable to verify signed manifest') from exc
     if not isinstance(manifest, dict) or type(manifest.get('schema_version')) is not int or manifest['schema_version'] != 1:
         raise ProvenanceError('invalid manifest schema')
+    if set(manifest) != {'schema_version', 'project', 'source_git_sha', 'argv', 'seed', 'artifacts'}:
+        raise ProvenanceError('unknown or missing manifest fields')
     if not isinstance(manifest.get('project'), str) or not manifest['project'].strip():
         raise ProvenanceError('missing project')
     if not isinstance(manifest.get('source_git_sha'), str) or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', manifest['source_git_sha']):
@@ -118,4 +125,7 @@ def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
         paths.add(name)
         if _hash_relative(manifest_path.parent, name) != expected:
             raise ProvenanceError('artifact digest mismatch: ' + role)
+    split_hashes = [artifacts[role]['sha256'] for role in ('train_split', 'validation_split', 'test_split')]
+    if len(set(split_hashes)) != len(split_hashes):
+        raise ProvenanceError('split artifacts have identical content')
     return manifest
