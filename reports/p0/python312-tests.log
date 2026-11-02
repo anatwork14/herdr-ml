@@ -1,0 +1,72 @@
+test_kill_after_remote_mutation_then_resume (test_herdr_reconcile.ProcessCrashTests.test_kill_after_remote_mutation_then_resume) ... ok
+test_crash_after_each_remote_mutation_recovers_without_duplicate (test_herdr_reconcile.ReconciliationTests.test_crash_after_each_remote_mutation_recovers_without_duplicate) ... ok
+test_duplicate_or_wrong_checkout_blocks (test_herdr_reconcile.ReconciliationTests.test_duplicate_or_wrong_checkout_blocks) ... ok
+test_first_repeat_and_deleted_tab (test_herdr_reconcile.ReconciliationTests.test_first_repeat_and_deleted_tab) ... ok
+test_incomplete_state_fails_without_mutation (test_herdr_reconcile.ReconciliationTests.test_incomplete_state_fails_without_mutation) ... ok
+test_initial_state_without_workspace_detects_other_managed_layout (test_herdr_reconcile.ReconciliationTests.test_initial_state_without_workspace_detects_other_managed_layout) ... ok
+test_missing_state_does_not_create_duplicate (test_herdr_reconcile.ReconciliationTests.test_missing_state_does_not_create_duplicate) ... ok
+test_new_server_or_reused_id_blocks (test_herdr_reconcile.ReconciliationTests.test_new_server_or_reused_id_blocks) ... ok
+test_reused_tab_id_blocks (test_herdr_reconcile.ReconciliationTests.test_reused_tab_id_blocks) ... ok
+test_uncertain_absent_operation_is_never_retried (test_herdr_reconcile.ReconciliationTests.test_uncertain_absent_operation_is_never_retried) ... ok
+test_unverifiable_managed_workspace_identifies_operator_action (test_herdr_reconcile.ReconciliationTests.test_unverifiable_managed_workspace_identifies_operator_action) ... ok
+test_explicit_local_queue_is_blocked_but_ledger_local_is_allowed (test_p0_guards.GuardTests.test_explicit_local_queue_is_blocked_but_ledger_local_is_allowed) ... ok
+test_legacy_queued_local_record_cannot_execute (test_p0_guards.GuardTests.test_legacy_queued_local_record_cannot_execute) ... ERROR: Refusing execution: queued or repeated state=QUEUED
+ok
+test_local_diagnostic_allowed (test_p0_guards.GuardTests.test_local_diagnostic_allowed) ... ok
+test_official_and_queued_are_blocked (test_p0_guards.GuardTests.test_official_and_queued_are_blocked) ... ok
+test_ignored_sigchld_is_rejected_without_execution (test_p0_ownership.CancellationTests.test_ignored_sigchld_is_rejected_without_execution) ... ok
+test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
+test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
+test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sighup_stops_stubborn_descendant) ... ok
+test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
+test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp4osqs__i/.runtime/demo/runs/test
+ok
+test_changed_dataset_split_evidence_or_manifest_rejected (test_provenance.SignedProvenanceTests.test_changed_dataset_split_evidence_or_manifest_rejected) ... ok
+test_identical_train_validation_test_content_rejected (test_provenance.SignedProvenanceTests.test_identical_train_validation_test_content_rejected) ... ok
+test_intermediate_symlink_rejected_even_with_correct_target (test_provenance.SignedProvenanceTests.test_intermediate_symlink_rejected_even_with_correct_target) ... ok
+test_manifest_fifo_rejected_without_blocking (test_provenance.SignedProvenanceTests.test_manifest_fifo_rejected_without_blocking) ... ok
+test_manifest_symlink_rejected_with_otherwise_valid_signature (test_provenance.SignedProvenanceTests.test_manifest_symlink_rejected_with_otherwise_valid_signature) ... ok
+test_real_signature_and_all_artifact_hashes (test_provenance.SignedProvenanceTests.test_real_signature_and_all_artifact_hashes) ... ok
+test_rejects_non_utf8_nonstandard_and_unknown_fields (test_provenance.SignedProvenanceTests.test_rejects_non_utf8_nonstandard_and_unknown_fields) ... ok
+test_signed_path_traversal_and_duplicate_keys_rejected (test_provenance.SignedProvenanceTests.test_signed_path_traversal_and_duplicate_keys_rejected) ... ok
+test_symlink_escape_and_missing_required_role_rejected (test_provenance.SignedProvenanceTests.test_symlink_escape_and_missing_required_role_rejected) ... ok
+test_unsigned_environment_or_config_changes_rejected (test_provenance.SignedProvenanceTests.test_unsigned_environment_or_config_changes_rejected) ... ok
+test_untrusted_principal_and_unsigned_changes_rejected (test_provenance.SignedProvenanceTests.test_untrusted_principal_and_unsigned_changes_rejected) ... ok
+test_valid_bundle_and_clean_checkout_cannot_bypass_official_hold (test_provenance.SignedProvenanceTests.test_valid_bundle_and_clean_checkout_cannot_bypass_official_hold) ... ok
+test_wrong_namespace_signature_and_oversize_rejected (test_provenance.SignedProvenanceTests.test_wrong_namespace_signature_and_oversize_rejected) ... ok
+test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) ... ok
+test_legacy_and_new_workers_cannot_both_claim (test_registry_p0.MixedVersionTests.test_legacy_and_new_workers_cannot_both_claim) ... ok
+test_abandoned_claim_is_never_reclaimed_on_retry (test_registry_p0.RegistryTests.test_abandoned_claim_is_never_reclaimed_on_retry) ... ok
+test_existing_legacy_claim_fails_closed (test_registry_p0.RegistryTests.test_existing_legacy_claim_fails_closed) ... ok
+test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
+test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
+test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261102T123908Z-e1064c66b130 folder=/tmp/tmp72ywgwzh/research/.runtime/demo/runs/20261102T123908Z-e1064c66b130
+UNKNOWN run=20261102T123908Z-e1064c66b130 exit=0 logs=/tmp/tmp72ywgwzh/research/.runtime/demo/runs/20261102T123908Z-e1064c66b130
+ok
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261102T123908Z-cf9a18dcf764 folder=/tmp/tmpex9on5yt/research/.runtime/demo/runs/20261102T123908Z-cf9a18dcf764
+UNKNOWN run=20261102T123908Z-cf9a18dcf764 exit=9 logs=/tmp/tmpex9on5yt/research/.runtime/demo/runs/20261102T123908Z-cf9a18dcf764
+ok
+test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
+test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
+ok
+test_missing_gate_blocks_official_before_submission (test_researchctl.ResearchCtlTests.test_missing_gate_blocks_official_before_submission) ... ERROR: Official run BLOCKED: Missing gate file
+ok
+test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
+ok
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261102T123909Z-a490ad6044aa folder=/tmp/tmpcq95byyz/research/.runtime/demo/runs/20261102T123909Z-a490ad6044aa
+UNKNOWN run=20261102T123909Z-a490ad6044aa exit=0 logs=/tmp/tmpcq95byyz/research/.runtime/demo/runs/20261102T123909Z-a490ad6044aa
+ok
+test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261102T123909Z-f12ba1c0dd35 folder=/tmp/tmp4y6e2crm/research/.runtime/demo/runs/20261102T123909Z-f12ba1c0dd35
+UNKNOWN run=20261102T123909Z-f12ba1c0dd35 exit=0 logs=/tmp/tmp4y6e2crm/research/.runtime/demo/runs/20261102T123909Z-f12ba1c0dd35
+ERROR: Refusing execution: queued or repeated state=UNKNOWN
+ok
+test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIdentityTests.test_matching_and_changed_interpreter_identity) ... ok
+test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
+
+----------------------------------------------------------------------
+Ran 53 tests in 10.169s
+
+OK

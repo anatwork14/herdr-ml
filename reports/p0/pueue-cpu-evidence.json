@@ -1,0 +1,87 @@
+{
+  "pueue_version": "4.0.4",
+  "binary_sha256": {
+    "pueued-x86_64-unknown-linux-musl": "5afeff6adbafb909e8d54e2caff158e6966c2adffa2c09e60fd631cc51b60390",
+    "pueue-x86_64-unknown-linux-musl": "c1b10d7e4e62211075ddd0e1dc3e8cbfc5a43d662cb3be7402a28504e23fcb51"
+  },
+  "isolation": "XDG config, data and runtime directories in dedicated test directory; no GPU tasks",
+  "setup_script": "scripts/setup-gpu-queue.sh",
+  "serialization_events": [
+    {
+      "project": "project-a",
+      "event": "start",
+      "monotonic_ns": 4618183354164325,
+      "pid": 3514274
+    },
+    {
+      "project": "project-a",
+      "event": "end",
+      "monotonic_ns": 4618184054981273,
+      "pid": 3514274
+    },
+    {
+      "project": "project-b",
+      "event": "start",
+      "monotonic_ns": 4618184258106889,
+      "pid": 3514310
+    },
+    {
+      "project": "project-b",
+      "event": "end",
+      "monotonic_ns": 4618184958916459,
+      "pid": 3514310
+    }
+  ],
+  "after_clean_restart": {
+    "task_statuses": {
+      "0": {
+        "Done": {
+          "enqueued_at": "2026-11-02T19:25:59.855047744+07:00",
+          "start": "2026-11-02T19:25:59.944358132+07:00",
+          "end": "2026-11-02T19:26:00.847479382+07:00",
+          "result": "Success"
+        }
+      },
+      "1": {
+        "Done": {
+          "enqueued_at": "2026-11-02T19:25:59.999899601+07:00",
+          "start": "2026-11-02T19:26:00.848377466+07:00",
+          "end": "2026-11-02T19:26:01.754115431+07:00",
+          "result": "Success"
+        }
+      },
+      "2": {
+        "Done": {
+          "enqueued_at": "2026-11-02T19:26:24.631323350+07:00",
+          "start": "2026-11-02T19:26:24.818378439+07:00",
+          "end": "2026-11-02T19:26:25.119189085+07:00",
+          "result": "Success"
+        }
+      }
+    },
+    "gpu0_parallel_tasks": 1
+  },
+  "daemon_worker_fingerprint_task": "2",
+  "daemon_worker_result": {
+    "Done": {
+      "enqueued_at": "2026-11-02T19:26:24.631323350+07:00",
+      "start": "2026-11-02T19:26:24.818378439+07:00",
+      "end": "2026-11-02T19:26:25.119189085+07:00",
+      "result": "Success"
+    }
+  },
+  "limitations": "No queued researchctl execution, daemon crash recovery, process containment, GPU use or queue task binding validated.",
+  "isolated_sigkill_restart": {
+    "task_id": "0",
+    "reported_result": "Killed",
+    "observed_on": "2026-11-02T19:29:31+07:00",
+    "scope": "Pueue daemon process killed and restarted while harmless CPU task active. No researchctl ownership reconciliation or process-tree containment verified."
+  },
+  "v2_runtime_probe": {
+    "candidate": "29b32a4",
+    "task_id": "3",
+    "result": "Success",
+    "version": "3.10.21",
+    "scope": "standalone diagnostic comparison only; no job binding or attestation"
+  }
+}

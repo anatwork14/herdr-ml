@@ -1,0 +1,7 @@
+{
+  "exit_code": 124,
+  "result": "timeout",
+  "timeout_seconds": 300,
+  "model": "claude-haiku-5-5",
+  "request": "runtime-haiku-request.txt"
+}

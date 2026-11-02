@@ -1,0 +1,384 @@
+Independent adversarial review request for exact Git commit 1376f400e5df7bd1ae030a185c961a8cb50c9b6d. Focus: herdr. Review the complete committed files below for concrete CRITICAL/HIGH/MEDIUM defects, root cause, reproduction and acceptance tests. Holds on official execution, queued execution and bootstrap remain active. Distinguish known missing integrations from new defects; do not certify scientific validity. Say clearly if none found. You have no tools; all referenced source is included.
+
+--- scripts/herdr_reconcile.py ---
+"""Crash-aware Herdr layout reconciliation core.
+
+This module deliberately has no live Herdr adapter or command-line entry point.
+The bootstrap safety hold remains in place until the actual server identity and
+CLI data contracts are established and integration-tested in an authorized pane.
+
+Adapter contract (a future adapter MUST obtain these values from the same server):
+  identity() -> nonempty stable server/session incarnation identifier
+  workspaces() -> iterable of {id, label, cwd}
+  tabs(workspace_id) -> iterable of {id, label, cwd}
+  create_workspace(label, cwd) -> None
+  create_tab(workspace_id, label, cwd) -> None
+
+A create may have taken effect even when it throws. The durable intent carries a
+unique marker, allowing only a single verifiable match to be adopted. If an
+uncertain create has no observable match, automatic retry is forbidden.
+"""
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import tempfile
+import uuid
+
+
+class ReconcileBlocked(Exception):
+    """The next mutation cannot be made safely without operator investigation."""
+
+
+def marker(prefix, token, name):
+    return f"{name} [herdr-ml:{prefix}:{token}]"
+
+
+def _canonical(path):
+    return str(Path(path).expanduser().resolve(strict=True))
+
+
+def _write(path, state):
+    """Persist record and directory entry before issuing an external mutation."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile('w', dir=path.parent, prefix='.state-',
+                                         encoding='utf-8', delete=False) as temp:
+            temp_path = temp.name
+            os.fchmod(temp.fileno(), 0o600)
+            json.dump(state, temp, sort_keys=True, indent=2)
+            temp.write('\n')
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if temp_path is not None:
+            os.unlink(temp_path)
+
+
+@contextlib.contextmanager
+def _locked(path):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.with_suffix(path.suffix + '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _one(objects, label, cwd):
+    matches = [obj for obj in objects if obj.get('label') == label]
+    if len(matches) > 1:
+        raise ReconcileBlocked('Multiple objects have the same ownership marker')
+    if not matches:
+        return None
+    obj = matches[0]
+    if not isinstance(obj.get('id'), str) or not obj['id']:
+        raise ReconcileBlocked('Object has no stable ID')
+    try:
+        actual = _canonical(obj['cwd'])
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise ReconcileBlocked('Object has no verifiable checkout') from exc
+    if actual != cwd:
+        raise ReconcileBlocked('Object marker exists at a different checkout')
+    return obj['id']
+
+
+def _check_identity(adapter, record):
+    if adapter.identity() != record["server"]:
+        raise ReconcileBlocked("Server/session identity changed during reconciliation")
+
+
+def _complete_intent(adapter, record, state_path):
+    """Resolve a persisted intent without ever blindly repeating a mutation."""
+    _check_identity(adapter, record)
+    pending = record['pending']
+    if pending['kind'] == 'workspace':
+        objects = adapter.workspaces()
+    elif pending['kind'] == 'tab':
+        objects = adapter.tabs(record['workspace_id'])
+    else:
+        raise ReconcileBlocked('Unknown pending operation')
+    _check_identity(adapter, record)
+    found = _one(objects, pending['label'], record['checkout'])
+    if found is None:
+        raise ReconcileBlocked('Ambiguous operation: no matching object; do not retry automatically')
+    if pending['kind'] == 'workspace':
+        record['workspace_id'] = found
+    else:
+        record['tabs'][pending['key']] = found
+    record['pending'] = None
+    _write(state_path, record)
+
+
+def _intent_then_create(adapter, record, path, kind, label, key=None):
+    _check_identity(adapter, record)
+    record['pending'] = {'kind': kind, 'label': label, 'key': key}
+    _write(path, record)
+    # Exceptions, timeouts, process death, and malformed responses all leave the
+    # durable intent intact. A later invocation must discover the outcome.
+    _check_identity(adapter, record)
+    if kind == 'workspace':
+        adapter.create_workspace(label, record['checkout'])
+    else:
+        adapter.create_tab(record['workspace_id'], label, record['checkout'])
+    _complete_intent(adapter, record, path)
+
+
+def reconcile(adapter, state_path, project_id, label, checkout, tabs):
+    """Reconcile one project. Caller supplies only authenticated adapter data.
+
+    A failed identity, changed checkout, duplicate marker, or unknown mutation
+    outcome is BLOCKED; this routine never deletes, renames, or focuses anything.
+    """
+    path = Path(state_path)
+    if not isinstance(project_id, str) or not project_id or not isinstance(label, str) or not label:
+        raise ValueError('Project identity and label are required')
+    if not isinstance(tabs, (list, tuple)) or not tabs or any(not isinstance(t, str) or not t for t in tabs) or len(set(tabs)) != len(tabs):
+        raise ValueError('Tabs must be a nonempty list of unique names')
+    checkout = _canonical(checkout)
+    if not (Path(checkout) / '.git').exists():
+        raise ReconcileBlocked('Checkout is not a Git worktree')
+    with _locked(path):
+        identity = adapter.identity()
+        if not isinstance(identity, str) or not identity:
+            raise ReconcileBlocked('Server/session incarnation identity is unavailable')
+        if path.exists():
+            try:
+                record = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as exc:
+                raise ReconcileBlocked('State cannot be read') from exc
+            if not isinstance(record, dict) or record.get('version') != 1:
+                raise ReconcileBlocked('Unknown state format')
+            if (record.get('server') != identity or record.get('project') != project_id or
+                    record.get('checkout') != checkout or record.get('label') != label):
+                raise ReconcileBlocked('Stored project, checkout, label, or server identity changed')
+        else:
+            token = uuid.uuid4().hex
+            record = {'version': 1, 'server': identity, 'project': project_id,
+                      'label': label, 'checkout': checkout, 'token': token,
+                      'workspace_id': None, 'tabs': {}, 'pending': None}
+            _write(path, record)
+        if record.get('pending'):
+            _complete_intent(adapter, record, path)
+        _check_identity(adapter, record)
+        workspace_label = marker('workspace', record['token'], label)
+        observed = _one(adapter.workspaces(), workspace_label, checkout)
+        if record['workspace_id'] is None:
+            if observed:
+                raise ReconcileBlocked('Unrecorded workspace without matching intent')
+            _intent_then_create(adapter, record, path, 'workspace', workspace_label)
+        elif observed != record['workspace_id']:
+            raise ReconcileBlocked('Workspace missing, moved, or ID reused')
+        for tab_name in tabs:
+            _check_identity(adapter, record)
+            # Marker uses a digest rather than raw arbitrary input for stable uniqueness.
+            tab_token = hashlib.sha256(tab_name.encode('utf-8')).hexdigest()[:16]
+            tab_label = marker('tab', record['token'] + '-' + tab_token, tab_name)
+            current_tabs = list(adapter.tabs(record['workspace_id']))
+            _check_identity(adapter, record)
+            observed = _one(current_tabs, tab_label, checkout)
+            old = record['tabs'].get(tab_name)
+            if old is not None and any(obj.get('id') == old and obj.get('label') != tab_label for obj in current_tabs):
+                raise ReconcileBlocked('Tab ID reused for an unrelated object')
+            if observed:
+                if old is None or old != observed:
+                    raise ReconcileBlocked('Unrecorded or replaced tab marker')
+            else:
+                _intent_then_create(adapter, record, path, 'tab', tab_label, tab_name)
+        _check_identity(adapter, record)
+        return {'workspace_id': record['workspace_id'], 'tabs': dict(record['tabs'])}
+
+--- tests/test_herdr_reconcile.py ---
+"""Mock-only reconciliation tests; never contact a Herdr server."""
+import importlib.util
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+spec = importlib.util.spec_from_file_location('herdr_reconcile', Path(__file__).resolve().parents[1] / 'scripts' / 'herdr_reconcile.py')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+
+class FakeHerdr:
+    def __init__(self):
+        self.server = 'server-incarnation-1'
+        self.ws = []
+        self.ts = {}
+        self.next_id = 0
+        self.fail_after = None
+        self.fail_before = False
+        self.calls = []
+
+    def identity(self): return self.server
+    def workspaces(self): return list(self.ws)
+    def tabs(self, workspace): return list(self.ts[workspace])
+    def _id(self):
+        self.next_id += 1
+        return str(self.next_id)
+    def create_workspace(self, label, cwd):
+        self.calls.append('workspace')
+        if self.fail_before: raise TimeoutError('before')
+        wid = self._id()
+        self.ws.append({'id': wid, 'label': label, 'cwd': cwd})
+        self.ts[wid] = []
+        if self.fail_after == len(self.calls): raise TimeoutError('after')
+    def create_tab(self, workspace, label, cwd):
+        self.calls.append('tab')
+        if self.fail_before: raise TimeoutError('before')
+        self.ts[workspace].append({'id': self._id(), 'label': label, 'cwd': cwd})
+        if self.fail_after == len(self.calls): raise TimeoutError('after')
+
+
+class ReconciliationTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.checkout = self.root / 'checkout'
+        (self.checkout / '.git').mkdir(parents=True)
+        self.path = self.root / 'state' / 'project.json'
+        self.api = FakeHerdr()
+        self.names = ['Control', 'Runs', 'Logs']
+
+    def run_once(self):
+        return m.reconcile(self.api, self.path, 'project', 'Project', self.checkout, self.names)
+
+    def test_first_repeat_and_deleted_tab(self):
+        first = self.run_once()
+        self.assertEqual(first, self.run_once())
+        self.assertEqual(self.api.calls, ['workspace', 'tab', 'tab', 'tab'])
+        wid = first['workspace_id']
+        self.api.ts[wid] = [t for t in self.api.ts[wid] if t['id'] != first['tabs']['Runs']]
+        second = self.run_once()
+        self.assertNotEqual(first['tabs']['Runs'], second['tabs']['Runs'])
+        self.assertEqual(len(self.api.ws), 1)
+        self.assertEqual(len(self.api.ts[wid]), 3)
+
+    def test_crash_after_each_remote_mutation_recovers_without_duplicate(self):
+        for stage in range(1, 5):
+            with self.subTest(stage=stage), tempfile.TemporaryDirectory() as td:
+                self.path = Path(td) / 'state.json'
+                self.api = FakeHerdr()
+                self.api.fail_after = stage
+                with self.assertRaises(TimeoutError): self.run_once()
+                self.api.fail_after = None
+                result = self.run_once()
+                self.assertEqual(len(self.api.ws), 1)
+                self.assertEqual(len(self.api.ts[result['workspace_id']]), 3)
+                self.assertEqual(len(self.api.calls), 4)
+
+    def test_uncertain_absent_operation_is_never_retried(self):
+        self.api.fail_before = True
+        with self.assertRaises(TimeoutError): self.run_once()
+        self.api.fail_before = False
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertEqual(self.api.calls, ['workspace'])
+
+    def test_new_server_or_reused_id_blocks(self):
+        result = self.run_once()
+        self.api.server = 'server-incarnation-2'
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.api.server = 'server-incarnation-1'
+        self.api.ws[0]['label'] = 'Unrelated workspace with reused ID'
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertEqual(self.api.ws[0]['id'], result['workspace_id'])
+
+    def test_reused_tab_id_blocks(self):
+        result = self.run_once()
+        tabs = self.api.ts[result['workspace_id']]
+        next(t for t in tabs if t['id'] == result['tabs']['Runs'])['label'] = 'user tab'
+        before = len(self.api.calls)
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertEqual(len(self.api.calls), before)
+
+    def test_duplicate_or_wrong_checkout_blocks(self):
+        self.run_once()
+        self.api.ws.append(dict(self.api.ws[0]))
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.api.ws.pop()
+        self.api.ws[0]['cwd'] = str(self.root)
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+
+    def test_incomplete_state_fails_without_mutation(self):
+        self.path.parent.mkdir()
+        self.path.write_text('{')
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertEqual(self.api.calls, [])
+
+class ProcessCrashTests(unittest.TestCase):
+    def test_kill_after_remote_mutation_then_resume(self):
+        import multiprocessing
+        import os
+
+        class SharedFake:
+            def __init__(self, shared, crash_at=None):
+                self.shared = shared
+                self.crash_at = crash_at
+            def identity(self): return 'server-1'
+            def workspaces(self): return json.loads(self.shared['workspaces'])
+            def tabs(self, wid): return json.loads(self.shared['tabs'])[wid]
+            def _create(self, kind, label, cwd, wid=None):
+                count = self.shared['count'] + 1
+                self.shared['count'] = count
+                item = {'id': str(count), 'label': label, 'cwd': cwd}
+                workspaces = self.workspaces()
+                tabs = json.loads(self.shared['tabs'])
+                if kind == 'workspace':
+                    workspaces.append(item)
+                    tabs[item['id']] = []
+                else:
+                    tabs[wid].append(item)
+                self.shared['workspaces'] = json.dumps(workspaces)
+                self.shared['tabs'] = json.dumps(tabs)
+                if count == self.crash_at:
+                    os._exit(71)
+            def create_workspace(self, label, cwd): self._create('workspace', label, cwd)
+            def create_tab(self, wid, label, cwd): self._create('tab', label, cwd, wid)
+
+        with tempfile.TemporaryDirectory() as td, multiprocessing.Manager() as manager:
+            root = Path(td)
+            checkout = root / 'repo'
+            (checkout / '.git').mkdir(parents=True)
+            for stage in range(1, 5):
+                with self.subTest(stage=stage):
+                    shared = manager.dict(workspaces='[]', tabs='{}', count=0)
+                    state = root / ('state-%s.json' % stage)
+                    args = (SharedFake(shared, stage), state, 'demo', 'Demo', checkout, ['Control', 'Runs', 'Logs'])
+                    process = multiprocessing.Process(target=m.reconcile, args=args)
+                    process.start()
+                    process.join(10)
+                    self.assertEqual(process.exitcode, 71)
+                    result = m.reconcile(SharedFake(shared), state, 'demo', 'Demo', checkout, ['Control', 'Runs', 'Logs'])
+                    self.assertEqual(shared['count'], 4)
+                    self.assertEqual(len(json.loads(shared['workspaces'])), 1)
+                    self.assertEqual(len(json.loads(shared['tabs'])[result['workspace_id']]), 3)
+
+--- docs/HERDR_RECONCILIATION.md ---
+# Herdr reconciliation core (not connected to live CLI)
+
+`scripts/herdr_reconcile.py` implements a mock-tested, fail-closed state machine. It is not a Herdr adapter and cannot bootstrap anything by itself. `scripts/bootstrap-herdr.sh` remains blocked. Do not remove the hold based on unit tests.
+
+A future live adapter must authenticate and pin every read and mutation to the same actual Herdr server **incarnation**, not merely a socket path, server name, client-supplied token, process ID or session name. It must establish the installed CLI/API's server identity and actual workspace/tab metadata and make an atomic server identity check with every operation, or fail closed if that cannot be established. It must normalize API data to the contract in the module and produce complete, authoritative workspace and tab inventories with stable IDs, labels, and canonical cwd. A multi-call identity check in this core does not itself prevent a server swap inside a single adapter operation. API timeouts or missing/partial metadata must raise, never return an empty successful listing. A single canonical state path and shared locking protocol are required for all bootstrap invocations managing a given project and server; state and lock files must reside on a filesystem providing local `flock`, atomic rename, and fsync semantics. The protected state directory is part of the single-user trust boundary.
+
+The core persists and fsyncs unique ownership markers and an operation intent before creating a workspace or tab. On restart, it adopts exactly one matching object only if its server, marker and checkout match. A missing object after an uncertain operation is **BLOCKED**, including the crash-before-dispatch case: lack of a result does not prove a remote mutation failed. Operator investigation and an audited recovery procedure are required; deleting state or retrying blindly is unsafe. Matching duplicate markers, changed identity, missing workspace, changed checkout and reused IDs also block. It never deletes, renames, focuses, or starts commands. The core restores a missing managed tab with a new ID only after a complete authoritative inventory and with no unresolved intent. Existing unrelated tabs are left intact.
+
+Mock-only verification:
+
+```sh
+python3 -m unittest discover -s tests -p 'test_herdr_reconcile.py' -v
+```
+
+The tests exercise simulated API failures and actual abrupt exit of a mock client after each remote mutation. They do not prove installed Herdr compatibility, permissions, server incarnation identity, actual pane layout, or recovery on a live server. A real adapter and an authorized, isolated Herdr session are mandatory before release. Reconciliation of panes/watchers beyond existence of a tab remains unimplemented.
