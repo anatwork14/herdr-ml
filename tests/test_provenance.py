@@ -206,6 +206,6 @@ class SignedProvenanceTests(unittest.TestCase):
             '--split-hash', 'fixture', '--seed', '42', '--approve-official', '--', *payload],
             env=environment, capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 2, result.stderr)
-        self.assertIn('Official execution BLOCKED', result.stderr)
+        self.assertIn('Official or invalid execution BLOCKED', result.stderr)
         self.assertFalse(marker.exists())
         self.assertFalse((research_root / '.runtime' / 'demo' / 'runs').exists())
