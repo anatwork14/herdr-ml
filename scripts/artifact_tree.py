@@ -7,6 +7,7 @@ between verification and use require a separate immutable execution boundary.
 """
 import hashlib
 import os
+import re
 from pathlib import Path
 import stat
 
@@ -27,7 +28,13 @@ def snapshot(root, max_entries=100000):
     records = []
     def walk(fd, prefix):
         before = os.fstat(fd)
-        for name in sorted(os.listdir(fd)):
+        names = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                if len(records) + len(names) >= max_entries:
+                    raise ArtifactError('entry limit exceeded')
+                names.append(entry.name)
+        for name in sorted(names):
             if len(records) >= max_entries:
                 raise ArtifactError('entry limit exceeded')
             rel = prefix + name
@@ -86,8 +93,29 @@ def snapshot(root, max_entries=100000):
             os.close(fd)
 
 
+def validate_manifest(manifest):
+    if not isinstance(manifest, dict) or set(manifest) != {'schema_version', 'entries'}:
+        raise ArtifactError('invalid manifest schema')
+    if type(manifest['schema_version']) is not int or manifest['schema_version'] != 1 or not isinstance(manifest['entries'], list):
+        raise ArtifactError('invalid manifest schema')
+    for entry in manifest['entries']:
+        if not isinstance(entry, dict) or not isinstance(entry.get('path'), str) or not entry['path']:
+            raise ArtifactError('invalid entry')
+        if entry.get('type') == 'directory':
+            if set(entry) != {'path', 'type'}:
+                raise ArtifactError('invalid directory entry')
+        elif entry.get('type') == 'file':
+            if (set(entry) != {'path', 'type', 'size', 'sha256'} or type(entry['size']) is not int
+                    or entry['size'] < 0 or not isinstance(entry['sha256'], str)
+                    or not re.fullmatch('[0-9a-f]{64}', entry['sha256'])):
+                raise ArtifactError('invalid file entry')
+        else:
+            raise ArtifactError('invalid entry type')
+
+
 def verify(root, manifest):
     """Compare actual files to a trusted supplied manifest; does not verify trust."""
+    validate_manifest(manifest)
     return snapshot(root) == manifest
 
 
@@ -103,6 +131,7 @@ def main():
         actual = snapshot(args.root)
         if args.verify:
             expected = json.loads(args.verify.read_text(encoding='utf-8'))
+            validate_manifest(expected)
             if actual != expected:
                 print('Artifact tree differs', file=sys.stderr)
                 return 1

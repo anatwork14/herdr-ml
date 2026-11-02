@@ -60,3 +60,32 @@ class ArtifactTreeTests(unittest.TestCase):
             self.assertEqual(subprocess.run([sys.executable, str(script), str(root), '--verify', str(manifest)], capture_output=True).returncode, 0)
             (root / 'item').write_text('changed')
             self.assertEqual(subprocess.run([sys.executable, str(script), str(root), '--verify', str(manifest)], capture_output=True).returncode, 1)
+
+    def test_boolean_integer_fields_are_rejected(self):
+        import copy
+        import json
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / 'data'
+            root.mkdir()
+            (root / 'item').write_bytes(b'x')
+            original = m.snapshot(root)
+            script = pathlib.Path(__file__).resolve().parents[1] / 'scripts' / 'artifact_tree.py'
+            for key in ('schema_version', 'size'):
+                altered = copy.deepcopy(original)
+                if key == 'schema_version': altered[key] = True
+                else: altered['entries'][0][key] = True
+                with self.assertRaises(m.ArtifactError): m.verify(root, altered)
+                path = pathlib.Path(tmp) / 'manifest.json'
+                path.write_text(json.dumps(altered))
+                result = subprocess.run([sys.executable, str(script), str(root), '--verify', str(path)], capture_output=True)
+                self.assertEqual(result.returncode, 2)
+
+    def test_entry_limit_applies_before_sorting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            for name in ('a', 'b', 'c'):
+                (root / name).write_bytes(b'')
+            with self.assertRaisesRegex(m.ArtifactError, 'entry limit'):
+                m.snapshot(root, max_entries=2)
