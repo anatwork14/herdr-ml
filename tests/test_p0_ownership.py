@@ -23,7 +23,7 @@ def worker(project, run_id, start, results):
 
 
 class OwnershipTests(unittest.TestCase):
-    def test_two_workers_have_one_owner(self):
+    def test_twenty_workers_have_one_owner(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             repo = root / 'demo'
@@ -42,12 +42,12 @@ class OwnershipTests(unittest.TestCase):
             m.atomic_json(folder / 'status.json', {'state': 'QUEUED'})
             start = multiprocessing.Event()
             results = multiprocessing.Queue()
-            processes = [multiprocessing.Process(target=worker, args=('demo', 'test', start, results)) for _ in range(2)]
+            processes = [multiprocessing.Process(target=worker, args=('demo', 'test', start, results)) for _ in range(20)]
             for process in processes: process.start()
             start.set()
             for process in processes: process.join(10)
             self.assertTrue(all(not p.is_alive() for p in processes))
-            outcomes = [results.get(timeout=2), results.get(timeout=2)]
+            outcomes = [results.get(timeout=2) for _ in processes]
             self.assertEqual(sum(x[0] == 'ok' for x in outcomes), 1, outcomes)
             self.assertEqual(marker.read_text().splitlines(), ['run'])
 

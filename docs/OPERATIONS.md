@@ -53,3 +53,7 @@ mlflow server --host 127.0.0.1 --port 5000 \
 ~~~
 
 Use a service manager and persistent storage for production; SQLite is a single-user starting point. Do not expose ports externally.
+
+## Run registry and recovery (CPU diagnostics only)
+
+Each new run uses a per-run SQLite registry with a one-time owner token and an event history. SQLite state and committed result are authoritative; the JSON result and status are compatibility projections and can be stale after interruption. `python3 scripts/researchctl.py reconcile --project <id> --run-id <id>` is read-only. It reports UNKNOWN for claims or processes whose completion is not proven; repeat inspection does not reclaim a run. Do not delete registry files or legacy `execution.claim` directories to retry. Preserve them and investigate the original supervisor and all descendants, then submit a new run only after an operator verifies that the old workload is no longer running. Automatic reclaim and queue task-ID reconciliation are not implemented. This protocol is for a trusted single host and supported local filesystems with working SQLite locking and fsync, not a distributed lock or an authentication boundary. Queued and official execution remain blocked.

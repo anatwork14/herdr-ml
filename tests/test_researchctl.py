@@ -1,5 +1,7 @@
 """CPU-only tests: never load models, datasets, agents, queues or GPU."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -97,6 +99,19 @@ class ResearchCtlTests(unittest.TestCase):
         self._write_valid_gates()
         self.assertEqual(self._run(mode="official", approve=True), 2)
         self.assertEqual(self._records(), [])
+
+    def test_registry_is_authoritative_over_stale_or_missing_json(self):
+        self.assertEqual(self._run(), 0)
+        folder, = self._records()
+        (folder / "status.json").unlink()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["status", "--project", "demo"]), 0)
+        self.assertIn("COMPLETED", output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", folder.name]), 0)
+        self.assertEqual(json.loads(output.getvalue())["state"], "COMPLETED")
 
     def test_worker_cannot_rerun_a_completed_run(self):
         self.assertEqual(self._run(), 0)

@@ -12,6 +12,7 @@ from pathlib import Path
 import platform
 import shutil
 import shlex
+import sqlite3
 import signal
 import subprocess
 import sys
@@ -21,6 +22,10 @@ import uuid
 BASE = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = BASE / "config" / "projects.json"
 REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
+
+# Explicit path enables direct execution and importlib-based test loading.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_registry
 
 
 class ResearchError(Exception):
@@ -154,12 +159,31 @@ def cmd_status(args):
             continue
         try:
             submission = load_json(folder / "submission.json")
-            state = load_json(folder / "status.json")
+            registered = run_registry.inspect(folder)
+            state = registered if registered is not None else load_json(folder / "status.json")
         except (OSError, json.JSONDecodeError):
             print(f"{folder.name}\tINVALID\tmissing/corrupt record")
             continue
         print(f"{folder.name}\t{state.get('state', 'UNKNOWN')}\t{submission.get('mode')}")
     return 0
+
+
+def cmd_reconcile(args):
+    _, _, runtime = select_project(args.project)
+    if not args.run_id or Path(args.run_id).name != args.run_id or args.run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / args.run_id
+    if not folder.is_dir():
+        raise ResearchError("Unknown run")
+    entry = run_registry.inspect(folder)
+    if entry is None:
+        result = {"state": "UNKNOWN", "reason": "No registry record; legacy or pre-claim run needs investigation"}
+    elif entry["state"] in ("CLAIMED", "DISPATCHING", "RUNNING"):
+        result = {"state": "UNKNOWN", "reason": "Claim may own live descendants; no automatic recovery", "registry": entry}
+    else:
+        result = {"state": entry["state"], "registry": entry}
+    print(json.dumps(result, indent=2))
+    return 2 if result["state"] == "UNKNOWN" else 0
 
 
 def require_supported_execution(mode, queue):
@@ -251,13 +275,10 @@ def execute(project_id, run_id):
     state = load_json(status_file).get("state")
     if state not in ("QUEUED", "SUBMITTED"):
         raise ResearchError(f"Refusing repeated execution: state={state}")
-    # Never remove this claim automatically: a killed worker may still own work.
-    # mkdir is an atomic, durable-at-the-filesystem-namespace claim, unlike
-    # a read followed by os.replace. Recovery needs explicit reconciliation.
     try:
-        (folder / "execution.claim").mkdir(mode=0o700)
-    except FileExistsError:
-        raise ResearchError("Execution already claimed; reconcile before retry")
+        token = run_registry.claim(folder, run_id, project_id, actual, state)
+    except run_registry.RegistryError as exc:
+        raise ResearchError(str(exc)) from exc
     if submission.get("mode") == "official":
         gate = gate_report(checkout, submission.get("gate_manifest"))
         current_git = git_metadata(checkout)
@@ -265,7 +286,8 @@ def execute(project_id, run_id):
             atomic_json(status_file, {"state": "BLOCKED", "updated_at": now(),
                                       "error": "Gate invalid or source checkout changed since submission"})
             raise ResearchError("Official job BLOCKED: gates or pinned Git source changed")
-    atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+    run_registry.advance(folder, token, "CLAIMED", "DISPATCHING")
+    atomic_json(status_file, {"state": "DISPATCHING", "updated_at": now()})
     child = None
     interrupted = False
     interruption_signal = None
@@ -287,6 +309,8 @@ def execute(project_id, run_id):
                 child = subprocess.Popen(submission["argv"], cwd=checkout,
                                          stdin=subprocess.DEVNULL, stdout=stdout,
                                          stderr=stderr, shell=False, start_new_session=True)
+                run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
+                atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
                 if interrupted:
                     terminate(signal.SIGTERM, None)
                 while True:
@@ -310,12 +334,17 @@ def execute(project_id, run_id):
                     except ProcessLookupError:
                         pass
             except OSError as exc:
+                if child is not None:
+                    # A post-dispatch failure is uncertain, never a launch failure.
+                    raise
                 stderr.write((str(exc) + "\n").encode("utf-8", errors="replace"))
                 code = 127
         end_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
         result = {"state": end_state, "exit_code": code, "completed_at": now(),
                   "stdout_sha256": sha_file(folder / "stdout.log"),
                   "stderr_sha256": sha_file(folder / "stderr.log")}
+        # Completion and result commit together; JSON files are projections.
+        run_registry.finish(folder, token, result)
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
@@ -331,6 +360,9 @@ def main(argv=None):
     sub.add_parser("doctor")
     status = sub.add_parser("status")
     status.add_argument("--project", required=True)
+    reconcile = sub.add_parser("reconcile", help="Inspect a run without reclaiming ownership")
+    reconcile.add_argument("--project", required=True)
+    reconcile.add_argument("--run-id", required=True)
     gates = sub.add_parser("gate-status")
     gates.add_argument("--project", required=True)
     gates.add_argument("--gates")
@@ -354,12 +386,14 @@ def main(argv=None):
             return cmd_doctor(args)
         if args.action == "status":
             return cmd_status(args)
+        if args.action == "reconcile":
+            return cmd_reconcile(args)
         if args.action == "gate-status":
             return cmd_gate_status(args)
         if args.action == "init-run":
             return cmd_init_run(args)
         return execute(args.project, args.run_id)
-    except (ResearchError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except (ResearchError, run_registry.RegistryError, sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
