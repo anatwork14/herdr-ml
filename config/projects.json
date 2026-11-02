@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "root_env": "RESEARCH_ROOT",
+  "projects": [
+    {
+      "id": "fl-iot",
+      "label": "FL-IoT",
+      "directory": "federated-learning-in-iot",
+      "repository": "https://github.com/anatwork14/federated-learning-in-iot.git",
+      "gpu_group": "gpu0",
+      "tabs": [
+        "00 Control",
+        "01 Agents",
+        "02 Data",
+        "03 Experiments",
+        "04 Runs",
+        "05 Logs",
+        "06 GPU",
+        "07 Review",
+        "08 Git",
+        "09 Research",
+        "10 Operations"
+      ]
+    },
+    {
+      "id": "starlight-tempo",
+      "label": "STARLIGHT-TEMPO",
+      "directory": "starlight-tempo",
+      "repository": "https://github.com/anatwork14/starlight-tempo.git",
+      "gpu_group": "gpu0",
+      "tabs": [
+        "00 Control",
+        "01 Agents",
+        "02 Data",
+        "03 Experiments",
+        "04 Runs",
+        "05 Logs",
+        "06 GPU",
+        "07 Review",
+        "08 Git",
+        "09 Research",
+        "10 Operations"
+      ]
+    }
+  ]
+}

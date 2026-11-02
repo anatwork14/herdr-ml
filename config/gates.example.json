@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "project": "fl-iot",
+  "gates": {
+    "DATA_READY": {
+      "status": "BLOCKED",
+      "evidence": [],
+      "reviewer": "",
+      "reviewed_at": ""
+    },
+    "BASELINE_READY": {
+      "status": "BLOCKED",
+      "evidence": [],
+      "reviewer": "",
+      "reviewed_at": ""
+    },
+    "GPU_READY": {
+      "status": "BLOCKED",
+      "evidence": [],
+      "reviewer": "",
+      "reviewed_at": ""
+    },
+    "REVIEW_READY": {
+      "status": "BLOCKED",
+      "evidence": [],
+      "reviewer": "",
+      "reviewed_at": ""
+    }
+  },
+  "note": "Example only. Populate a per-project file with independently reviewed evidence; this JSON is not proof."
+}

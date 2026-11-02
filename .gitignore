@@ -1,0 +1,23 @@
+# Workspace state, data and model artifacts do not belong in Git
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+.mypy_cache/
+*.sqlite
+*.db
+.runtime/
+data/
+datasets/
+checkpoints/
+artifacts/
+runs/
+logs/
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+.DS_Store
