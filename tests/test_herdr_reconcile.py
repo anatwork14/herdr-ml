@@ -4,10 +4,12 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 spec = importlib.util.spec_from_file_location('herdr_reconcile', Path(__file__).resolve().parents[1] / 'scripts' / 'herdr_reconcile.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
+real_coordination_lock_path = m._coordination_lock_path
 
 
 class FakeHerdr:
@@ -22,6 +24,7 @@ class FakeHerdr:
 
     def identity(self): return self.server
     def creation_cwd_verified(self): return True
+    def coordination_verified(self): return True
     def workspaces(self): return list(self.ws)
     def tabs(self, workspace): return list(self.ts[workspace])
     def _id(self):
@@ -49,6 +52,9 @@ class ReconciliationTests(unittest.TestCase):
         self.checkout = self.root / 'checkout'
         (self.checkout / '.git').mkdir(parents=True)
         self.path = self.root / 'state' / 'project.json'
+        self.lock_patch = mock.patch.object(m, '_coordination_lock_path', return_value=self.root / 'locks' / 'global')
+        self.lock_patch.start()
+        self.addCleanup(self.lock_patch.stop)
         self.api = FakeHerdr()
         self.names = ['Control', 'Runs', 'Logs']
 
@@ -125,6 +131,54 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(self.api.calls, before)
         self.assertEqual(len(self.api.ws), 1)
 
+    def test_coordination_path_ignores_environment_overrides(self):
+        import os
+        from types import SimpleNamespace
+        with mock.patch.object(m.pwd, 'getpwuid', return_value=SimpleNamespace(pw_dir=str(self.root))):
+            with mock.patch.dict(os.environ, {'HOME': str(self.root / 'other'),
+                                              'XDG_STATE_HOME': str(self.root / 'another')}):
+                first = real_coordination_lock_path()
+            with mock.patch.dict(os.environ, {'HOME': str(self.root / 'third')}):
+                second = real_coordination_lock_path()
+        self.assertEqual(first, second)
+        self.assertEqual(first, self.root / '.herdr-ml-reconciliation-locks' / 'global')
+
+    def test_unverified_shared_coordination_blocks(self):
+        self.api.coordination_verified = lambda: False
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.api.calls, [])
+
+    def test_state_path_cannot_replace_global_lock(self):
+        self.path = self.root / 'locks' / 'global.lock'
+        with self.assertRaises(m.ReconcileBlocked): self.run_once()
+        self.assertEqual(self.api.calls, [])
+
+    def test_two_state_paths_same_checkout_create_once(self):
+        import threading
+        import time
+        start = threading.Barrier(2)
+        results = []
+        original = self.api.create_workspace
+        def slow_create(label, cwd):
+            time.sleep(.1)
+            original(label, cwd)
+        self.api.create_workspace = slow_create
+        def worker(index):
+            start.wait(timeout=3)
+            try:
+                results.append(m.reconcile(self.api, self.root / ('state-%d' % index),
+                                           'project-%d' % index, 'Project', self.checkout, self.names))
+            except m.ReconcileBlocked as exc:
+                results.append(exc)
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(5)
+        self.assertTrue(all(not thread.is_alive() for thread in threads))
+        self.assertEqual(len(self.api.ws), 1)
+        self.assertEqual(len(results), 2)
+        self.assertEqual(sum(isinstance(result, m.ReconcileBlocked) for result in results), 1)
+
     def test_unmarked_legacy_workspace_at_checkout_blocks(self):
         self.api.ws.append({'id': 'legacy', 'label': 'Project', 'cwd': str(self.checkout)})
         with self.assertRaises(m.ReconcileBlocked): self.run_once()
@@ -185,6 +239,7 @@ class ProcessCrashTests(unittest.TestCase):
                 self.crash_at = crash_at
             def identity(self): return 'server-1'
             def creation_cwd_verified(self): return True
+            def coordination_verified(self): return True
             def workspaces(self): return json.loads(self.shared['workspaces'])
             def tabs(self, wid): return json.loads(self.shared['tabs'])[wid]
             def _create(self, kind, label, cwd, wid=None):
@@ -211,6 +266,9 @@ class ProcessCrashTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td, ctx.Manager() as manager:
             root = Path(td)
             checkout = root / 'repo'
+            lock_patch = mock.patch.object(m, '_coordination_lock_path', return_value=root / 'locks' / 'global')
+            lock_patch.start()
+            self.addCleanup(lock_patch.stop)
             (checkout / '.git').mkdir(parents=True)
             for stage in range(1, 5):
                 with self.subTest(stage=stage):

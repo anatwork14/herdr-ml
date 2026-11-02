@@ -6,6 +6,8 @@ CLI data contracts are established and integration-tested in an authorized pane.
 
 Adapter contract (a future adapter MUST obtain these values from the same server):
   identity() -> nonempty stable server/session incarnation identifier
+  coordination_verified() -> True only when server and all clients share this
+      OS user's passwd home, lock filesystem, mount namespace and protocol
   creation_cwd_verified() -> True only when adapter can establish immutable,
       server-provided creation-bound cwd for all workspaces and tabs; live pane
       cwd, caller assertions and unverifiable inferred paths are insufficient
@@ -23,6 +25,8 @@ import fcntl
 import hashlib
 import json
 import os
+import pwd
+import stat
 import re
 from pathlib import Path
 import tempfile
@@ -64,6 +68,25 @@ def _write(path, state):
     finally:
         if temp_path is not None:
             os.unlink(temp_path)
+
+
+def _coordination_lock_path():
+    # This fixed location has no config or environment override. All callers
+    # under the same OS account use the same global lock, even across projects,
+    # checkout aliases, differing state paths and server IDs. The adapter must
+    # verify that the server and all clients share the filesystem namespace.
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+    if home.stat().st_uid != os.getuid():
+        raise ReconcileBlocked('Coordination home is not owned by current user')
+    root = home / '.herdr-ml-reconciliation-locks'
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ReconcileBlocked('Unsafe coordination lock directory')
+    return root / 'global'
 
 
 @contextlib.contextmanager
@@ -171,7 +194,16 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
     checkout = _canonical(checkout)
     if not (Path(checkout) / '.git').exists():
         raise ReconcileBlocked('Checkout is not a Git worktree')
-    with _locked(path):
+    try:
+        coordination_verified = adapter.coordination_verified()
+    except (AttributeError, NotImplementedError) as exc:
+        raise ReconcileBlocked('Shared coordination capability unavailable') from exc
+    if coordination_verified is not True:
+        raise ReconcileBlocked('Shared coordination capability unverified')
+    coordination_path = _coordination_lock_path()
+    if path.resolve().is_relative_to(coordination_path.parent.resolve()):
+        raise ReconcileBlocked('State path must not overlap global coordination directory')
+    with _locked(coordination_path), _locked(path):
         try:
             cwd_verified = adapter.creation_cwd_verified()
         except (AttributeError, NotImplementedError) as exc:
