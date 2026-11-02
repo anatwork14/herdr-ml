@@ -274,8 +274,9 @@ def execute(project_id, run_id):
         raise ResearchError("Submission manifest integrity mismatch")
     status_file = folder / "status.json"
     state = load_json(status_file).get("state")
-    if state not in ("QUEUED", "SUBMITTED"):
-        raise ResearchError(f"Refusing repeated execution: state={state}")
+    # Queued records, including legacy records called "local", remain held.
+    if state != "SUBMITTED":
+        raise ResearchError(f"Refusing execution: queued or repeated state={state}")
     try:
         token = run_registry.claim(folder, run_id, project_id, actual, state)
     except run_registry.RegistryError as exc:

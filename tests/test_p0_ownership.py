@@ -39,7 +39,7 @@ class OwnershipTests(unittest.TestCase):
                 'import pathlib,time; pathlib.Path(%r).open("a").write("run\\n"); time.sleep(.2)' % str(marker)]}
             m.atomic_json(folder / 'submission.json', manifest)
             (folder / 'submission.sha256').write_text(m.sha_file(folder / 'submission.json'))
-            m.atomic_json(folder / 'status.json', {'state': 'QUEUED'})
+            m.atomic_json(folder / 'status.json', {'state': 'SUBMITTED'})
             start = multiprocessing.Event()
             results = multiprocessing.Queue()
             processes = [multiprocessing.Process(target=worker, args=('demo', 'test', start, results)) for _ in range(20)]
