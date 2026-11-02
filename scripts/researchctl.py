@@ -162,11 +162,13 @@ def cmd_status(args):
             submission = load_json(folder / "submission.json")
             registered = run_registry.inspect(folder)
             state = registered if registered is not None else load_json(folder / "status.json")
-        except (OSError, json.JSONDecodeError):
-            print(f"{folder.name}\tINVALID\tmissing/corrupt record")
+        except (OSError, json.JSONDecodeError, sqlite3.Error):
+            print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
             continue
         # Historical terminal JSON/registry records did not verify containment.
         label = state.get("state", "UNKNOWN")
+        if registered is None and (folder / "execution.claim").exists():
+            label = "UNKNOWN"
         if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
             label = "UNKNOWN"
         print(f"{folder.name}\t{label}\t{submission.get('mode')}")
@@ -272,12 +274,22 @@ def execute(project_id, run_id):
     if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
         raise ResearchError("Unsafe run ID")
     folder = runtime / "runs" / run_id
-    submission = load_json(folder / "submission.json")
+    # Hash and parse exactly the same bytes, even if the path changes later.
+    manifest_bytes = (folder / "submission.json").read_bytes()
     expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
-    actual = sha_file(folder / "submission.json")
-    require_supported_execution(submission.get("mode"), submission.get("queue"), submission=True)
-    if expected != actual or submission.get("project") != project_id:
+    actual = hashlib.sha256(manifest_bytes).hexdigest()
+    if expected != actual:
         raise ResearchError("Submission manifest integrity mismatch")
+    try:
+        submission = json.loads(manifest_bytes)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ResearchError("Invalid submission manifest JSON") from exc
+    if not isinstance(submission, dict) or submission.get("project") != project_id:
+        raise ResearchError("Invalid submission manifest project or type")
+    argv = submission.get("argv")
+    if not isinstance(argv, list) or not argv or any(not isinstance(v, str) or "\x00" in v for v in argv) or not argv[0]:
+        raise ResearchError("Invalid submission command")
+    require_supported_execution(submission.get("mode"), submission.get("queue"), submission=True)
     status_file = folder / "status.json"
     state = load_json(status_file).get("state")
     # Queued records, including legacy records called "local", remain held.

@@ -173,3 +173,78 @@ class CancellationTests(unittest.TestCase):
                 m.execute('demo', 'unused')
         finally:
             signal.signal(signal.SIGCHLD, old)
+
+    def test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'demo').mkdir()
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id':'demo','directory':'demo'}]}))
+            folder = root / '.runtime/demo/runs/test'
+            folder.mkdir(parents=True)
+            first_marker, second_marker = root / 'first', root / 'second'
+            def manifest(marker):
+                return {'project':'demo','mode':'diagnostic','queue':'local', 'argv':[sys.executable,'-c',
+                    'import pathlib; pathlib.Path(%r).touch()' % str(marker)]}
+            path = folder / 'submission.json'
+            m.atomic_json(path, manifest(first_marker))
+            (folder / 'submission.sha256').write_text(m.sha_file(path))
+            m.atomic_json(folder / 'status.json', {'state':'SUBMITTED'})
+            original_read_bytes = Path.read_bytes
+            reads = []
+            def read_and_replace(current):
+                data = original_read_bytes(current)
+                if current == path:
+                    reads.append(1)
+                    path.write_text(json.dumps(manifest(second_marker)))
+                return data
+            with patch.dict(os.environ, {'RESEARCH_ROOT':str(root),'HERDR_ML_CONFIG':str(config)}):
+                with patch.object(Path, 'read_bytes', read_and_replace):
+                    self.assertEqual(m.execute('demo','test'), 2)
+            self.assertEqual(len(reads), 1)
+            self.assertTrue(first_marker.exists())
+            self.assertFalse(second_marker.exists())
+
+    def test_invalid_manifest_shapes_are_rejected_before_claim(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'demo').mkdir()
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id':'demo','directory':'demo'}]}))
+            invalid = [b'\xff', b'[]', json.dumps({'project':'demo','mode':'diagnostic','queue':'local','argv':[1]}).encode(),
+                       json.dumps({'project':'demo','mode':'diagnostic','queue':'local','argv':['a\u0000b']}).encode()]
+            for index, data in enumerate(invalid):
+                folder = root / '.runtime/demo/runs' / str(index)
+                folder.mkdir(parents=True)
+                (folder / 'submission.json').write_bytes(data)
+                (folder / 'submission.sha256').write_text(m.hashlib.sha256(data).hexdigest())
+                m.atomic_json(folder / 'status.json', {'state':'SUBMITTED'})
+                with patch.dict(os.environ, {'RESEARCH_ROOT':str(root),'HERDR_ML_CONFIG':str(config)}):
+                    self.assertEqual(m.main(['_execute','--project','demo','--run-id',str(index)]), 2)
+                self.assertFalse((folder / 'execution.claim').exists())
+
+    def test_status_reports_legacy_claim_and_corrupt_registry_unknown(self):
+        import contextlib
+        import io
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'demo').mkdir()
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id':'demo','directory':'demo'}]}))
+            for name in ('legacy', 'corrupt', 'clean'):
+                folder = root / '.runtime/demo/runs' / name
+                folder.mkdir(parents=True)
+                m.atomic_json(folder / 'submission.json', {'mode':'diagnostic'})
+                m.atomic_json(folder / 'status.json', {'state':'SUBMITTED'})
+            (root / '.runtime/demo/runs/legacy/execution.claim').mkdir()
+            (root / '.runtime/demo/runs/corrupt/registry.sqlite3').write_bytes(b'bad sqlite')
+            out = io.StringIO()
+            with patch.dict(os.environ, {'RESEARCH_ROOT':str(root),'HERDR_ML_CONFIG':str(config)}):
+                with contextlib.redirect_stdout(out):
+                    self.assertEqual(m.main(['status','--project','demo']), 0)
+            self.assertIn('legacy\tUNKNOWN', out.getvalue())
+            self.assertIn('corrupt\tUNKNOWN', out.getvalue())
+            self.assertIn('clean\tSUBMITTED', out.getvalue())
