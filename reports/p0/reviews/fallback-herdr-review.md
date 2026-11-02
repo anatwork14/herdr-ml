@@ -1,0 +1,5 @@
+# Independent GPT fallback review — Herdr reconciliation
+
+Reviewed immutable commit `04cf77be37dd52fb3b8bf97fc66763e57554f53c` in a separate detached worktree. The earlier Opus issues involving unmarked workspace collisions and cwd semantics are addressed narrowly under the adapter contract; 14 mocked Herdr tests pass on Python 3.10.21. No live adapter or Herdr session was tested.
+
+**HIGH if integrated:** Per-state-path flock does not serialize two concurrent reconcilers that use different state files or project IDs for the same canonical checkout. Both can inspect an empty inventory and create differently marked workspaces. The reviewer reproduced this using a two-thread mock adapter and a barrier at creation; both operations succeeded and two workspaces resulted. Relevant functions: `_locked` and `reconcile` in `scripts/herdr_reconcile.py`. The bootstrap hold prevents live impact. Required: shared server/checkout coordination or server-side atomic uniqueness, plus a deterministic two-state-path concurrency test. Reviewer reproduction saved as `herdr-duplicate-repro.py`.

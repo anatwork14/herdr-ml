@@ -49,3 +49,19 @@ Environment observations: `HERDR_ENV` unset; Herdr skill forbids inspecting or c
 - Pueue CPU test also covered SIGKILL of an isolated daemon and a restart reporting `Killed`; this does not prove the child tree is dead or that the researchctl registry can recover. A new standalone daemon-worker fingerprint check passed for `29b32a4`, with the same scope limitation.
 - Three focused final Opus requests (ownership, runtime and integrated holds) target the immutable implementation SHA from `29b32a4` and are pending. Review input is exported with `git show`, and no review model is given tools or access to execute code. Results must not be conflated with tests or scientific certification.
 - `actions/python-versions` official `versions-manifest.json`, queried via GitHub API, lists Python 3.10.21 and three Linux x64 artifacts. This checks availability, not workflow execution or artifact integrity.
+
+### Integration-review repairs
+
+- Opus integration review at `29b32a4` identified two HIGH-if-integrated Herdr defects: legacy unmarked workspace duplication and unverified cwd semantics. `9bbc4e5` blocks existing checkout collisions and requires an adapter to verify creation-bound cwd; bootstrap remains blocked.
+- Opus also found a manifest parse/hash time-of-check race; `04cf77be37dd52fb3b8bf97fc66763e57554f53c` reads, hashes and parses the same bytes. Its test mutates the file after the read and proves the parsed argv remains bound to the hashed bytes.
+- The latest integrated candidate `04cf77be37dd52fb3b8bf97fc66763e57554f53c` passes 59 tests on Python 3.10.21 and 3.12.14; logs are preserved. Two focused final Opus re-reviews are pending against this exact SHA.
+
+### Latest independent fallback cycle
+
+- The two focused Opus 5.5 re-review attempts for `04cf77be37dd52fb3b8bf97fc66763e57554f53c` were rejected by the provider's five-hour limit, reset stated as 21:30 Asia/Ho_Chi_Minh. A clean retry for manifest review received the same rejection. Exact requests and sanitized failure records are in `reviews/`; no Opus approval is inferred.
+- An independent GPT reviewer checked the manifest and ownership code at that SHA and found no new CRITICAL/HIGH on the reachable local path; ten ownership and seven registry tests passed. See `reviews/fallback-manifest-review.md`.
+- Another independent GPT reviewer found a HIGH-if-integrated same-checkout race across different Herdr state paths. The orchestrator independently ran `python3.10 reports/p0/reviews/herdr-duplicate-repro.py` and observed two created mock workspaces. The bootstrap hold prevents live impact. Repair and re-review are in progress; see `reviews/fallback-herdr-review.md`.
+- GitHub Actions offline validation passed for PR head `04cf77be37dd52fb3b8bf97fc66763e57554f53c` (`https://github.com/anatwork14/herdr-ml/actions/runs/41454848823/job/125308821740`).
+
+- `5cfd9ed2de6ff362cbb753d112e125b60d2a3880` adds a fixed per-OS-user global coordination lock and capability contract for same-filesystem Herdr clients. Mock concurrency tests pass; cross-user/host/server-side coordination remains unproven and bootstrap stays blocked. Independent fallback re-review of the new commit is pending. Full suite: 63 passed on Python 3.10.21 and 3.12.14.
+- Independent GPT fallback re-review of `5cfd9ed2de6ff362cbb753d112e125b60d2a3880` found no new CRITICAL/HIGH within the stated cooperating same-user/shared-filesystem contract. A two-process mock test with distinct state files and project IDs produced one workspace and one blocked caller; the orchestrator reproduced it. See `reviews/fallback-herdr-rereview.md` and `reviews/herdr-concurrency-recheck.py`. The adapter's ability to verify the contract and any cross-host safety remain BLOCKED.

@@ -1,26 +1,41 @@
 test_kill_after_remote_mutation_then_resume (test_herdr_reconcile.ProcessCrashTests.test_kill_after_remote_mutation_then_resume) ... ok
+test_coordination_path_ignores_environment_overrides (test_herdr_reconcile.ReconciliationTests.test_coordination_path_ignores_environment_overrides) ... ok
 test_crash_after_each_remote_mutation_recovers_without_duplicate (test_herdr_reconcile.ReconciliationTests.test_crash_after_each_remote_mutation_recovers_without_duplicate) ... ok
+test_creation_bound_cwd_capability_required (test_herdr_reconcile.ReconciliationTests.test_creation_bound_cwd_capability_required) ... ok
 test_duplicate_or_wrong_checkout_blocks (test_herdr_reconcile.ReconciliationTests.test_duplicate_or_wrong_checkout_blocks) ... ok
 test_first_repeat_and_deleted_tab (test_herdr_reconcile.ReconciliationTests.test_first_repeat_and_deleted_tab) ... ok
 test_incomplete_state_fails_without_mutation (test_herdr_reconcile.ReconciliationTests.test_incomplete_state_fails_without_mutation) ... ok
 test_initial_state_without_workspace_detects_other_managed_layout (test_herdr_reconcile.ReconciliationTests.test_initial_state_without_workspace_detects_other_managed_layout) ... ok
+test_lazy_inventory_server_change_blocks_before_adoption (test_herdr_reconcile.ReconciliationTests.test_lazy_inventory_server_change_blocks_before_adoption) ... ok
 test_missing_state_does_not_create_duplicate (test_herdr_reconcile.ReconciliationTests.test_missing_state_does_not_create_duplicate) ... ok
 test_new_server_or_reused_id_blocks (test_herdr_reconcile.ReconciliationTests.test_new_server_or_reused_id_blocks) ... ok
 test_reused_tab_id_blocks (test_herdr_reconcile.ReconciliationTests.test_reused_tab_id_blocks) ... ok
+test_state_path_cannot_replace_global_lock (test_herdr_reconcile.ReconciliationTests.test_state_path_cannot_replace_global_lock) ... ok
+test_two_state_paths_same_checkout_create_once (test_herdr_reconcile.ReconciliationTests.test_two_state_paths_same_checkout_create_once) ... ok
 test_uncertain_absent_operation_is_never_retried (test_herdr_reconcile.ReconciliationTests.test_uncertain_absent_operation_is_never_retried) ... ok
+test_unmarked_legacy_workspace_at_checkout_blocks (test_herdr_reconcile.ReconciliationTests.test_unmarked_legacy_workspace_at_checkout_blocks) ... ok
 test_unverifiable_managed_workspace_identifies_operator_action (test_herdr_reconcile.ReconciliationTests.test_unverifiable_managed_workspace_identifies_operator_action) ... ok
+test_unverified_shared_coordination_blocks (test_herdr_reconcile.ReconciliationTests.test_unverified_shared_coordination_blocks) ... ok
 test_explicit_local_queue_is_blocked_but_ledger_local_is_allowed (test_p0_guards.GuardTests.test_explicit_local_queue_is_blocked_but_ledger_local_is_allowed) ... ok
 test_legacy_queued_local_record_cannot_execute (test_p0_guards.GuardTests.test_legacy_queued_local_record_cannot_execute) ... ERROR: Refusing execution: queued or repeated state=QUEUED
 ok
 test_local_diagnostic_allowed (test_p0_guards.GuardTests.test_local_diagnostic_allowed) ... ok
 test_official_and_queued_are_blocked (test_p0_guards.GuardTests.test_official_and_queued_are_blocked) ... ok
 test_ignored_sigchld_is_rejected_without_execution (test_p0_ownership.CancellationTests.test_ignored_sigchld_is_rejected_without_execution) ... ok
+test_invalid_manifest_shapes_are_rejected_before_claim (test_p0_ownership.CancellationTests.test_invalid_manifest_shapes_are_rejected_before_claim) ... ERROR: Invalid submission manifest JSON
+ERROR: Invalid submission manifest project or type
+ERROR: Invalid submission command
+ERROR: Invalid submission command
+ok
+test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmp8s767a37/.runtime/demo/runs/test
+ok
 test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
 test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
 test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sighup_stops_stubborn_descendant) ... ok
 test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
 test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
-test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp4osqs__i/.runtime/demo/runs/test
+test_status_reports_legacy_claim_and_corrupt_registry_unknown (test_p0_ownership.CancellationTests.test_status_reports_legacy_claim_and_corrupt_registry_unknown) ... ok
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp4octe9x_/.runtime/demo/runs/test
 ok
 test_changed_dataset_split_evidence_or_manifest_rejected (test_provenance.SignedProvenanceTests.test_changed_dataset_split_evidence_or_manifest_rejected) ... ok
 test_identical_train_validation_test_content_rejected (test_provenance.SignedProvenanceTests.test_identical_train_validation_test_content_rejected) ... ok
@@ -42,11 +57,11 @@ test_existing_legacy_claim_fails_closed (test_registry_p0.RegistryTests.test_exi
 test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
 test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
 test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
-test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261102T123908Z-e1064c66b130 folder=/tmp/tmp72ywgwzh/research/.runtime/demo/runs/20261102T123908Z-e1064c66b130
-UNKNOWN run=20261102T123908Z-e1064c66b130 exit=0 logs=/tmp/tmp72ywgwzh/research/.runtime/demo/runs/20261102T123908Z-e1064c66b130
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261102T134158Z-a7a1ed70e0fc folder=/tmp/tmpaa64f09c/research/.runtime/demo/runs/20261102T134158Z-a7a1ed70e0fc
+UNKNOWN run=20261102T134158Z-a7a1ed70e0fc exit=0 logs=/tmp/tmpaa64f09c/research/.runtime/demo/runs/20261102T134158Z-a7a1ed70e0fc
 ok
-test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261102T123908Z-cf9a18dcf764 folder=/tmp/tmpex9on5yt/research/.runtime/demo/runs/20261102T123908Z-cf9a18dcf764
-UNKNOWN run=20261102T123908Z-cf9a18dcf764 exit=9 logs=/tmp/tmpex9on5yt/research/.runtime/demo/runs/20261102T123908Z-cf9a18dcf764
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261102T134158Z-c35dd95f28f1 folder=/tmp/tmpurgld09w/research/.runtime/demo/runs/20261102T134158Z-c35dd95f28f1
+UNKNOWN run=20261102T134158Z-c35dd95f28f1 exit=9 logs=/tmp/tmpurgld09w/research/.runtime/demo/runs/20261102T134158Z-c35dd95f28f1
 ok
 test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
 test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
@@ -55,18 +70,18 @@ test_missing_gate_blocks_official_before_submission (test_researchctl.ResearchCt
 ok
 test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
 ok
-test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261102T123909Z-a490ad6044aa folder=/tmp/tmpcq95byyz/research/.runtime/demo/runs/20261102T123909Z-a490ad6044aa
-UNKNOWN run=20261102T123909Z-a490ad6044aa exit=0 logs=/tmp/tmpcq95byyz/research/.runtime/demo/runs/20261102T123909Z-a490ad6044aa
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261102T134158Z-7eb469a5e5d4 folder=/tmp/tmppn8osl_y/research/.runtime/demo/runs/20261102T134158Z-7eb469a5e5d4
+UNKNOWN run=20261102T134158Z-7eb469a5e5d4 exit=0 logs=/tmp/tmppn8osl_y/research/.runtime/demo/runs/20261102T134158Z-7eb469a5e5d4
 ok
 test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
-test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261102T123909Z-f12ba1c0dd35 folder=/tmp/tmp4y6e2crm/research/.runtime/demo/runs/20261102T123909Z-f12ba1c0dd35
-UNKNOWN run=20261102T123909Z-f12ba1c0dd35 exit=0 logs=/tmp/tmp4y6e2crm/research/.runtime/demo/runs/20261102T123909Z-f12ba1c0dd35
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261102T134159Z-60d8156f63cc folder=/tmp/tmpdtl6mxqk/research/.runtime/demo/runs/20261102T134159Z-60d8156f63cc
+UNKNOWN run=20261102T134159Z-60d8156f63cc exit=0 logs=/tmp/tmpdtl6mxqk/research/.runtime/demo/runs/20261102T134159Z-60d8156f63cc
 ERROR: Refusing execution: queued or repeated state=UNKNOWN
 ok
 test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIdentityTests.test_matching_and_changed_interpreter_identity) ... ok
 test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
 
 ----------------------------------------------------------------------
-Ran 53 tests in 10.169s
+Ran 63 tests in 10.921s
 
 OK
