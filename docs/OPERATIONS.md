@@ -24,7 +24,9 @@ python3 scripts/researchctl.py init-run --project fl-iot --mode diagnostic --dat
 python3 scripts/researchctl.py status --project fl-iot
 ~~~
 
-Queued execution is blocked. Before enabling it, capture a fingerprint with `python scripts/runtime_identity.py` and compare the actual daemon-launched worker using `python scripts/runtime_identity.py --expect <fingerprint.json>`. A fingerprint alone cannot prove which interpreter a daemon uses: verify the worker inside the real daemon and preserve its output. Do not treat matching version strings as sufficient. The fingerprint covers the executable and installed package versions, not all package contents or scientific dependencies. Use fully specified argv.
+Queued execution is blocked. For diagnostic comparison, from the intended working directory run `/absolute/path/to/python3 -I scripts/runtime_identity.py > fingerprint.json`, using the exact interpreter and flags intended for the worker, and inspect the recorded executable and prefix before trusting the baseline. Compare with `/absolute/path/to/python3 -I scripts/runtime_identity.py --expect fingerprint.json` under the intended worker environment and working directory. Substitute the worker's actual flags for `-I` if different. The record includes filesystem paths, so treat it as potentially sensitive. It does not emit environment variable values.
+
+This standalone fingerprint is not bound to any actual run and is not a security attestation or tamper-evident record. It includes interpreter flags, import search paths, build details and, on Linux, detected mapped libpython files; an empty libpython list only means none were detected. It does not prove daemon/job identity, capture package contents, all startup hooks, arbitrary native libraries, or the effects of environment variables. A matching fingerprint does not authorize queue execution or scientific claims.
 
 ## Host monitoring and troubleshooting
 - herdr status server, herdr workspace list, herdr pane list, herdr agent list
