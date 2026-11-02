@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -71,23 +72,58 @@ class SignedProvenanceTests(unittest.TestCase):
 
     def test_symlink_escape_and_missing_required_role_rejected(self):
         target = self.bundle / self.artifacts['test_split']['path']
+        outside = self.root / 'outside'
+        outside.write_bytes(target.read_bytes())
         target.unlink()
-        target.symlink_to(self.root / 'outside')
-        with self.assertRaises(p.ProvenanceError): self.verify()
+        target.symlink_to(outside)
+        with self.assertRaisesRegex(p.ProvenanceError, 'cannot safely read artifact'): self.verify()
         target.unlink()
         del self.manifest['artifacts']['test_split']
         self.write_signed()
-        with self.assertRaises(p.ProvenanceError): self.verify()
+        with self.assertRaisesRegex(p.ProvenanceError, 'missing or unsupported artifact roles'): self.verify()
+
+    def test_intermediate_symlink_rejected_even_with_correct_target(self):
+        target = self.bundle / self.artifacts['test_split']['path']
+        directory = self.root / 'outside_dir'
+        directory.mkdir()
+        (directory / 'split').write_bytes(target.read_bytes())
+        (self.bundle / 'alias').symlink_to(directory, target_is_directory=True)
+        self.manifest['artifacts']['test_split']['path'] = 'alias/split'
+        self.write_signed()
+        with self.assertRaisesRegex(p.ProvenanceError, 'cannot safely read artifact'): self.verify()
 
     def test_signed_path_traversal_and_duplicate_keys_rejected(self):
+        outside = self.root / 'outside'
+        outside.write_bytes((self.bundle / self.artifacts['test_split']['path']).read_bytes())
         self.manifest['artifacts']['test_split']['path'] = '../outside'
         self.write_signed()
-        with self.assertRaises(p.ProvenanceError): self.verify()
-        self.path.write_text('{"schema_version":1,"schema_version":1}')
-        signature = Path(str(self.path) + '.sig')
-        signature.unlink()
-        subprocess.run(['ssh-keygen', '-Y', 'sign', '-q', '-n', 'herdr-ml-official-v1', '-f', str(self.key), str(self.path)], check=True)
-        with self.assertRaises(p.ProvenanceError): self.verify()
+        with self.assertRaisesRegex(p.ProvenanceError, 'artifact path must be relative and normalized'): self.verify()
+        self.manifest['artifacts']['test_split']['path'] = 'test_split.dat'
+        canonical = json.dumps(self.manifest, sort_keys=True, separators=(',', ':'))
+        self.sign_bytes(('{"project":"demo",' + canonical[1:]).encode())
+        with self.assertRaisesRegex(p.ProvenanceError, 'duplicate JSON key'): self.verify()
+
+    def test_manifest_symlink_rejected_with_otherwise_valid_signature(self):
+        self.assertEqual(self.verify()['project'], 'demo')
+        actual = self.bundle / 'real-manifest.json'
+        self.path.rename(actual)
+        self.path.symlink_to(actual)
+        with self.assertRaisesRegex(p.ProvenanceError, 'unable to verify signed manifest'): self.verify()
+
+    def test_manifest_fifo_rejected_without_blocking(self):
+        self.path.unlink()
+        os.mkfifo(self.path)
+        code = ("import importlib.util,sys; "
+                "spec=importlib.util.spec_from_file_location('p',sys.argv[1]); "
+                "p=importlib.util.module_from_spec(spec); spec.loader.exec_module(p); "
+                "p.verify_bundle(sys.argv[2],sys.argv[3],sys.argv[4],'reviewer')")
+        try:
+            result = subprocess.run([sys.executable, '-c', code, str(MODULE), str(self.path),
+                str(self.path) + '.sig', str(self.allowed)], capture_output=True, text=True, timeout=2)
+        except subprocess.TimeoutExpired:
+            self.fail('FIFO manifest blocked verification')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('manifest must be a regular file', result.stderr)
 
     def test_unsigned_environment_or_config_changes_rejected(self):
         for role in ('source', 'environment', 'dataset_manifest', 'train_split', 'validation_split', 'config', 'protocol', 'baseline'):

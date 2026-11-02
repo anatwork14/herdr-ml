@@ -84,7 +84,9 @@ def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
         raise ProvenanceError('invalid trusted principal')
     try:
         manifest_path = Path(manifest_path)
-        with manifest_path.open('rb') as handle:
+        with os.fdopen(os.open(manifest_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ProvenanceError('manifest must be a regular file')
             data = handle.read(1024 * 1024 + 1)
         if len(data) > 1024 * 1024:
             raise ProvenanceError('manifest too large')
