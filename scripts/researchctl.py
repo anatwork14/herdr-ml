@@ -31,6 +31,14 @@ def now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
 
+def sha_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def load_json(path):
     with Path(path).open(encoding="utf-8") as handle:
         return json.load(handle)
@@ -155,7 +163,7 @@ def cmd_status(args):
 
 
 def cmd_init_run(args):
-    _, checkout, runtime = select_project(args.project)
+    project, checkout, runtime = select_project(args.project)
     argv = list(args.command)
     if argv and argv[0] == "--":
         argv.pop(0)
@@ -169,6 +177,8 @@ def cmd_init_run(args):
             raise ResearchError("Official run BLOCKED: " + "; ".join(gate["problems"]))
         if not args.approve_official:
             raise ResearchError("Official run requires --approve-official")
+    if args.queue and args.queue != project.get("gpu_group", "gpu0"):
+        raise ResearchError("Queue must match project GPU group (shared across all projects)")
     if args.queue and not args.approve_cost:
         raise ResearchError("Queued execution requires --approve-cost")
     git = git_metadata(checkout)
@@ -190,7 +200,7 @@ def cmd_init_run(args):
     }
     manifest = folder / "submission.json"
     atomic_json(manifest, submission)
-    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    digest = sha_file(manifest)
     (folder / "submission.sha256").write_text(digest + "\n", encoding="utf-8")
     atomic_json(folder / "status.json", {"state": "QUEUED" if args.queue else "SUBMITTED",
                                          "updated_at": now()})
@@ -201,6 +211,10 @@ def cmd_init_run(args):
             atomic_json(folder / "status.json", {"state": "SUBMISSION_FAILED",
                                                  "updated_at": now(), "error": "pueue missing"})
             raise ResearchError(f"Run {run_id}: Pueue not installed")
+        # Pueue workers may not inherit the submitter's custom project root/config.
+        cmd = ["env", "RESEARCH_ROOT=" + str(runtime.parent.parent),
+               "HERDR_ML_CONFIG=" + str(Path(os.getenv("HERDR_ML_CONFIG",
+                                                     str(DEFAULT_CONFIG))).expanduser().resolve()), *cmd]
         launch = subprocess.run(["pueue", "add", "-g", args.queue, "--", shlex.join(cmd)],
                                 capture_output=True, text=True, check=False)
         if launch.returncode:
@@ -219,13 +233,20 @@ def execute(project_id, run_id):
     folder = runtime / "runs" / run_id
     submission = load_json(folder / "submission.json")
     expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
-    actual = hashlib.sha256((folder / "submission.json").read_bytes()).hexdigest()
+    actual = sha_file(folder / "submission.json")
     if expected != actual or submission.get("project") != project_id:
         raise ResearchError("Submission manifest integrity mismatch")
     status_file = folder / "status.json"
     state = load_json(status_file).get("state")
     if state not in ("QUEUED", "SUBMITTED"):
         raise ResearchError(f"Refusing repeated execution: state={state}")
+    if submission.get("mode") == "official":
+        gate = gate_report(checkout, submission.get("gate_manifest"))
+        current_git = git_metadata(checkout)
+        if not gate["valid"] or current_git != submission.get("git") or current_git.get("dirty") is not False:
+            atomic_json(status_file, {"state": "BLOCKED", "updated_at": now(),
+                                      "error": "Gate invalid or source checkout changed since submission"})
+            raise ResearchError("Official job BLOCKED: gates or pinned Git source changed")
     atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
     child = None
     interrupted = False
@@ -249,8 +270,8 @@ def execute(project_id, run_id):
                 code = 127
         end_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
         result = {"state": end_state, "exit_code": code, "completed_at": now(),
-                  "stdout_sha256": hashlib.sha256((folder / "stdout.log").read_bytes()).hexdigest(),
-                  "stderr_sha256": hashlib.sha256((folder / "stderr.log").read_bytes()).hexdigest()}
+                  "stdout_sha256": sha_file(folder / "stdout.log"),
+                  "stderr_sha256": sha_file(folder / "stderr.log")}
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
