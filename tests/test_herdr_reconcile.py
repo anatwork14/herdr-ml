@@ -94,6 +94,19 @@ class ReconciliationTests(unittest.TestCase):
         with self.assertRaises(m.ReconcileBlocked): self.run_once()
         self.assertEqual(self.api.ws[0]['id'], result['workspace_id'])
 
+    def test_unverifiable_managed_workspace_identifies_operator_action(self):
+        other_label = m.marker('workspace', 'a' * 32, 'other')
+        self.api.ws.append({'id': 'w-stale', 'label': other_label,
+                            'cwd': str(self.root / 'missing')})
+        with self.assertRaises(m.ReconcileBlocked) as caught:
+            self.run_once()
+        message = str(caught.exception)
+        self.assertIn('w-stale', message)
+        self.assertIn(other_label, message)
+        self.assertIn('operator reconciliation required', message)
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.api.calls, [])
+
     def test_reused_tab_id_blocks(self):
         result = self.run_once()
         tabs = self.api.ts[result['workspace_id']]

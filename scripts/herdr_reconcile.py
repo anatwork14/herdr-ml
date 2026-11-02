@@ -111,7 +111,10 @@ def _reject_untracked_workspace(objects, label, checkout):
         try:
             existing_checkout = _canonical(obj['cwd'])
         except (KeyError, OSError, TypeError, ValueError) as exc:
-            raise ReconcileBlocked('Managed workspace has unverifiable checkout') from exc
+            raise ReconcileBlocked(
+                f"Managed workspace id={obj.get('id')!r} label={object_label!r} "
+                'has unverifiable checkout; operator reconciliation required'
+            ) from exc
         if match.group(1) == label or existing_checkout == checkout:
             raise ReconcileBlocked('Managed workspace exists but local ownership state is missing')
 
