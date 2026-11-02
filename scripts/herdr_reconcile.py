@@ -11,6 +11,11 @@ Adapter contract (a future adapter MUST obtain these values from the same server
   creation_cwd_verified() -> True only when adapter can establish immutable,
       server-provided creation-bound cwd for all workspaces and tabs; live pane
       cwd, caller assertions and unverifiable inferred paths are insufficient
+  atomic_parent_guard_verified() -> True only when all parent replacement and
+      tab mutations are excluded across inventory AND local durable adoption,
+      including server/session replacement and lease loss; no timeout-only lock
+  parent_guard(server, workspace_id, workspace_label, cwd) -> context manager
+      that enforces the above until after local adoption is fsynced
   workspaces() -> iterable of {id, label, cwd}
   tabs(workspace_id) -> iterable of {id, label, cwd}
   create_workspace(label, cwd) -> None
@@ -155,6 +160,30 @@ def _verify_parent_workspace(adapter, record):
         raise ReconcileBlocked('Workspace missing, moved, or ID reused')
 
 
+@contextlib.contextmanager
+def _parent_guard(adapter, record):
+    """Adapter must provide a server-enforced guard, not a local assertion."""
+    try:
+        guard = adapter.parent_guard(record['server'], record['workspace_id'],
+                                     marker('workspace', record['token'], record['label']),
+                                     record['checkout'])
+    except (AttributeError, NotImplementedError) as exc:
+        raise ReconcileBlocked('Atomic parent guard unavailable') from exc
+    suppressed = None
+    with guard:
+        try:
+            _check_identity(adapter, record)
+            _verify_parent_workspace(adapter, record)
+            yield
+        except BaseException as exc:
+            # A buggy context manager may suppress errors in __exit__; never
+            # allow that to turn an uncertain recovery into apparent success.
+            suppressed = exc
+            raise
+    if suppressed is not None:
+        raise suppressed
+
+
 def _complete_intent(adapter, record, state_path):
     """Resolve a persisted intent without ever blindly repeating a mutation."""
     _check_identity(adapter, record)
@@ -225,6 +254,14 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
             raise ReconcileBlocked('Creation-bound cwd capability unavailable') from exc
         if cwd_verified is not True:
             raise ReconcileBlocked('Creation-bound cwd capability unverified')
+        try:
+            atomic_verified = adapter.atomic_parent_guard_verified()
+        except (AttributeError, NotImplementedError) as exc:
+            raise ReconcileBlocked('Atomic parent guard capability unavailable') from exc
+        if atomic_verified is not True:
+            raise ReconcileBlocked('Atomic parent guard capability unverified')
+        if not callable(getattr(adapter, 'parent_guard', None)):
+            raise ReconcileBlocked('Atomic parent guard unavailable')
         identity = adapter.identity()
         if not isinstance(identity, str) or not identity:
             raise ReconcileBlocked('Server/session incarnation identity is unavailable')
@@ -249,7 +286,11 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
                       'workspace_id': None, 'tabs': {}, 'pending': None}
             _write(path, record)
         if record.get('pending'):
-            _complete_intent(adapter, record, path)
+            if record['pending'].get('kind') == 'tab':
+                with _parent_guard(adapter, record):
+                    _complete_intent(adapter, record, path)
+            else:
+                _complete_intent(adapter, record, path)
         _check_identity(adapter, record)
         workspace_label = marker('workspace', record['token'], label)
         current_workspaces = list(adapter.workspaces())
@@ -262,21 +303,22 @@ def reconcile(adapter, state_path, project_id, label, checkout, tabs):
             _intent_then_create(adapter, record, path, 'workspace', workspace_label)
         elif observed != record['workspace_id']:
             raise ReconcileBlocked('Workspace missing, moved, or ID reused')
-        for tab_name in tabs:
-            _check_identity(adapter, record)
-            # Marker uses a digest rather than raw arbitrary input for stable uniqueness.
-            tab_token = hashlib.sha256(tab_name.encode('utf-8')).hexdigest()[:16]
-            tab_label = marker('tab', record['token'] + '-' + tab_token, tab_name)
-            current_tabs = list(adapter.tabs(record['workspace_id']))
-            _check_identity(adapter, record)
-            observed = _one(current_tabs, tab_label, checkout)
-            old = record['tabs'].get(tab_name)
-            if old is not None and any(obj.get('id') == old and obj.get('label') != tab_label for obj in current_tabs):
-                raise ReconcileBlocked('Tab ID reused for an unrelated object')
-            if observed:
-                if old is None or old != observed:
-                    raise ReconcileBlocked('Unrecorded or replaced tab marker')
-            else:
-                _intent_then_create(adapter, record, path, 'tab', tab_label, tab_name)
+        with _parent_guard(adapter, record):
+            for tab_name in tabs:
+                _check_identity(adapter, record)
+                # Marker uses a digest rather than raw arbitrary input for stable uniqueness.
+                tab_token = hashlib.sha256(tab_name.encode('utf-8')).hexdigest()[:16]
+                tab_label = marker('tab', record['token'] + '-' + tab_token, tab_name)
+                current_tabs = list(adapter.tabs(record['workspace_id']))
+                _check_identity(adapter, record)
+                observed = _one(current_tabs, tab_label, checkout)
+                old = record['tabs'].get(tab_name)
+                if old is not None and any(obj.get('id') == old and obj.get('label') != tab_label for obj in current_tabs):
+                    raise ReconcileBlocked('Tab ID reused for an unrelated object')
+                if observed:
+                    if old is None or old != observed:
+                        raise ReconcileBlocked('Unrecorded or replaced tab marker')
+                else:
+                    _intent_then_create(adapter, record, path, 'tab', tab_label, tab_name)
         _check_identity(adapter, record)
         return {'workspace_id': record['workspace_id'], 'tabs': dict(record['tabs'])}

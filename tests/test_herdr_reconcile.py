@@ -25,6 +25,9 @@ class FakeHerdr:
     def identity(self): return self.server
     def creation_cwd_verified(self): return True
     def coordination_verified(self): return True
+    def atomic_parent_guard_verified(self): return True
+    def parent_guard(self, *args):
+        return __import__('contextlib').nullcontext()
     def workspaces(self): return list(self.ws)
     def tabs(self, workspace): return list(self.ts[workspace])
     def _id(self):
@@ -171,6 +174,71 @@ class ReconciliationTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(first, self.root / '.herdr-ml-reconciliation-locks' / 'global')
 
+    def test_unverified_atomic_parent_guard_blocks_before_mutations(self):
+        self.api.atomic_parent_guard_verified = lambda: False
+        with self.assertRaises(m.ReconcileBlocked):
+            self.run_once()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.api.calls, [])
+
+    def test_missing_atomic_parent_primitive_blocks(self):
+        self.api.parent_guard = None
+        with self.assertRaises(m.ReconcileBlocked):
+            self.run_once()
+        self.assertFalse(self.path.exists())
+        self.assertEqual(self.api.calls, [])
+
+    def test_guard_cannot_suppress_reconciliation_errors(self):
+        import contextlib
+        self.api.fail_after = 2
+        with self.assertRaises(TimeoutError):
+            self.run_once()
+        self.api.fail_after = None
+        before = json.loads(self.path.read_text())
+        @contextlib.contextmanager
+        def suppressing_guard(*_args):
+            try:
+                yield
+            except m.ReconcileBlocked:
+                pass
+        def fail_tabs(_workspace):
+            raise m.ReconcileBlocked('unavailable inventory')
+        self.api.parent_guard = suppressing_guard
+        self.api.tabs = fail_tabs
+        with self.assertRaises(m.ReconcileBlocked):
+            self.run_once()
+        self.assertEqual(json.loads(self.path.read_text()), before)
+
+    def test_guard_covers_parent_validation_inventory_and_persisted_adoption(self):
+        import contextlib
+        self.api.fail_after = 2
+        with self.assertRaises(TimeoutError):
+            self.run_once()
+        self.api.fail_after = None
+        active = []
+        original_tabs = self.api.tabs
+        original_write = m._write
+        @contextlib.contextmanager
+        def guard(*_args):
+            active.append(True)
+            try:
+                yield
+            finally:
+                active.pop()
+        def tabs(workspace):
+            self.assertTrue(active, 'tab inventory must be protected')
+            return original_tabs(workspace)
+        def write(path, state):
+            if state.get('pending') is None and state.get('tabs'):
+                self.assertTrue(active, 'tab adoption must be durable while guarded')
+            return original_write(path, state)
+        self.api.parent_guard = guard
+        self.api.tabs = tabs
+        with mock.patch.object(m, '_write', side_effect=write):
+            result = m.reconcile(self.api, self.path, 'project', 'Project', self.checkout, ['Control'])
+        self.assertTrue(result['tabs']['Control'])
+        self.assertFalse(active)
+
     def test_unverified_shared_coordination_blocks(self):
         self.api.coordination_verified = lambda: False
         with self.assertRaises(m.ReconcileBlocked): self.run_once()
@@ -268,6 +336,8 @@ class ProcessCrashTests(unittest.TestCase):
             def identity(self): return 'server-1'
             def creation_cwd_verified(self): return True
             def coordination_verified(self): return True
+            def atomic_parent_guard_verified(self): return True
+            def parent_guard(self, *args): return __import__('contextlib').nullcontext()
             def workspaces(self): return json.loads(self.shared['workspaces'])
             def tabs(self, wid): return json.loads(self.shared['tabs'])[wid]
             def _create(self, kind, label, cwd, wid=None):
