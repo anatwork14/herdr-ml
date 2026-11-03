@@ -125,6 +125,40 @@ class SignedProvenanceTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('manifest must be a regular file', result.stderr)
 
+    @unittest.skipUnless(hasattr(os, 'O_PATH') and Path('/dev/null').exists(), 'requires Linux O_PATH and /dev/null')
+    def test_device_manifest_is_never_opened_for_read(self):
+        from unittest.mock import patch
+        calls = []
+        original_open = os.open
+        def record_open(path, flags, *args, **kwargs):
+            if str(path) == '/dev/null':
+                calls.append(flags)
+            return original_open(path, flags, *args, **kwargs)
+        with patch.object(p.os, 'open', side_effect=record_open):
+            with self.assertRaises(p.ProvenanceError):
+                p.verify_bundle('/dev/null', 'unused', 'unused', 'reviewer')
+        self.assertTrue(calls)
+        self.assertTrue(all(flags & os.O_PATH for flags in calls), calls)
+
+    @unittest.skipUnless(hasattr(os, 'O_PATH'), 'requires Linux O_PATH')
+    def test_fifo_artifact_is_never_opened_for_read(self):
+        from unittest.mock import patch
+        name = self.artifacts['test_split']['path']
+        target = self.bundle / name
+        target.unlink()
+        os.mkfifo(target)
+        calls = []
+        original_open = os.open
+        def record_open(path, flags, *args, **kwargs):
+            if str(path) == name:
+                calls.append(flags)
+            return original_open(path, flags, *args, **kwargs)
+        with patch.object(p.os, 'open', side_effect=record_open):
+            with self.assertRaises(p.ProvenanceError):
+                p._hash_relative(self.bundle, name)
+        self.assertTrue(calls)
+        self.assertTrue(all(flags & os.O_PATH for flags in calls), calls)
+
     def test_unsigned_environment_or_config_changes_rejected(self):
         for role in ('source', 'environment', 'dataset_manifest', 'train_split', 'validation_split', 'config', 'protocol', 'baseline'):
             with self.subTest(role=role):

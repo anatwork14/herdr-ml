@@ -6,6 +6,8 @@ principal. Verification does not lock artifacts or prove scientific validity.
 Official execution remains disabled until a trusted execution boundary binds
 verified immutable artifacts to the actual process and environment.
 """
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -37,6 +39,41 @@ def _reject_constant(_value):
     raise ProvenanceError('nonstandard JSON constant')
 
 
+def _identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+@contextlib.contextmanager
+def _pinned_regular(path, *, dir_fd=None, kind):
+    """Pin and classify without read-opening a swapped FIFO, device or link."""
+    if not hasattr(os, 'O_PATH'):
+        raise ProvenanceError('Linux O_PATH support required')
+    handle = os.open(path, os.O_PATH | os.O_NOFOLLOW, dir_fd=dir_fd)
+    try:
+        pinned = os.fstat(handle)
+        # Match the existing fail-closed path handling for a symlink.
+        if stat.S_ISLNK(pinned.st_mode):
+            raise OSError(errno.ELOOP, 'symlink not allowed')
+        if not stat.S_ISREG(pinned.st_mode):
+            raise ProvenanceError(kind + ' must be a regular file')
+        fd = os.open('/proc/self/fd/%d' % handle, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if _identity(pinned) != _identity(before):
+                raise ProvenanceError(kind + ' changed before read')
+            with os.fdopen(fd, 'rb') as stream:
+                fd = None
+                yield stream
+                if _identity(before) != _identity(os.fstat(stream.fileno())):
+                    raise ProvenanceError(kind + ' changed during read')
+        finally:
+            if fd is not None:
+                os.close(fd)
+    finally:
+        os.close(handle)
+
+
 def _hash_relative(root, name):
     if not isinstance(name, str) or not name or '\\' in name or '\x00' in name:
         raise ProvenanceError('invalid artifact path')
@@ -44,32 +81,20 @@ def _hash_relative(root, name):
     if path.is_absolute() or any(part in ('', '.', '..') for part in name.split('/')):
         raise ProvenanceError('artifact path must be relative and normalized')
     directory = None
-    file_fd = None
     try:
         directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         for component in path.parts[:-1]:
             next_dir = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
             os.close(directory)
             directory = next_dir
-        file_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-        before = os.fstat(file_fd)
-        if not stat.S_ISREG(before.st_mode):
-            raise ProvenanceError('artifact must be a regular file')
         digest = hashlib.sha256()
-        with os.fdopen(file_fd, 'rb') as stream:
-            file_fd = None
+        with _pinned_regular(path.name, dir_fd=directory, kind='artifact') as stream:
             for block in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(block)
-            after = os.fstat(stream.fileno())
-        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
-                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
-            raise ProvenanceError('artifact changed during verification')
         return digest.hexdigest()
     except OSError as exc:
         raise ProvenanceError('cannot safely read artifact') from exc
     finally:
-        if file_fd is not None:
-            os.close(file_fd)
         if directory is not None:
             os.close(directory)
 
@@ -84,9 +109,7 @@ def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
         raise ProvenanceError('invalid trusted principal')
     try:
         manifest_path = Path(manifest_path)
-        with os.fdopen(os.open(manifest_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as handle:
-            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                raise ProvenanceError('manifest must be a regular file')
+        with _pinned_regular(manifest_path, kind='manifest') as handle:
             data = handle.read(1024 * 1024 + 1)
         if len(data) > 1024 * 1024:
             raise ProvenanceError('manifest too large')
