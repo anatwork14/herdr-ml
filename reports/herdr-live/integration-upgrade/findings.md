@@ -23,3 +23,14 @@ Herdr 0.9.5. Pane `w5:p2` verified (`HERDR_ENV=1`). Code at `3bc21e1`.
 
 ## Gate status
 - CORE_RECOVERY_READY stays OPEN (PENDING). Native restoration with a current integration is not demonstrated.
+
+## Decision (Option 2)
+- No credential link, copy or reuse. No login performed. No install. No test agent. Production v9 hooks unchanged (`sha256sum -c` OK at this check).
+- Isolated authentication procedure documented, not run: `isolated-auth-procedure.md`.
+- CORE_RECOVERY_READY = PENDING; Manual Core release = BLOCKED.
+
+## Restoration limitations, by category
+- Clean restart: tested. Clean `server stop` and start of a disposable named session with v9 hooks, cycle 2 (`cycle2/`). Agent came back idle with the same session ID and recalled the token. Not tested: up-to-date integration.
+- Explicit Claude `--resume`: tested. Round 2 (`recovery/`): operator passed `--resume <id>` to `agent start` after a clean exit. Recall passed. This is manual and is not restoration.
+- Herdr-native restoration: partially observed. Cycle 2 restored without an operator `--resume`, but the relaunch mechanism was not captured, the integration was outdated (v9 < v11), and `resume_argv` was absent. Whether this went through the native `session_ref` path is unknown. Not verified as supported.
+- Server-crash recovery: NOT tested. Only clean `server stop` was run. A crash or kill of the named server has no evidence.
