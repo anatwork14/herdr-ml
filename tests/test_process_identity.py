@@ -1,5 +1,6 @@
 """Read-only process identity is evidence, never permission to reclaim."""
 import importlib.util
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -16,8 +17,12 @@ class IdentityTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / 'sys/kernel/random').mkdir(parents=True)
-        (self.root / 'sys/kernel/random/boot_id').write_text('boot-a\n')
-        (self.root / '42').mkdir()
+        (self.root / 'sys/kernel/random/boot_id').write_text('11111111-1111-4111-8111-111111111111\n')
+        (self.root / '42/ns').mkdir(parents=True)
+        (self.root / 'self/ns').mkdir(parents=True)
+        for who in ('self', '42'):
+            (self.root / who / 'ns/pid').symlink_to('pid:[100]')
+            (self.root / who / 'ns/mnt').symlink_to('mnt:[200]')
         self.write_stat('S', '123')
 
     def write_stat(self, state, start):
@@ -26,7 +31,7 @@ class IdentityTests(unittest.TestCase):
         (self.root / '42/stat').write_text('42 (name with ) spaces) ' + ' '.join(fields))
 
     def observe(self, **kwargs):
-        identity = {'pid': 42, 'boot': 'boot-a', 'start_ticks': '123'}
+        identity = {'pid': 42, 'boot': '11111111-1111-4111-8111-111111111111', 'start_ticks': '123', 'pid_namespace': 'pid:[100]', 'mount_namespace': 'mnt:[200]'}
         identity.update(kwargs)
         return m.observe_process(identity, 'host-a', proc_root=self.root, current_host='host-a')
 
@@ -38,7 +43,7 @@ class IdentityTests(unittest.TestCase):
     def test_pid_reuse_and_boot_change_are_never_a_match(self):
         self.write_stat('S', '124')
         self.assertEqual(self.observe()['observation'], 'IDENTITY_MISMATCH')
-        (self.root / 'sys/kernel/random/boot_id').write_text('boot-b')
+        (self.root / 'sys/kernel/random/boot_id').write_text('22222222-2222-4222-8222-222222222222')
         self.assertEqual(self.observe()['observation'], 'IDENTITY_MISMATCH')
 
     def test_absent_pid_is_only_not_visible(self):
@@ -53,6 +58,17 @@ class IdentityTests(unittest.TestCase):
         (self.root / '42/stat').write_text('malformed')
         self.assertEqual(self.observe()['observation'], 'UNKNOWN')
 
+    def test_malformed_values_and_unrecorded_namespaces_are_unknown(self):
+        for values in ({'boot': 'malformed'}, {'boot': 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'},
+                       {'start_ticks': '0123'}, {'start_ticks': str(2**64)},
+                       {'pid_namespace': None}, {'mount_namespace': None},
+                       {'pid_namespace': 'pid:[0100]'}, {'mount_namespace': 'mnt:[201]'}):
+            with self.subTest(values=values):
+                self.assertEqual(self.observe(**values)['observation'], 'UNKNOWN')
+        (self.root / '42/ns/pid').unlink()
+        (self.root / '42/ns/pid').symlink_to('pid:[101]')
+        self.assertEqual(self.observe()['observation'], 'UNKNOWN')
+
     def test_live_current_process_matches(self):
         import os, socket
         root = Path('/proc')
@@ -61,5 +77,5 @@ class IdentityTests(unittest.TestCase):
         text = (root / 'self/stat').read_text()
         start = text[text.rfind(')') + 2:].split()[19]
         boot = (root / 'sys/kernel/random/boot_id').read_text().strip()
-        observed = m.observe_process({'pid': os.getpid(), 'boot': boot, 'start_ticks': start}, socket.gethostname())
+        observed = m.observe_process({'pid': os.getpid(), 'boot': boot, 'start_ticks': start, 'pid_namespace': os.readlink('/proc/self/ns/pid'), 'mount_namespace': os.readlink('/proc/self/ns/mnt')}, socket.gethostname())
         self.assertEqual(observed['observation'], 'MATCH')

@@ -193,7 +193,9 @@ def cmd_reconcile(args):
     if entry is not None:
         host = entry.get("owner_host")
         owner = {"pid": entry.get("owner_pid"), "boot": entry.get("owner_boot"),
-                 "start_ticks": entry.get("owner_start")}
+                 "start_ticks": entry.get("owner_start"),
+                 "pid_namespace": entry.get("owner_pid_namespace"),
+                 "mount_namespace": entry.get("owner_mount_namespace")}
         result["identity_observations"] = {
             "owner": process_identity.observe_process(owner, host),
             "child": process_identity.observe_process(entry.get("child"), host),

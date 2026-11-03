@@ -29,6 +29,26 @@ class RegistryTests(unittest.TestCase):
     def claim(self):
         return registry.claim(self.folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
 
+    def test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown(self):
+        import os
+        token = self.claim()
+        owner = registry.inspect(self.folder)
+        self.assertEqual(owner['owner_pid_namespace'], os.readlink('/proc/self/ns/pid'))
+        self.assertEqual(owner['owner_mount_namespace'], os.readlink('/proc/self/ns/mnt'))
+        registry.advance(self.folder, token, 'CLAIMED', 'DISPATCHING')
+        registry.record_child(self.folder, token, os.getpid())
+        child = registry.inspect(self.folder)['child']
+        self.assertEqual(child['pid_namespace'], os.readlink('/proc/self/ns/pid'))
+        self.assertEqual(child['mount_namespace'], os.readlink('/proc/self/ns/mnt'))
+        db = registry._connect(self.folder)
+        try:
+            db.execute('DELETE FROM process_namespaces')
+        finally:
+            db.close()
+        legacy = registry.inspect(self.folder)
+        self.assertIsNone(legacy['owner_pid_namespace'])
+        self.assertIsNone(legacy['child']['pid_namespace'])
+
     def test_twenty_workers_one_claim(self):
         start = multiprocessing.Event()
         queue = multiprocessing.Queue()

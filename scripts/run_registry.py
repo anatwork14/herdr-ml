@@ -29,6 +29,9 @@ def _connect(folder):
     db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
         id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
         boot TEXT, start_ticks TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS process_namespaces (
+        role TEXT PRIMARY KEY CHECK (role IN ('owner','child')),
+        pid_namespace TEXT, mount_namespace TEXT)''')
     db.execute('''CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         owner TEXT, state TEXT NOT NULL, detail TEXT)''')
@@ -43,6 +46,15 @@ def _identity():
     except (OSError, IndexError):
         boot, start = None, None
     return boot, start
+
+
+def _namespaces(pid):
+    """Capture procfs namespace identity; missing information is never proof."""
+    try:
+        return (os.readlink('/proc/%d/ns/pid' % pid),
+                os.readlink('/proc/%d/ns/mnt' % pid))
+    except OSError:
+        return None, None
 
 
 def claim(folder, run_id, project, digest, initial_state):
@@ -71,6 +83,8 @@ def claim(folder, run_id, project, digest, initial_state):
         db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?,?,?,?,?)',
                    (run_id, project, digest, 'CLAIMED', token, os.getpid(),
                     socket.gethostname(), boot, start, None, None))
+        pid_ns, mount_ns = _namespaces(os.getpid())
+        db.execute("INSERT INTO process_namespaces VALUES ('owner',?,?)", (pid_ns, mount_ns))
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
                    (token, 'CLAIMED', 'Atomic one-time owner acquisition'))
         db.execute('COMMIT')
@@ -103,6 +117,8 @@ def record_child(folder, token, pid):
         if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND state='DISPATCHING'", (token,)).fetchone():
             raise RegistryError('Stale owner or illegal child registration')
         db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        pid_ns, mount_ns = _namespaces(pid)
+        db.execute("INSERT INTO process_namespaces VALUES ('child',?,?)", (pid_ns, mount_ns))
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
                    (token, 'CHILD_IDENTIFIED', json.dumps({'pid': pid, 'boot': boot, 'start_ticks': start})))
         db.execute('COMMIT')
@@ -169,8 +185,15 @@ def inspect(folder):
         result = dict(zip(fields, row))
         if result['result'] is not None:
             result['result'] = json.loads(result['result'])
+        namespaces = {role: (pid_ns, mount_ns) for role, pid_ns, mount_ns in
+                      db.execute('SELECT role,pid_namespace,mount_namespace FROM process_namespaces')}
+        owner_ns = namespaces.get('owner', (None, None))
+        result['owner_pid_namespace'], result['owner_mount_namespace'] = owner_ns
         child = db.execute('SELECT pid,boot,start_ticks FROM child_identity WHERE id=1').fetchone()
         result['child'] = dict(zip(('pid','boot','start_ticks'), child)) if child else None
+        if result['child'] is not None:
+            child_ns = namespaces.get('child', (None, None))
+            result['child']['pid_namespace'], result['child']['mount_namespace'] = child_ns
         result['events'] = [dict(zip(('seq','at','state','detail'), item)) for item in db.execute('SELECT seq,at,state,detail FROM events ORDER BY seq')]
         return result
     finally:
