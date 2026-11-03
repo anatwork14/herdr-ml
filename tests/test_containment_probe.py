@@ -29,6 +29,8 @@ class ContainmentProbeTests(unittest.TestCase):
 
     @unittest.skipUnless(sys.platform.startswith('linux') and hasattr(os, 'pidfd_open') and hasattr(signal, 'pidfd_send_signal') and hasattr(os, 'waitid') and hasattr(os, 'WNOWAIT'), 'Linux pidfd and waitid(WNOWAIT) required')
     def test_detached_descendant_survives_original_process_group(self):
+        if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+            self.skipTest('default SIGCHLD disposition required to pin the leader')
         # Probe pidfd support on this process only; no foreign numeric PID is used.
         try:
             own_fd = os.pidfd_open(os.getpid())
