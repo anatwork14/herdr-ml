@@ -1,0 +1,12 @@
+#!/bin/sh
+# installed by herdr
+# managed by herdr; reinstalling or updating the integration overwrites this file.
+# add custom hooks beside this file instead of editing it.
+# HERDR_INTEGRATION_ID=claude
+# HERDR_INTEGRATION_VERSION=9
+
+set -eu
+
+action="${1:-}"
+hook_input_file="$(mktemp "${TMPDIR:-/tmp}/herdr-claude-hook.XXXXXX")" || exit 0
+trap 'rm -f "$hook_input_file"' EXIT HUP INT TERM
