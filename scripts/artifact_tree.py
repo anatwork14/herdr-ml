@@ -157,26 +157,35 @@ def _reject_constant(_value):
 
 
 def read_manifest(path):
-    """Read a bounded regular file without following a final symlink."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    """Read a bounded regular file without opening a swapped device or FIFO."""
+    if not hasattr(os, 'O_PATH'):
+        raise ArtifactError('Linux O_PATH support required')
+    handle = os.open(path, os.O_PATH | os.O_NOFOLLOW)
     try:
-        before = os.fstat(fd)
-        if not stat.S_ISREG(before.st_mode):
+        pinned = os.fstat(handle)
+        if not stat.S_ISREG(pinned.st_mode):
             raise ArtifactError('manifest must be a regular file')
-        if before.st_size > MAX_MANIFEST_BYTES:
+        if pinned.st_size > MAX_MANIFEST_BYTES:
             raise ArtifactError('manifest too large')
-        with os.fdopen(fd, 'rb') as source:
-            fd = None
-            raw = source.read(MAX_MANIFEST_BYTES + 1)
-            after = os.fstat(source.fileno())
-        if len(raw) > MAX_MANIFEST_BYTES:
-            raise ArtifactError('manifest too large')
-        if _identity(before) != _identity(after):
-            raise ArtifactError('manifest changed during read')
-        return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+        fd = os.open('/proc/self/fd/%d' % handle, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if _identity(pinned) != _identity(before):
+                raise ArtifactError('manifest changed before read')
+            with os.fdopen(fd, 'rb') as source:
+                fd = None
+                raw = source.read(MAX_MANIFEST_BYTES + 1)
+                after = os.fstat(source.fileno())
+            if len(raw) > MAX_MANIFEST_BYTES:
+                raise ArtifactError('manifest too large')
+            if _identity(before) != _identity(after):
+                raise ArtifactError('manifest changed during read')
+            return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
+        finally:
+            if fd is not None:
+                os.close(fd)
     finally:
-        if fd is not None:
-            os.close(fd)
+        os.close(handle)
 
 
 def main():

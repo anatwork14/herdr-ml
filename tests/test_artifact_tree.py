@@ -179,3 +179,8 @@ class ArtifactTreeTests(unittest.TestCase):
             path.write_text('{"schema_version":NaN,"entries":[]}')
             with self.assertRaisesRegex(m.ArtifactError, 'nonstandard JSON constant'):
                 m.read_manifest(path)
+
+    @unittest.skipUnless(pathlib.Path('/dev/null').exists(), 'Linux device unavailable')
+    def test_manifest_device_rejected_without_reading(self):
+        with self.assertRaisesRegex(m.ArtifactError, 'regular file'):
+            m.read_manifest('/dev/null')
