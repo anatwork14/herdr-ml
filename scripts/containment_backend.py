@@ -1,9 +1,11 @@
-"""Fail-closed contract for process containment backends.
+"""Fail-closed process-containment backend contract.
 
-No production backend is implemented here. Capability probes and caller supplied
-claims cannot produce VERIFIED; the default backend always reports UNAVAILABLE.
-A future backend must supply opaque backend proof and pass isolated end-to-end
-validation before it can be wired into queue execution.
+No production backend or verification capability is registered. The public
+backend selector therefore always returns UNAVAILABLE. This module's Python
+types are an interface contract, not a security boundary: production execution
+must never trust a caller-constructed result or caller-supplied data as proof.
+A future backend needs independently reviewed implementation and isolated E2E
+proof before a private verification capability is registered and connected.
 """
 from dataclasses import dataclass
 from enum import Enum
@@ -15,11 +17,18 @@ class ContainmentStatus(str, Enum):
     UNAVAILABLE = "UNAVAILABLE"
 
 
+# Intentionally empty: no production issuer currently has authority to verify.
+_VERIFIED_ISSUERS = frozenset()
+
+
 class ContainmentProof(Protocol):
-    """Opaque proof object issued and validated by a concrete backend."""
+    """Opaque backend proof; arbitrary non-null values are not verification."""
 
     @property
     def run_id(self) -> str: ...
+
+    @property
+    def issuer(self) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -29,10 +38,22 @@ class ContainmentResult:
     proof: Optional[ContainmentProof] = None
 
     def __post_init__(self):
-        if self.status is ContainmentStatus.VERIFIED and self.proof is None:
-            raise ValueError("VERIFIED requires an opaque backend proof")
-        if self.status is ContainmentStatus.UNAVAILABLE and self.proof is not None:
+        if self.status is ContainmentStatus.VERIFIED:
+            issuer = getattr(self.proof, "issuer", None)
+            if not any(issuer is trusted for trusted in _VERIFIED_ISSUERS):
+                raise ValueError("No registered production issuer can verify containment")
+        elif self.proof is not None:
             raise ValueError("UNAVAILABLE cannot carry a proof")
+
+
+def is_verified_for_execution(result: object) -> bool:
+    """Fail-closed authorization predicate for any future execution adapter."""
+    if not isinstance(result, ContainmentResult):
+        return False
+    if result.status is not ContainmentStatus.VERIFIED:
+        return False
+    issuer = getattr(result.proof, "issuer", None)
+    return any(issuer is trusted for trusted in _VERIFIED_ISSUERS)
 
 
 class ContainmentBackend(Protocol):
@@ -57,3 +78,8 @@ class UnavailableContainmentBackend:
             status=ContainmentStatus.UNAVAILABLE,
             reason="No production containment backend is configured",
         )
+
+
+def get_backend() -> ContainmentBackend:
+    """Select the only currently available production backend."""
+    return UnavailableContainmentBackend()
