@@ -64,7 +64,7 @@ def _pinned_regular(path, *, dir_fd=None, kind):
                 raise ProvenanceError(kind + ' changed before read')
             with os.fdopen(fd, 'rb') as stream:
                 fd = None
-                yield stream
+                yield stream, before
                 if _identity(before) != _identity(os.fstat(stream.fileno())):
                     raise ProvenanceError(kind + ' changed during read')
         finally:
@@ -88,8 +88,8 @@ def _hash_relative(root, name):
             os.close(directory)
             directory = next_dir
         digest = hashlib.sha256()
-        with _pinned_regular(path.name, dir_fd=directory, kind='artifact') as stream:
-            remaining = os.fstat(stream.fileno()).st_size
+        with _pinned_regular(path.name, dir_fd=directory, kind='artifact') as (stream, pinned):
+            remaining = pinned.st_size
             while remaining:
                 block = stream.read(min(1024 * 1024, remaining))
                 if not block or len(block) > remaining:
@@ -116,7 +116,7 @@ def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
         raise ProvenanceError('invalid trusted principal')
     try:
         manifest_path = Path(manifest_path)
-        with _pinned_regular(manifest_path, kind='manifest') as handle:
+        with _pinned_regular(manifest_path, kind='manifest') as (handle, _pinned):
             data = handle.read(1024 * 1024 + 1)
         if len(data) > 1024 * 1024:
             raise ProvenanceError('manifest too large')

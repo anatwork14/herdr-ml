@@ -174,11 +174,31 @@ class SignedProvenanceTests(unittest.TestCase):
                         if len(calls) > 2:
                             raise AssertionError('unbounded read')
                         return b'x' * count
-                yield Growing()
+                yield Growing(), os.fstat(real.fileno())
         with patch.object(p, '_pinned_regular', fake_pinned):
             with self.assertRaisesRegex(p.ProvenanceError, 'artifact changed during read'):
                 p._hash_relative(self.bundle, target.name)
         self.assertEqual(calls, [target.stat().st_size, 1])
+
+    def test_artifact_read_uses_pinned_size_not_later_file_size(self):
+        import contextlib
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        target = self.bundle / self.artifacts['test_split']['path']
+        calls = []
+        @contextlib.contextmanager
+        def fake_pinned(*_args, **_kwargs):
+            with target.open('rb') as real:
+                class Growing:
+                    def fileno(self): return real.fileno()
+                    def read(self, count):
+                        calls.append(count)
+                        return b'x' * count
+                yield Growing(), SimpleNamespace(st_size=1)
+        with patch.object(p, '_pinned_regular', fake_pinned):
+            with self.assertRaisesRegex(p.ProvenanceError, 'artifact changed during read'):
+                p._hash_relative(self.bundle, target.name)
+        self.assertEqual(calls, [1, 1])
 
     def test_artifact_short_read_fails_closed(self):
         import contextlib
@@ -190,7 +210,7 @@ class SignedProvenanceTests(unittest.TestCase):
                 class Short:
                     def fileno(self): return real.fileno()
                     def read(self, _count): return b''
-                yield Short()
+                yield Short(), os.fstat(real.fileno())
         with patch.object(p, '_pinned_regular', fake_pinned):
             with self.assertRaisesRegex(p.ProvenanceError, 'artifact changed during read'):
                 p._hash_relative(self.bundle, target.name)
