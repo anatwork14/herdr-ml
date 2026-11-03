@@ -39,7 +39,9 @@ foreground with fresh private `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and
 CPU task, reads its ID from `pueue add --print-task-id`, binds it, enqueues it,
 and runs the worker protocol against that task. Its `finally` block sends
 `pueue shutdown` only through the isolated client environment and waits for
-that exact foreground process. No default/production Pueue socket is queried.
+that exact foreground process. The harness does not set or modify `HOME`; it
+sets only the three isolated XDG paths plus `PATH`, `SHELL`, `LANG`, and
+`LC_ALL`. No default/production Pueue socket is queried.
 
 Command:
 
@@ -54,7 +56,7 @@ Command:
 Observed output:
 
 ```json
-{"daemon_exit": 0, "daemon_stopped": true, "fence_created": true, "isolated_xdg": true, "pueue_task_id": "0", "pueue_worker_index": "0", "sanitized_environment": ["HOME", "LANG", "LC_ALL", "PATH", "SHELL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"], "shutdown_command_exit": 0, "task_finished": true}
+{"daemon_exit": 0, "daemon_stopped": true, "fence_created": true, "isolated_xdg": true, "pueue_task_id": "0", "pueue_worker_index": "0", "sanitized_environment": ["LANG", "LC_ALL", "PATH", "SHELL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"], "shutdown_command_exit": 0, "task_finished": true}
 ```
 
 The task ID and worker index happened to both be `0`; the worker still passed
@@ -63,10 +65,12 @@ binaries had SHA-256 `c1b10d7e4e62211075ddd0e1dc3e8cbfc5a43d662cb3be7402a28504e2
 (`pueue`) and `5afeff6adbafb909e8d54e2caff158e6966c2adffa2c09e60fd631cc51b60390`
 (`pueued`). No vendor signature or supply-chain certification is claimed.
 
-The complete CPU-only unit suite passed 113 tests under Python 3.10.21. These
+The complete CPU-only unit suite passed 116 tests under Python 3.10.21. These
 tests include global task uniqueness within one queue instance, separate queue
 instance namespaces, ambiguous submission fencing, competing workers, and the
-crash window between the global and run-local databases.
+crash window between the global and run-local databases. They also check
+0600 file creation, symlink refusal, HOME environment independence, and
+fail-closed behavior when directory fsync fails.
 
 This evidence validates a CPU protocol harness only. It does not wire
 `researchctl` to Pueue, prove the supplied instance fingerprint against a

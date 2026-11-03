@@ -45,7 +45,6 @@ def main():
         for path in (config, data, runtime):
             path.mkdir(mode=0o700)
         env = {
-            'HOME': str(root),
             'PATH': str(pueue.parent) + os.pathsep + '/usr/bin:/bin',
             'XDG_CONFIG_HOME': str(config),
             'XDG_DATA_HOME': str(data),

@@ -75,43 +75,82 @@ def _queue_connect(folder):
     runtime = account_home
     try:
         for component in ('.local', 'state', 'herdr-ml'):
+            parent = runtime
             runtime = runtime / component
+            created = False
             try:
                 runtime.mkdir(mode=0o700)
+                created = True
             except FileExistsError:
                 pass
             info = runtime.lstat()
             if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
                     info.st_mode & 0o022):
                 raise RegistryError('Queue store path must contain owner-controlled, non-writable directories')
+            if component == 'herdr-ml' and info.st_mode & 0o077:
+                raise RegistryError('Queue registry directory must have mode 0700')
+            if created:
+                parent_fd = os.open(str(parent), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+                try:
+                    os.fsync(parent_fd)
+                finally:
+                    os.close(parent_fd)
     except OSError as exc:
         raise RegistryError('Shared per-user queue store directory is unavailable') from exc
     path = runtime / 'queue-registry.sqlite3'
+    if not hasattr(os, 'O_NOFOLLOW'):
+        raise RegistryError('Queue registry requires O_NOFOLLOW support')
+    dir_fd = os.open(str(runtime), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    created = False
+    file_fd = None
+    db = None
     try:
-        existing = path.lstat()
-    except FileNotFoundError:
-        existing = None
-    except OSError as exc:
-        raise RegistryError('Cannot inspect shared queue registry') from exc
-    if existing is not None and (not stat.S_ISREG(existing.st_mode) or existing.st_uid != os.geteuid()):
-        raise RegistryError('Shared queue registry must be an owner-controlled regular file')
-    if existing is not None and existing.st_mode & 0o077:
-        raise RegistryError('Shared queue registry must not be accessible by group or others')
-    db = sqlite3.connect(str(path), timeout=30, isolation_level=None)
-    os.chmod(path, 0o600)
-    db.execute('PRAGMA synchronous=FULL')
-    db.execute('PRAGMA busy_timeout=30000')
-    db.execute('''CREATE TABLE IF NOT EXISTS queue_binding (
-        run_id TEXT PRIMARY KEY, queue_instance TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
-        intent_token TEXT NOT NULL UNIQUE,
-        phase TEXT NOT NULL CHECK (phase IN ('INTENT','BOUND','AMBIGUOUS','CLAIMED')),
-        task_id TEXT, worker_id TEXT, fence TEXT,
-        run_folder TEXT NOT NULL UNIQUE,
-        UNIQUE(queue_instance,task_id))''')
-    db.execute('''CREATE TABLE IF NOT EXISTS queue_events (
-        seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        run_id TEXT NOT NULL, phase TEXT NOT NULL, detail TEXT)''')
-    return db
+        flags = os.O_RDWR | os.O_NOFOLLOW | getattr(os, 'O_CLOEXEC', 0)
+        try:
+            file_fd = os.open(str(path), flags | os.O_CREAT | os.O_EXCL, 0o600)
+            created = True
+        except FileExistsError:
+            file_fd = os.open(str(path), flags)
+        file_info = os.fstat(file_fd)
+        if (not stat.S_ISREG(file_info.st_mode) or file_info.st_uid != os.geteuid() or
+                stat.S_IMODE(file_info.st_mode) != 0o600):
+            raise RegistryError('Shared queue registry must be a mode-0600 owner-controlled regular file')
+        if created:
+            os.fsync(file_fd)
+            os.fsync(dir_fd)
+        db = sqlite3.connect(str(path), timeout=30, isolation_level=None)
+        opened_info = path.stat()
+        if (opened_info.st_dev, opened_info.st_ino) != (file_info.st_dev, file_info.st_ino):
+            db.close()
+            db = None
+            raise RegistryError('Shared queue registry path changed while opening')
+        db.execute('PRAGMA synchronous=FULL')
+        db.execute('PRAGMA busy_timeout=30000')
+        db.execute('''CREATE TABLE IF NOT EXISTS queue_binding (
+            run_id TEXT PRIMARY KEY, queue_instance TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+            intent_token TEXT NOT NULL UNIQUE,
+            phase TEXT NOT NULL CHECK (phase IN ('INTENT','BOUND','AMBIGUOUS','CLAIMED')),
+            task_id TEXT, worker_id TEXT, fence TEXT,
+            run_folder TEXT NOT NULL UNIQUE,
+            UNIQUE(queue_instance,task_id))''')
+        db.execute('''CREATE TABLE IF NOT EXISTS queue_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            run_id TEXT NOT NULL, phase TEXT NOT NULL, detail TEXT)''')
+        os.fsync(file_fd)
+        os.fsync(dir_fd)
+        os.close(file_fd)
+        file_fd = None
+        result = db
+        db = None
+        return result
+    except BaseException:
+        if db is not None:
+            db.close()
+        if file_fd is not None:
+            os.close(file_fd)
+        raise
+    finally:
+        os.close(dir_fd)
 
 
 def _valid_queue_instance(value):

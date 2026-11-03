@@ -2,8 +2,10 @@
 import importlib.util
 import multiprocessing
 import os
+import stat
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 import unittest
 
 path = Path(__file__).resolve().parents[1] / 'scripts' / 'run_registry.py'
@@ -58,6 +60,31 @@ class QueueProtocolTests(unittest.TestCase):
         registry.queue_intent(self.folder, RUN, DIGEST, QUEUE)
         with self.assertRaisesRegex(registry.RegistryError, 'never retry'):
             registry.queue_intent(self.folder, RUN, DIGEST, QUEUE)
+
+    def test_store_is_mode_0600_and_ignores_home_environment(self):
+        registry.queue_intent(self.folder, RUN, DIGEST, QUEUE)
+        store = Path(registry.pwd.getpwuid(os.geteuid()).pw_dir) / '.local/state/herdr-ml/queue-registry.sqlite3'
+        self.assertEqual(stat.S_IMODE(store.stat().st_mode), 0o600)
+        with patch.dict(os.environ, {'HOME': '/tmp/untrusted-home'}):
+            self.assertEqual(registry.inspect_queue(self.folder)['phase'], 'INTENT')
+
+    def test_store_symlink_is_not_followed(self):
+        home = Path(registry.pwd.getpwuid(os.geteuid()).pw_dir)
+        directory = home / '.local/state/herdr-ml'
+        directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        store = directory / 'queue-registry.sqlite3'
+        outside = home / 'outside.sqlite3'
+        outside.write_bytes(b'untouched')
+        store.symlink_to(outside)
+        with self.assertRaises(OSError):
+            registry.queue_intent(self.folder, RUN, DIGEST, QUEUE)
+        self.assertEqual(outside.read_bytes(), b'untouched')
+
+    def test_directory_fsync_failure_prevents_intent_return(self):
+        with patch.object(registry.os, 'fsync', side_effect=OSError('injected fsync failure')):
+            with self.assertRaises(registry.RegistryError):
+                registry.queue_intent(self.folder, RUN, DIGEST, QUEUE)
+        self.assertIsNone(registry.inspect_queue(self.folder))
 
     def test_task_id_unique_in_same_queue_and_namespaced_across_daemons(self):
         token = registry.queue_intent(self.folder, RUN, DIGEST, QUEUE)
