@@ -157,3 +157,25 @@ class ArtifactTreeTests(unittest.TestCase):
                 result = subprocess.run([sys.executable, str(script), str(root), '--verify', str(target)], capture_output=True, text=True, timeout=3)
                 self.assertEqual(result.returncode, 2, kind)
                 target.unlink()
+
+    def test_symlink_to_valid_manifest_is_rejected(self):
+        import json
+        import subprocess
+        import sys
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp) / 'tree'
+            root.mkdir()
+            actual = pathlib.Path(tmp) / 'actual.json'
+            actual.write_text(json.dumps(m.snapshot(root)))
+            link = pathlib.Path(tmp) / 'link.json'
+            link.symlink_to(actual)
+            script = pathlib.Path(__file__).resolve().parents[1] / 'scripts' / 'artifact_tree.py'
+            result = subprocess.run([sys.executable, str(script), str(root), '--verify', str(link)], capture_output=True, text=True, timeout=3)
+            self.assertEqual(result.returncode, 2)
+
+    def test_nonstandard_json_constants_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / 'manifest'
+            path.write_text('{"schema_version":NaN,"entries":[]}')
+            with self.assertRaisesRegex(m.ArtifactError, 'nonstandard JSON constant'):
+                m.read_manifest(path)

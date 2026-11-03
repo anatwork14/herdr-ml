@@ -152,6 +152,10 @@ def _unique_object(pairs):
     return result
 
 
+def _reject_constant(_value):
+    raise ArtifactError('nonstandard JSON constant')
+
+
 def read_manifest(path):
     """Read a bounded regular file without following a final symlink."""
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
@@ -169,7 +173,7 @@ def read_manifest(path):
             raise ArtifactError('manifest too large')
         if _identity(before) != _identity(after):
             raise ArtifactError('manifest changed during read')
-        return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object)
+        return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     finally:
         if fd is not None:
             os.close(fd)
