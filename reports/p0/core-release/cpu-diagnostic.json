@@ -1,0 +1,9 @@
+{
+  "test": "actual isolated local CPU diagnostic",
+  "interpreter_version": "3.10.21",
+  "exit_code": 2,
+  "state": "UNKNOWN",
+  "mode": "diagnostic",
+  "output": "cpu diagnostic",
+  "limitations": "No verified containment, GPU enforcement, queue, live Herdr, immutable source or scientific validity."
+}
