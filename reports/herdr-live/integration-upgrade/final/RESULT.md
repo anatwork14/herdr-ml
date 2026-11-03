@@ -1,15 +1,15 @@
 # Final isolated recovery qualification — result
 
-Herdr 0.9.5 (stable, protocol 22). Isolated Claude config: the `p1-iso` config (v11 hook, authenticated by the account owner's interactive login in P2). Production `/mnt/ssd/genos2/.claude` was not linked or modified; two of its files were hash-verified (`after/prod-hashes.txt`). The default Herdr server was not stopped or restarted. Named disposable session: `mlrec-final`, deleted at the end.
+Herdr 0.9.5 (stable, protocol 22). Isolated Claude config: the `p1-iso` config (v11 hook, authenticated by the account owner's interactive login in P2). Production `/mnt/ssd/genos2/.claude` was not linked by this work. Two of its files were hash-verified before and after (`after/prod-hashes.txt`); no other production file was checked. The default Herdr server was not stopped or restarted. Named disposable session: `mlrec-final`, deleted at the end.
 
 ## Verdict
 
-- **Clean named-server restoration (one case): demonstrated** on this run only.
+- **Clean named-server restoration (one case): observed** on this run only. The mechanism is not proven.
 - **CORE_RECOVERY_READY: PENDING.** It may move to PASS only after an independent review confirms the restoration evidence below. Crash recovery and sidebar TUI were not tested.
 - **Manual Core release: BLOCKED.**
 - **Open before this can be read as a clean production-isolation result:** the agent's exit before the server stop is unverified, and the default session's `w1:p1` scroll change (1235 → 1239) is unexplained.
 
-## What was demonstrated
+## What was observed (one case)
 
 | Step | Evidence | Result |
 |---|---|---|
@@ -29,7 +29,7 @@ Herdr 0.9.5 (stable, protocol 22). Isolated Claude config: the `p1-iso` config (
 
 - **Agent exit: not verified before the server stop.** The commands were `herdr --session mlrec-final pane send-text w1:p1 "/exit"` and `herdr --session mlrec-final pane send-keys w1:p1 enter`, as run by the orchestrator (the argv is recorded here, not in a log). Their output files (`run/29-exit-text.json`, `run/30-exit-enter.json`) are empty, no exit codes were saved, and `run/31-agent-exit-check.txt` is empty and records no check output. No process scan was taken before the stop.
 - `after/isolated-config-process-count.txt` (**0** processes with the isolated `CLAUDE_CONFIG_DIR`) was taken **after** `server stop`, so it cannot show that `/exit` worked; the server stop alone would end the agent's pane processes. Its scan method was not recorded in the directory.
-- **Open, unexplained inventory change:** the default session's pane `w1:p1` (a live production pane, agent `agy`) shows `scroll.max_offset_from_bottom` 1235 → 1239 between `baseline/` and `after/`. A read of the last 200 recent lines of that pane found no `/exit` text. The cause is unknown; no command in this cycle was recorded as targeting the default session's `w1:p1` scroll, but the orchestrator did not verify that against the pane's history.
+- **Open, unexplained inventory change:** the default session's pane `w1:p1` (a live production pane, agent `agy`) shows `scroll.max_offset_from_bottom` 1235 → 1239 between `baseline/` and `after/`. A read of the last 200 recent lines of that pane found no `/exit` text. That read is not saved in this directory: an attempt to save it was denied by the permission classifier, and it was not retried. The cause is unknown; no command in this cycle was recorded as targeting the default session's `w1:p1` scroll, but the orchestrator did not verify that against the pane's history.
 - Named server stop: exit 0 (`run/32-stop.exit`).
 - Named session delete: `deleted: true` (`run/33-delete.json`). `after/sessions.json` lists only `default`, running.
 - Production files: `sha256sum -c` against `reports/herdr-live/integration-upgrade/prod-claude-hashes-before.txt` returns OK for `/mnt/ssd/genos2/.claude/settings.json` and `/mnt/ssd/genos2/.claude/hooks/herdr-agent-state.sh` (`after/prod-hashes.txt`).
