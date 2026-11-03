@@ -182,5 +182,9 @@ class ArtifactTreeTests(unittest.TestCase):
 
     @unittest.skipUnless(pathlib.Path('/dev/null').exists(), 'Linux device unavailable')
     def test_manifest_device_rejected_without_reading(self):
-        with self.assertRaisesRegex(m.ArtifactError, 'regular file'):
-            m.read_manifest('/dev/null')
+        from unittest.mock import patch
+        with patch.object(m.os, 'open', wraps=m.os.open) as opened:
+            with self.assertRaisesRegex(m.ArtifactError, 'regular file'):
+                m.read_manifest('/dev/null')
+        self.assertEqual(opened.call_count, 1)
+        self.assertTrue(opened.call_args.args[1] & m.os.O_PATH)
