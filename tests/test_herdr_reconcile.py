@@ -145,6 +145,35 @@ class ReconciliationTests(unittest.TestCase):
         self.assertFalse(self.path.exists())
         self.assertEqual(self.api.calls, [])
 
+    def test_adapter_cwd_must_be_absolute_without_shell_expansion(self):
+        import os
+        self.run_once()
+        before = list(self.api.calls)
+        original_cwd = os.getcwd()
+        self.addCleanup(os.chdir, original_cwd)
+        os.chdir(self.root)
+        for reported in ('checkout', '~/checkout'):
+            with self.subTest(reported=reported), mock.patch.dict(os.environ, {'HOME': str(self.root)}):
+                self.api.ws[0]['cwd'] = reported
+                with self.assertRaises(m.ReconcileBlocked):
+                    self.run_once()
+                self.assertEqual(self.api.calls, before)
+
+    def test_adapter_tab_cwd_must_be_absolute(self):
+        import os
+        result = self.run_once()
+        before = list(self.api.calls)
+        original_cwd = os.getcwd()
+        self.addCleanup(os.chdir, original_cwd)
+        os.chdir(self.root)
+        tab = self.api.ts[result['workspace_id']][0]
+        for reported in ('checkout', '~/checkout'):
+            with self.subTest(reported=reported), mock.patch.dict(os.environ, {'HOME': str(self.root)}):
+                tab['cwd'] = reported
+                with self.assertRaises(m.ReconcileBlocked):
+                    self.run_once()
+                self.assertEqual(self.api.calls, before)
+
     def test_reused_tab_id_blocks(self):
         result = self.run_once()
         tabs = self.api.ts[result['workspace_id']]

@@ -16,7 +16,7 @@ Adapter contract (a future adapter MUST obtain these values from the same server
       including server/session replacement and lease loss; no timeout-only lock
   parent_guard(server, workspace_id, workspace_label, cwd) -> context manager
       that enforces the above until after local adoption is fsynced
-  workspaces() -> iterable of {id, label, cwd}
+  workspaces() -> iterable of {id, label, cwd}; cwd must be an absolute server path
   tabs(workspace_id) -> iterable of {id, label, cwd}
   create_workspace(label, cwd) -> None
   create_tab(workspace_id, label, cwd) -> None
@@ -48,6 +48,13 @@ def marker(prefix, token, name):
 
 def _canonical(path):
     return str(Path(path).expanduser().resolve(strict=True))
+
+
+def _canonical_server_cwd(path):
+    """Do not interpret server paths relative to this client or its HOME."""
+    if not isinstance(path, str) or not os.path.isabs(path):
+        raise ValueError('Server cwd must be an absolute path')
+    return str(Path(path).resolve(strict=True))
 
 
 def _write(path, state):
@@ -115,7 +122,7 @@ def _one(objects, label, cwd):
     if not isinstance(obj.get('id'), str) or not obj['id']:
         raise ReconcileBlocked('Object has no stable ID')
     try:
-        actual = _canonical(obj['cwd'])
+        actual = _canonical_server_cwd(obj['cwd'])
     except (KeyError, OSError, TypeError, ValueError) as exc:
         raise ReconcileBlocked('Object has no verifiable checkout') from exc
     if actual != cwd:
@@ -139,7 +146,7 @@ def _reject_untracked_workspace(objects, label, checkout):
         object_label = obj.get('label')
         match = pattern.fullmatch(object_label) if isinstance(object_label, str) else None
         try:
-            existing_checkout = _canonical(obj['cwd'])
+            existing_checkout = _canonical_server_cwd(obj['cwd'])
         except (KeyError, OSError, TypeError, ValueError) as exc:
             raise ReconcileBlocked(
                 f"Workspace id={obj.get('id')!r} label={object_label!r} "
