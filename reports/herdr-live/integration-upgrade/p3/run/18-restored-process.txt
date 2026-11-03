@@ -1,0 +1,4 @@
+pid=267781
+claude --resume 79cab582-a6fc-4303-8424-469d60da4ac4 
+parent=267507 /bin/bash 
+grandparent=267424 herdr --session mlrec-p3 server 
