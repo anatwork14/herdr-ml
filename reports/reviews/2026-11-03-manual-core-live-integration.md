@@ -45,10 +45,10 @@ Caveat: the trust dialog blocks `agent start`. The default cursor was on "No, ex
 
 The re-run is `reports/herdr-live/gates/run2/`, produced by `reports/herdr-live/gates/run_gates.sh`. The script logs each step's argv, exit code and timestamps to `commands.log`.
 - The pane command `… | tee logs/gate.log` ran in pane `w1:p1` of session `mlrec-gate`. `pane wait-output --match GATE_DONE` matched output (`steps/pane-wait.out`, `result.type: output_matched`).
-- The log file `logs/gate.log` (copied to `run2/logs/gate.log`) contains exactly `GATE_LOG_LINE_1..3`. The `pane read` output (`steps/pane-read.out`) contains the same five lines (three of them from the log, plus the command and marker).
+- The log file `logs/gate.log` (copied to `run2/logs/gate.log`) contains exactly `GATE_LOG_LINE_1..3`. The `pane read` output (`steps/pane-read.out`) holds the command echo, the three log lines, the `GATE_DONE` marker, and a prompt.
 - `pane get` (`steps/pane-get.out`) reports `workspace_id: w1`, `tab_id: w1:t1`, and the cwd equal to the fixture project. `pane process-info` is in `steps/pane-process-info.out`.
 
-Caveat: a first run (`reports/herdr-live/gates/run1/`) produced a false match. `wait-output` matched the echoed command text, so the log was never written. That run's output is kept as evidence of the defect; the script was then changed to print the marker in a form the echoed command cannot match, and `run2` is the valid result. Project association rests on pane cwd and workspace metadata, since Herdr has no separate project binding.
+Caveat: a first run (`reports/herdr-live/gates/run1/`) produced a false match. `wait-output` matched the echoed command text, and no log was saved from that run. That run's output is kept as evidence of the defect; the script was then changed to print the marker in a form the echoed command cannot match, and `run2` is the valid result. Project association rests on pane cwd and workspace metadata, since Herdr has no separate project binding.
 
 ### GIT_WORKTREE_READY — PASS (live, saved)
 
@@ -56,7 +56,7 @@ Also in `reports/herdr-live/gates/run2/`:
 - `worktree-create.out`: `worktree_created`, with `is_linked_worktree: true` and branch `gate-wt`.
 - `worktree-list-before-commit.out`: the main checkout and the linked worktree.
 - A file written and committed in the linked worktree gave `wt-head.out` = `0e4104c`. `main-head.out` = `42cb921` (unchanged).
-- `isolation-check.out` = `MAIN_CLEAN`: the file is absent from the main checkout.
+- `isolation-check.out` = `MAIN_CLEAN`: the worktree-isolation check (a file written in the linked worktree is absent from the main checkout). This is not production isolation.
 - `worktree-remove.out`: `worktree_removed`. `branch-delete` removed `gate-wt`. `worktree-list-after.out` shows only the main checkout, and `branch-after.out` is empty.
 
 Round 1 also created and removed a worktree (`round1/t4-wt.json`); that round's git output was printed, not saved.
@@ -68,14 +68,14 @@ The defined behaviors are: (a) detach and reattach of agent output, (b) restorat
 **(a) Agent-terminal observer and detach (`cycle2/named/`).** The agent terminal was `term_65f5d670305601`, pane `w1:p1`, in session `mlrec-c2`.
 - A 40 s observer (exit 124, `07-observerA.*`) ran while turn 2 was sent. Its 10 frames are: seq 1, `full=true`, containing the turn-1 token; seq 2–10, `full=false` deltas. Delta seq 9 contains a standalone `67`, the turn-2 answer (`cycle2/observer-A-frames.txt`).
 - Detach with the documented `ctrl+b q` through `pty_attach_once.py`: exit 0 (`08-pty-attach-1.json`, 9210 bytes before detach, `detach_sent` 11:18:55.116Z, `end` 11:18:55.117Z). The 1 ms is the recorded gap; the driver polls every 0.2 s, so it is an upper bound.
-- Reattach (`10-pty-attach-2.json`, exit 0, 9501 bytes before detach).
+- Reattach (`10-pty-attach-2.json`, exit 0, 9501 bytes before detach; the `.bin` contains the token and `71`).
 
 **(b) Restoration after a clean named-server restart (`cycle2/named/`, one run).** This is the only restore run. It used an outdated Claude integration and a clean stop, so it does not show general restore behavior.
 - `herdr --session mlrec-c2 server stop` exited 0 (`13-stop.*`). The session showed `running: false`.
 - `herdr --session mlrec-c2 server` was started with no agent arguments. `agent list` then showed `c2-agent`, `w1:p1`, `claude`, `idle`, with the same session ID (`14-agents-after-restart.json`).
-- `pane get` reported `resume_argv` absent and `restore_error: null` before the stop (`12-pane-before-stop.json`).
+- `pane get` before the stop (`12-pane-before-stop.json`) has neither a `resume_argv` nor a `restore_error` field.
 - A `claude --resume 7ddaa64d-…` process exists, and its parent chain is bash → `herdr --session mlrec-c2 server` → init (`16-process-ancestry.txt`). The saved files do not record the relaunch mechanism or any argv Herdr used. The chain shows where the process sits, not how it was started.
-- Recall after the restart (`17-recall-check.txt`): `token_after_marker=True`.
+- Recall after the restart (`17-recall-check.txt`): `token_after_marker=True`. The reattach capture `10-pty-attach-2.bin` also contains the token and the turn-3 answer `71`.
 - The restored pane transcript (`15-pane-after-restart.txt`) shows the prior conversation.
 - Not saved: the schema text about `resume_argv` ("after a Herdr restart"), and the `session.json` field list. Both were read during the run and quoted into the README; the session directory was deleted with the session.
 
