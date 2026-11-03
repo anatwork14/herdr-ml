@@ -123,6 +123,26 @@ class ResearchCtlTests(unittest.TestCase):
         self.assertTrue(child["boot"])
         self.assertTrue(child["start_ticks"])
 
+    def test_status_reports_non_object_json_as_unknown_per_run(self):
+        runs = self.root / ".runtime" / "demo" / "runs"
+        malformed_status = runs / "malformed-status"
+        malformed_status.mkdir(parents=True)
+        researchctl.atomic_json(malformed_status / "submission.json", {"mode": "diagnostic"})
+        researchctl.atomic_json(malformed_status / "status.json", ["SUBMITTED"])
+
+        malformed_submission = runs / "malformed-submission"
+        malformed_submission.mkdir()
+        researchctl.atomic_json(malformed_submission / "submission.json", ["diagnostic"])
+        researchctl.atomic_json(malformed_submission / "status.json", {"state": "SUBMITTED"})
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["status", "--project", "demo"]), 0)
+
+        lines = output.getvalue().splitlines()
+        self.assertIn("malformed-status\tUNKNOWN\tmissing/corrupt record", lines)
+        self.assertIn("malformed-submission\tUNKNOWN\tmissing/corrupt record", lines)
+
     def test_reconcile_reports_read_only_process_identity_without_reclaim(self):
         self.assertEqual(self._run(), 2)
         folder, = self._records()

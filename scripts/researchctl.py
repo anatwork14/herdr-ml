@@ -166,6 +166,9 @@ def cmd_status(args):
         except (OSError, json.JSONDecodeError, sqlite3.Error):
             print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
             continue
+        if not isinstance(submission, dict) or not isinstance(state, dict):
+            print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
+            continue
         # Historical terminal JSON/registry records did not verify containment.
         label = state.get("state", "UNKNOWN")
         if registered is None and (folder / "execution.claim").exists():
