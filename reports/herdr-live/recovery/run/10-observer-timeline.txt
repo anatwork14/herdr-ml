@@ -1,0 +1,6 @@
+attach1 start=2026-11-03T11:06:57.763Z lines_before=8
+attach1 end=2026-11-03T11:07:03.766Z exit=124 lines_after=14
+attach2 start=2026-11-03T11:07:07.770Z lines_before=18
+attach2 end=2026-11-03T11:07:13.774Z exit=124 lines_after=24
+attach3 start=2026-11-03T11:07:17.777Z lines_before=28
+attach3 end=2026-11-03T11:07:23.780Z exit=124 lines_after=34

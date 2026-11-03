@@ -1,0 +1,17 @@
+{
+  "attach": 2,
+  "start": "2026-11-03T11:08:31.147Z",
+  "command": [
+    "herdr",
+    "terminal",
+    "attach",
+    "term_65f5d4256e76d14"
+  ],
+  "bytes_before_detach": 5896,
+  "detach_sent": "2026-11-03T11:08:36.206Z",
+  "detach_observed_exit": true,
+  "exit_status_raw": 0,
+  "exit_code": 0,
+  "end": "2026-11-03T11:08:36.207Z",
+  "bytes_total": 6037
+}
