@@ -1,7 +1,7 @@
 # Manual Core recovery validation — evidence index
 
 Herdr: `0.9.5` (stable, protocol 22), server running and endpoint compatible (`post/herdr-version.txt`, `post/herdr-status.txt`).
-Implementation under test: `b51a6b328d136dee31f67b56f7369db9b0a14bf2`, the PR #2 head when the recovery test ran. This evidence and report were committed afterward (`6d6d16c`, `ec3a4d3`). The Herdr skill check `test "${HERDR_ENV:-}" = 1` passed in pane `w5:p2`, workspace `w5`.
+Implementation under test: `b51a6b328d136dee31f67b56f7369db9b0a14bf2`, the PR #2 head when the recovery test ran. This evidence and report were committed afterward (`6d6d16c`, `ec3a4d3`, `21286ba`). The `HERDR_ENV` check (`test "${HERDR_ENV:-}" = 1`) passed in pane `w5:p2`, workspace `w5`; it was run in the session and is not saved as a file.
 Scope: one disposable Claude test agent (`mlrec-agent`) in disposable workspace `w9`. No automatic bootstrap, official run, queued run or GPU work. The default Herdr server was not stopped.
 
 ## Sequence and exit codes
