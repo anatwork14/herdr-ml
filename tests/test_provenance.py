@@ -159,6 +159,42 @@ class SignedProvenanceTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertTrue(all(flags & os.O_PATH for flags in calls), calls)
 
+    def test_artifact_growth_read_is_bounded_to_initial_size(self):
+        import contextlib
+        from unittest.mock import patch
+        target = self.bundle / self.artifacts['test_split']['path']
+        calls = []
+        @contextlib.contextmanager
+        def fake_pinned(*_args, **_kwargs):
+            with target.open('rb') as real:
+                class Growing:
+                    def fileno(self): return real.fileno()
+                    def read(self, count):
+                        calls.append(count)
+                        if len(calls) > 2:
+                            raise AssertionError('unbounded read')
+                        return b'x' * count
+                yield Growing()
+        with patch.object(p, '_pinned_regular', fake_pinned):
+            with self.assertRaisesRegex(p.ProvenanceError, 'artifact changed during read'):
+                p._hash_relative(self.bundle, target.name)
+        self.assertEqual(calls, [target.stat().st_size, 1])
+
+    def test_artifact_short_read_fails_closed(self):
+        import contextlib
+        from unittest.mock import patch
+        target = self.bundle / self.artifacts['test_split']['path']
+        @contextlib.contextmanager
+        def fake_pinned(*_args, **_kwargs):
+            with target.open('rb') as real:
+                class Short:
+                    def fileno(self): return real.fileno()
+                    def read(self, _count): return b''
+                yield Short()
+        with patch.object(p, '_pinned_regular', fake_pinned):
+            with self.assertRaisesRegex(p.ProvenanceError, 'artifact changed during read'):
+                p._hash_relative(self.bundle, target.name)
+
     def test_unsigned_environment_or_config_changes_rejected(self):
         for role in ('source', 'environment', 'dataset_manifest', 'train_split', 'validation_split', 'config', 'protocol', 'baseline'):
             with self.subTest(role=role):

@@ -89,8 +89,15 @@ def _hash_relative(root, name):
             directory = next_dir
         digest = hashlib.sha256()
         with _pinned_regular(path.name, dir_fd=directory, kind='artifact') as stream:
-            for block in iter(lambda: stream.read(1024 * 1024), b''):
+            remaining = os.fstat(stream.fileno()).st_size
+            while remaining:
+                block = stream.read(min(1024 * 1024, remaining))
+                if not block or len(block) > remaining:
+                    raise ProvenanceError('artifact changed during read')
                 digest.update(block)
+                remaining -= len(block)
+            if stream.read(1):
+                raise ProvenanceError('artifact changed during read')
         return digest.hexdigest()
     except OSError as exc:
         raise ProvenanceError('cannot safely read artifact') from exc
