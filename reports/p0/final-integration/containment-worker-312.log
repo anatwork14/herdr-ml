@@ -1,0 +1,24 @@
+......................ERROR: Refusing execution: queued or repeated state=QUEUED
+....ERROR: Invalid submission manifest JSON
+ERROR: Invalid submission manifest project or type
+ERROR: Invalid submission command
+ERROR: Invalid submission command
+.UNKNOWN run=test exit=0 logs=/tmp/tmpou6hoszd/.runtime/demo/runs/test
+.......UNKNOWN run=test exit=0 logs=/tmp/tmpbj7a9ohv/.runtime/demo/runs/test
+.....................STARTING run=20261103T010410Z-f812f1f0b5ef folder=/tmp/tmp2w4sgryq/research/.runtime/demo/runs/20261103T010410Z-f812f1f0b5ef
+UNKNOWN run=20261103T010410Z-f812f1f0b5ef exit=0 logs=/tmp/tmp2w4sgryq/research/.runtime/demo/runs/20261103T010410Z-f812f1f0b5ef
+.STARTING run=20261103T010410Z-ebfbe5995d74 folder=/tmp/tmplfep4mys/research/.runtime/demo/runs/20261103T010410Z-ebfbe5995d74
+UNKNOWN run=20261103T010410Z-ebfbe5995d74 exit=9 logs=/tmp/tmplfep4mys/research/.runtime/demo/runs/20261103T010410Z-ebfbe5995d74
+..ERROR: Official run requires --approve-official
+.ERROR: Official run BLOCKED: Missing gate file
+.ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
+.STARTING run=20261103T010411Z-54f6f710a56a folder=/tmp/tmpd4q243kr/research/.runtime/demo/runs/20261103T010411Z-54f6f710a56a
+UNKNOWN run=20261103T010411Z-54f6f710a56a exit=0 logs=/tmp/tmpd4q243kr/research/.runtime/demo/runs/20261103T010411Z-54f6f710a56a
+..STARTING run=20261103T010411Z-3ba49c710e69 folder=/tmp/tmp93m8_3c5/research/.runtime/demo/runs/20261103T010411Z-3ba49c710e69
+UNKNOWN run=20261103T010411Z-3ba49c710e69 exit=0 logs=/tmp/tmp93m8_3c5/research/.runtime/demo/runs/20261103T010411Z-3ba49c710e69
+ERROR: Refusing execution: queued or repeated state=UNKNOWN
+...
+----------------------------------------------------------------------
+Ran 66 tests in 10.565s
+
+OK

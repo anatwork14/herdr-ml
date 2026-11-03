@@ -1,0 +1,11 @@
+# Preliminary independent GPT process-identity re-review
+
+Reviewed exact SHA `57e82abfb76873aedf9f0095643c2221b4c72bb9` in a fresh detached worktree, including the prior namespace/boot changes from `c05cb78` and follow-up ordering. This is a fallback review, not Opus approval. Scope: `process_identity.py`, registry identity capture, and `cmd_reconcile`; no GPU or real service was operated.
+
+No HIGH/CRITICAL defect or automatic reclaim/release path was identified within the current diagnostic scope. Process observations require recorded PID, canonical boot UUID, start ticks, hostname and PID/mount namespace strings. Missing/legacy values, malformed metadata and namespace differences produce UNKNOWN. Namespace and boot data are checked again after reading `/proc/<pid>/stat`; the follow-up ensures an observable target namespace mismatch takes priority over a boot mismatch. PID/start or boot mismatch does not authorize reclamation, and absence is labeled NOT_VISIBLE, not dead.
+
+The earlier corrupted-state fail-open issue was independently rechecked using a real temporary SQLite registry: inject state `CORRUPTED` and delete legacy namespace rows; reconciliation returns UNKNOWN/exit 2, owner observation UNKNOWN and retains `execution.claim`. All recognized states likewise remain UNKNOWN; no code in this path removes claims or releases resources.
+
+Verification: process-identity tests 6/6 passed on Python 3.10.21 and 3.12.14; registry tests 8/8 and researchctl tests 11/11 passed on Python 3.10.21. Tests include current `/proc/self` observation, fake-proc PID reuse, boot and namespace mismatches, legacy data, and retention of claims.
+
+Limits and LOW gaps: observations can become stale immediately, and PID/namespace/boot comparisons across separate procfs reads are not a pidfd or containment proof. The host-mismatch unit case currently uses an already-incomplete identity, so it doesn't isolate the host-mismatch branch; add a fully populated wrong-host fixture. `run_registry.inspect()` still invokes `_connect` with DDL, so the advertised read-only reconciliation can modify a legacy SQLite schema or fail on a read-only database. These limitations must be addressed before observations are used for kill, retry or resource release. There is no verified cgroup containment, queue recovery or scientific certification.

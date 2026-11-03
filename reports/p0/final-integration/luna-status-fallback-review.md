@@ -1,0 +1,3 @@
+# GPT-6 Luna fallback re-review: malformed status JSON
+
+Reviewed immutable implementation `ae2b02eb930e56cb245d6afa93138f32cd50869c` in a detached worktree. The reviewer did not author this fix. Parsed non-object submission or status values now produce an UNKNOWN row for that run, and the per-folder loop continues; status does not modify records or execution holds. The 12 focused researchctl tests passed with Python 3.10. No HIGH/CRITICAL finding was identified. The reviewer noted that the regression does not include a subsequent valid row to directly exercise continuation, although the loop control was inspected. This is fallback review, not Opus approval.

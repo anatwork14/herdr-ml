@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "model_ids": [
+    "claude-opus-5-5"
+  ],
+  "reviewed_sha": "c1c3d897eadd26ad0cc7374e17090b0c3fdcdc28",
+  "scope": "static source pasted from git; no tools or tests"
+}

@@ -1,0 +1,74 @@
+Independent delta review of exact commit e1e62f14f1b95c533654ce2d0f1788337408d9fe, changes since c1c3d897eadd26ad0cc7374e17090b0c3fdcdc28. Focus HIGH/CRITICAL in manifest read, inode pinning, special-file avoidance and tests. No tools or live claims.
+diff --git a/scripts/artifact_tree.py b/scripts/artifact_tree.py
+index 00e9fea..fbe8eb0 100644
+--- a/scripts/artifact_tree.py
++++ b/scripts/artifact_tree.py
+@@ -157,26 +157,35 @@ def _reject_constant(_value):
+ 
+ 
+ def read_manifest(path):
+-    """Read a bounded regular file without following a final symlink."""
+-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
++    """Read a bounded regular file without opening a swapped device or FIFO."""
++    if not hasattr(os, 'O_PATH'):
++        raise ArtifactError('Linux O_PATH support required')
++    handle = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+     try:
+-        before = os.fstat(fd)
+-        if not stat.S_ISREG(before.st_mode):
++        pinned = os.fstat(handle)
++        if not stat.S_ISREG(pinned.st_mode):
+             raise ArtifactError('manifest must be a regular file')
+-        if before.st_size > MAX_MANIFEST_BYTES:
+-            raise ArtifactError('manifest too large')
+-        with os.fdopen(fd, 'rb') as source:
+-            fd = None
+-            raw = source.read(MAX_MANIFEST_BYTES + 1)
+-            after = os.fstat(source.fileno())
+-        if len(raw) > MAX_MANIFEST_BYTES:
++        if pinned.st_size > MAX_MANIFEST_BYTES:
+             raise ArtifactError('manifest too large')
+-        if _identity(before) != _identity(after):
+-            raise ArtifactError('manifest changed during read')
+-        return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
++        fd = os.open('/proc/self/fd/%d' % handle, os.O_RDONLY | os.O_NONBLOCK)
++        try:
++            before = os.fstat(fd)
++            if _identity(pinned) != _identity(before):
++                raise ArtifactError('manifest changed before read')
++            with os.fdopen(fd, 'rb') as source:
++                fd = None
++                raw = source.read(MAX_MANIFEST_BYTES + 1)
++                after = os.fstat(source.fileno())
++            if len(raw) > MAX_MANIFEST_BYTES:
++                raise ArtifactError('manifest too large')
++            if _identity(before) != _identity(after):
++                raise ArtifactError('manifest changed during read')
++            return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object, parse_constant=_reject_constant)
++        finally:
++            if fd is not None:
++                os.close(fd)
+     finally:
+-        if fd is not None:
+-            os.close(fd)
++        os.close(handle)
+ 
+ 
+ def main():
+diff --git a/tests/test_artifact_tree.py b/tests/test_artifact_tree.py
+index 9ad7d53..1b428fe 100644
+--- a/tests/test_artifact_tree.py
++++ b/tests/test_artifact_tree.py
+@@ -179,3 +179,12 @@ class ArtifactTreeTests(unittest.TestCase):
+             path.write_text('{"schema_version":NaN,"entries":[]}')
+             with self.assertRaisesRegex(m.ArtifactError, 'nonstandard JSON constant'):
+                 m.read_manifest(path)
++
++    @unittest.skipUnless(pathlib.Path('/dev/null').exists(), 'Linux device unavailable')
++    def test_manifest_device_rejected_without_reading(self):
++        from unittest.mock import patch
++        with patch.object(m.os, 'open', wraps=m.os.open) as opened:
++            with self.assertRaisesRegex(m.ArtifactError, 'regular file'):
++                m.read_manifest('/dev/null')
++        self.assertEqual(opened.call_count, 1)
++        self.assertTrue(opened.call_args.args[1] & m.os.O_PATH)
