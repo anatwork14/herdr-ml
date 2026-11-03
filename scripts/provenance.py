@@ -62,7 +62,7 @@ def _pinned_regular(path, *, dir_fd=None, kind):
             before = os.fstat(fd)
             if _identity(pinned) != _identity(before):
                 raise ProvenanceError(kind + ' changed before read')
-            with os.fdopen(fd, 'rb') as stream:
+            with os.fdopen(fd, 'rb', buffering=0) as stream:
                 fd = None
                 yield stream, before
                 if _identity(before) != _identity(os.fstat(stream.fileno())):
