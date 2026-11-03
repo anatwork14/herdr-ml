@@ -116,10 +116,12 @@ def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
         raise ProvenanceError('invalid trusted principal')
     try:
         manifest_path = Path(manifest_path)
-        with _pinned_regular(manifest_path, kind='manifest') as (handle, _pinned):
-            data = handle.read(1024 * 1024 + 1)
-        if len(data) > 1024 * 1024:
-            raise ProvenanceError('manifest too large')
+        with _pinned_regular(manifest_path, kind='manifest') as (handle, pinned):
+            if pinned.st_size > 1024 * 1024:
+                raise ProvenanceError('manifest too large')
+            data = handle.read(pinned.st_size + 1)
+            if len(data) != pinned.st_size:
+                raise ProvenanceError('manifest changed during read')
         verified = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(allowed_signers),
             '-I', principal, '-n', NAMESPACE, '-s', str(signature_path)], input=data,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)

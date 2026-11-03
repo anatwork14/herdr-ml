@@ -159,6 +159,23 @@ class SignedProvenanceTests(unittest.TestCase):
         self.assertTrue(calls)
         self.assertTrue(all(flags & os.O_PATH for flags in calls), calls)
 
+    def test_manifest_growth_read_is_bounded_to_pinned_size(self):
+        import contextlib
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        calls = []
+        @contextlib.contextmanager
+        def fake_pinned(*_args, **_kwargs):
+            class Growing:
+                def read(self, count):
+                    calls.append(count)
+                    return b'x' * count
+            yield Growing(), SimpleNamespace(st_size=1)
+        with patch.object(p, '_pinned_regular', fake_pinned):
+            with self.assertRaisesRegex(p.ProvenanceError, 'manifest changed during read'):
+                p.verify_bundle(self.bundle / 'manifest.json', 'unused', self.allowed, 'reviewer')
+        self.assertEqual(calls, [2])
+
     def test_artifact_growth_read_is_bounded_to_initial_size(self):
         import contextlib
         from unittest.mock import patch
