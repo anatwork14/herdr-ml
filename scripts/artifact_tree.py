@@ -164,14 +164,20 @@ def read_manifest(path):
     """Read a bounded regular file without opening a swapped device or FIFO."""
     if not hasattr(os, 'O_PATH'):
         raise ArtifactError('Linux O_PATH support required')
-    handle = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+    try:
+        handle = os.open(path, os.O_PATH | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise ArtifactError('cannot safely open manifest') from exc
     try:
         pinned = os.fstat(handle)
         if not stat.S_ISREG(pinned.st_mode):
             raise ArtifactError('manifest must be a regular file')
         if pinned.st_size > MAX_MANIFEST_BYTES:
             raise ArtifactError('manifest too large')
-        fd = os.open('/proc/self/fd/%d' % handle, os.O_RDONLY | os.O_NONBLOCK)
+        try:
+            fd = os.open('/proc/self/fd/%d' % handle, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            raise ArtifactError('cannot reopen pinned manifest') from exc
         try:
             before = os.fstat(fd)
             if _identity(pinned) != _identity(before):

@@ -180,7 +180,7 @@ class ArtifactTreeTests(unittest.TestCase):
             with self.assertRaisesRegex(m.ArtifactError, 'nonstandard JSON constant'):
                 m.read_manifest(path)
 
-    @unittest.skipUnless(pathlib.Path('/dev/null').exists(), 'Linux device unavailable')
+    @unittest.skipUnless(pathlib.Path('/dev/null').exists() and hasattr(m.os, 'O_PATH'), 'Linux O_PATH/device unavailable')
     def test_manifest_device_rejected_without_reading(self):
         from unittest.mock import patch
         with patch.object(m.os, 'open', wraps=m.os.open) as opened:
@@ -188,6 +188,7 @@ class ArtifactTreeTests(unittest.TestCase):
                 m.read_manifest('/dev/null')
         self.assertEqual(opened.call_count, 1)
         self.assertTrue(opened.call_args.args[1] & m.os.O_PATH)
+        self.assertTrue(opened.call_args.args[1] & m.os.O_NOFOLLOW)
 
     def test_growing_file_read_is_bounded(self):
         from unittest.mock import patch
@@ -202,3 +203,16 @@ class ArtifactTreeTests(unittest.TestCase):
                 with self.assertRaisesRegex(m.ArtifactError, 'file changed during read'):
                     m.snapshot(root)
             self.assertEqual(calls, [1, 1])
+
+    def test_fifo_is_never_opened_readably(self):
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / 'fifo'
+            os.mkfifo(path)
+            with patch.object(m.os, 'open', wraps=m.os.open) as opened:
+                with self.assertRaisesRegex(m.ArtifactError, 'regular file'):
+                    m.read_manifest(path)
+            self.assertEqual(opened.call_count, 1)
+            self.assertTrue(opened.call_args.args[1] & m.os.O_PATH)
+            self.assertTrue(opened.call_args.args[1] & m.os.O_NOFOLLOW)
