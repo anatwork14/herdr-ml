@@ -94,13 +94,14 @@ finally:
             leader_control.close()
             child_life.close()
             data, ancillary, flags, _ = parent_control.recvmsg(1, socket.CMSG_SPACE(array.array('i').itemsize))
-            self.assertEqual(data, b'R')
-            self.assertFalse(flags & socket.MSG_CTRUNC)
             received = array.array('i')
             for level, kind, payload in ancillary:
                 if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
                     received.frombytes(payload[:len(payload) - len(payload) % received.itemsize])
-            self.assertEqual(len(received), 1, 'expected one pidfd from the child parent')
+            if data != b'R' or flags & socket.MSG_CTRUNC or len(received) != 1:
+                for unexpected_fd in received:
+                    os.close(unexpected_fd)
+                self.fail('invalid pidfd transfer')
             pidfd = received[0]
             parent_control.sendall(b'A')
             # WNOWAIT keeps an exited leader unreaped, pinning its process group
