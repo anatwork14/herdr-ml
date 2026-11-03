@@ -68,6 +68,9 @@ class IdentityTests(unittest.TestCase):
         (self.root / '42/ns/pid').unlink()
         (self.root / '42/ns/pid').symlink_to('pid:[101]')
         self.assertEqual(self.observe()['observation'], 'UNKNOWN')
+        (self.root / 'sys/kernel/random/boot_id').write_text('22222222-2222-4222-8222-222222222222')
+        # Namespace mismatch stays unknown even if the boot ID also differs.
+        self.assertEqual(self.observe()['observation'], 'UNKNOWN')
 
     def test_live_current_process_matches(self):
         import os, socket

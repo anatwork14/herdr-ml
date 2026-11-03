@@ -54,8 +54,6 @@ def observe_process(identity, expected_host, *, proc_root=Path('/proc'), current
         current_boot = (proc_root / 'sys/kernel/random/boot_id').read_text(encoding='ascii').strip()
         if not _boot_valid(current_boot):
             return {'observation': 'UNKNOWN', 'reason': 'Local boot identity unavailable or malformed'}
-        if current_boot != boot:
-            return {'observation': 'IDENTITY_MISMATCH', 'reason': 'Boot identity differs'}
         try:
             stat = (proc_root / str(pid) / 'stat').read_text(encoding='ascii')
         except FileNotFoundError:
@@ -75,6 +73,8 @@ def observe_process(identity, expected_host, *, proc_root=Path('/proc'), current
                 or os.readlink(proc_root / 'self/ns/mnt') != local_mount_ns
                 or (proc_root / 'sys/kernel/random/boot_id').read_text(encoding='ascii').strip() != current_boot):
             return {'observation': 'UNKNOWN', 'reason': 'Namespace or boot identity changed during inspection'}
+        if current_boot != boot:
+            return {'observation': 'IDENTITY_MISMATCH', 'reason': 'Boot identity differs'}
         if current_start != start:
             return {'observation': 'IDENTITY_MISMATCH', 'reason': 'PID start time differs'}
         observation = 'MATCH_ZOMBIE' if state in ('Z', 'X', 'x') else 'MATCH'
