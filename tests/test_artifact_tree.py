@@ -188,3 +188,17 @@ class ArtifactTreeTests(unittest.TestCase):
                 m.read_manifest('/dev/null')
         self.assertEqual(opened.call_count, 1)
         self.assertTrue(opened.call_args.args[1] & m.os.O_PATH)
+
+    def test_growing_file_read_is_bounded(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            (root / 'item').write_bytes(b'x')
+            calls = []
+            def growing(fd, size):
+                calls.append(size)
+                return b'x' * size
+            with patch.object(m.os, 'read', side_effect=growing):
+                with self.assertRaisesRegex(m.ArtifactError, 'file changed during read'):
+                    m.snapshot(root)
+            self.assertEqual(calls, [1, 1])

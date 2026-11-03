@@ -88,11 +88,15 @@ def snapshot(root, max_entries=100000):
                         if _identity(pinned) != _identity(opened):
                             raise ArtifactError('file changed before read')
                         digest = hashlib.sha256()
-                        while True:
-                            chunk = os.read(child, 1024 * 1024)
+                        remaining = opened.st_size
+                        while remaining:
+                            chunk = os.read(child, min(1024 * 1024, remaining))
                             if not chunk:
-                                break
+                                raise ArtifactError('file changed during read')
                             digest.update(chunk)
+                            remaining -= len(chunk)
+                        if os.read(child, 1):
+                            raise ArtifactError('file changed during read')
                         if _identity(opened) != _identity(os.fstat(child)):
                             raise ArtifactError('file changed during read')
                         append_record({'path': rel, 'type': 'file', 'size': opened.st_size,
