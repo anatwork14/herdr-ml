@@ -120,7 +120,7 @@ Path(result_file).write_text(json.dumps({"task_id": task_id, "worker_id": worker
             command = [str(Path(args.python).resolve()), str(worker_script),
                        str(registry_path), str(task_id_file), str(run_folder),
                        run_id, digest, queue_instance, str(result_file)]
-            task_output = run([str(pueue), 'add', '--stashed', '--print-task-id', '--',
+            task_output = run([str(pueue), 'add', '--stashed', '--print-task-id', '--escape', '--',
                                *command], env)
             if not re.fullmatch(r'[0-9]+', task_output):
                 registry.queue_mark_ambiguous(run_folder, intent,
