@@ -2,109 +2,111 @@
 
 Scope: Research OS Manual Core gates only. Automatic bootstrap, queued runs, official runs and GPU execution were not enabled or run.
 
-Orchestrator: the integration session in Herdr pane `w5:p2`, workspace `w5`, with `HERDR_ENV=1` verified before any control command. No Codex instance was used to control Herdr.
+Orchestrator: the integration session in Herdr pane `w5:p2`, workspace `w5`. The `HERDR_ENV=1` check passed before any control command (run in the session; not saved as a file). No Codex instance was used to control Herdr.
 
-Versions: Herdr `0.9.5` (stable, protocol 22). Saved in `reports/herdr-live/recovery/post/herdr-version.txt` and `post/herdr-status.txt`. Implementation under test: `b51a6b328d136dee31f67b56f7369db9b0a14bf2`, the PR #2 head when the recovery test ran. Evidence commits: `6d6d16c` (round-2 raw artifacts), `ec3a4d3` and `21286ba` (report revisions). Round-1 artifacts are in `reports/herdr-live/round1/` (committed with this revision). Recovery evidence index: `reports/herdr-live/recovery/README.md`.
+Versions: Herdr `0.9.5` (stable, protocol 22), saved in `reports/herdr-live/recovery/post/herdr-version.txt` and `post/herdr-status.txt`.
+
+Commits and implementation: the PR #2 head when round 1 and the first recovery run were made was `b51a6b328d136dee31f67b56f7369db9b0a14bf2`. Cycle 2 started at `fbe35d41fb607e2d78f95fa928e0e7f27e43b68a`. Evidence and report commits: `6d6d16c` (round-2 raw artifacts), `ec3a4d3`, `21286ba`, `fbe35d4` (round-3 corrections and round-1 artifacts), and the cycle-2 commit that adds this revision.
+
+Evidence indexes: `reports/herdr-live/recovery/README.md` (round 2) and `reports/herdr-live/recovery/cycle2/README.md` (cycle 2). Round-1 artifacts: `reports/herdr-live/round1/`.
 
 ## Production isolation
 
-- Baseline before the recovery run (`reports/herdr-live/recovery/baseline/`): `w1` (speculative-decoding starlight, 3 panes), `w3` (fbid, 1), `w5` (`~`, 2), `w6` (monitoring, 1). Production agents `w1:p1` (agy) and `w5:p2` (this session).
-- Post-test (`reports/herdr-live/recovery/post/`): the same four workspaces, pane and tab counts, the same production agents, and only the `default` session running. The files are not byte-identical. Field-by-field differences: `focused` flags moved between `w1` and `w3` in the workspace, tab, pane and agent lists, and `w6:p1` `scroll.max_offset_from_bottom` changed from 0 to 13. No test command targeted those panes or changed focus, so the cause is unverified.
-- Every state-changing recovery-run command targeted only `w9` and its panes. Read-only inventory commands (`workspace list`, `session list`, `agent list`, `tab list`, `pane list`) also ran against `w1`, `w3`, `w5` and `w6`. The round-1 run changed state only in `w7` and `w8`; its post-state is not separately inventoried.
+Round 1 and round 2 (`reports/herdr-live/recovery/`):
+- Every state-changing command targeted only the disposable workspace (`w7`/`w8` in round 1, `w9` in round 2). Read-only inventory commands also ran against `w1`, `w3`, `w5` and `w6`.
+- The post-test inventory matches the baseline on stable identifiers and counts. The files are not byte-identical: `focused` flags moved between `w1` and `w3`, and `w6:p1` `scroll.max_offset_from_bottom` changed from 0 to 13. No test command targeted those panes, so the cause is unverified.
+
+Cycle 2 (`reports/herdr-live/recovery/cycle2/`, comparison in `post/comparison.txt`):
+- Stable identifiers and operational fields are unchanged for workspaces, tabs, agents (name, pane, kind, session), sessions, and panes in `w1`, `w3`, `w5`, `w6`.
+- Transient differences, not attributed: the default-session agy agent `w1:p1` went from `idle` to `done` with `completion_seq` 177 → 180 (the workspace and tab `agent_status` changed with it). `w1:p1` `scroll.max_offset_from_bottom` went 104 → 185, and `w6:p1` went 41 → 55. No focus difference appeared this cycle.
+- Every cycle-2 command that named `w1:p1` or `w1` carried `--session mlrec-c2`, which is a separate server with its own `w1`. No default-session command wrote input, as far as the command log shows. The cause of the agy completion and the scroll changes is unverified and may be the user's own work.
+- Isolation is therefore not claimed as byte-identical. Stable identifiers and operational state are unchanged.
 
 ## Live capability inventory
 
-- Herdr `0.9.5`, server running and endpoint compatible (`post/herdr-status.txt`).
+- Herdr `0.9.5`, server running and endpoint compatible.
+- Claude integration installed is outdated (v9 < v11), per `herdr integration status`. It was not upgraded, because the hooks are global and also affect production agents.
 - Only `claude` was used as a test subject.
 
 ## Gate results
 
 ### HERDR_WORKSPACE_READY — PASS (live)
 
-Round 1 (`w7`): `workspace create` returned `w7`, `w7:t1`, `w7:p1` (`reports/herdr-live/round1/t1-create.json`). `tab create` returned `w7:t2`, `w7:p2` (`reports/herdr-live/round1/t1-tab.json`). A command run through `pane run` with `wait-output` matched, and the read showed the fixture cwd and branch `main`. The pane read was printed in the session but not saved to a file.
-
-Round 2 (`w9`): `workspace create` returned `w9`, `w9:t1`, `w9:p1`, exit 0 (`reports/herdr-live/recovery/run/01-workspace-create.json`).
+- Round 1 (`w7`): `workspace create` returned `w7`, `w7:t1`, `w7:p1` (`reports/herdr-live/round1/t1-create.json`). `tab create` returned `w7:t2`, `w7:p2` (`round1/t1-tab.json`). `pane run` with `wait-output` matched, and the read showed the fixture cwd and branch `main`. The pane read was printed but not saved.
+- Round 2 (`w9`): `workspace create` returned `w9`, `w9:t1`, `w9:p1`, exit 0 (`reports/herdr-live/recovery/run/01-workspace-create.json`).
+- Cycle 2 (named session `mlrec-c2`): `workspace create` returned `w1`, pane `w1:p1`, exit 0 (`cycle2/named/01-workspace-create.json`).
 
 ### MULTI_AGENT_READY — PASS (live, with operator-approved trust prompts)
 
-- Round 1: two Claude agents, `mlcore-a` and `mlcore-b`, were started in `w7`. Both returned `agent_not_ready` because of Claude's workspace-trust dialog for the new fixture folder. Enter confirmed the default "Yes" on both panes, and both reached `idle`.
-- Round 1 prompts ran in parallel with `--wait`. Both returned `agent_status: done`, `interactive_ready: true`, and distinct session IDs (`t2-a-prompt.json`, `t2-b-prompt.json`).
-- Prompt results are in `reports/herdr-live/round1/t2-a-prompt.json` and `t2-b-prompt.json`, and the split step in `t2-split.json`. Round 1 scrollback contained each agent's token (`MLCORE_A_OK` and `MLCORE_B_OK`), each appearing twice (prompt echo and reply). Those scrollback reads were printed but not saved.
-- Round 2 ran one agent; see the recovery evidence.
+- Round 1: two Claude agents `mlcore-a` and `mlcore-b` started in `w7`. Both returned `agent_not_ready` at Claude's workspace-trust dialog. Enter confirmed the default "Yes", and both reached `idle`. Their prompts ran with `--wait` and returned `done` with distinct session IDs (`round1/t2-a-prompt.json`, `round1/t2-b-prompt.json`). The scrollback token reads were printed but not saved.
+- Round 2 and cycle 2 each ran one agent, covered in the recovery evidence.
 
-Caveat: the trust dialog blocks `agent start` until confirmed, and a new folder needs its operator's approval before a managed Claude agent is usable in it. In round 2 the default cursor position was "No, exit", so Enter alone would have exited. The agent was confirmed only after `down` moved the cursor to "Yes" and the screen showed it.
+Caveat: the trust dialog blocks `agent start` until confirmed. In round 2 and cycle 2 the default cursor was on "No, exit", so Enter alone would have exited. Each agent was confirmed only after `down` moved the cursor to "Yes" and the screen showed it.
 
 ### TERMINAL_AND_LOGS_READY — PASS (live)
 
-- Round 1: `… | tee logs/t3.log` in `w7:p2` wrote three lines. The file on disk (`reports/herdr-live/round1/logs/t3.log`) contains exactly `MLCORE_LOG_LINE_1..3`. The pane read was printed but not saved.
-- `pane get` reported `workspace_id: w7`, `tab_id: w7:t2`, and `cwd` and `foreground_cwd` equal to the fixture project. `pane process-info` reported the foreground `bash` process and its cwd. These outputs were printed but not saved.
+- Round 1: `… | tee logs/t3.log` in `w7:p2` wrote three lines. The file (`reports/herdr-live/round1/logs/t3.log`) contains exactly `MLCORE_LOG_LINE_1..3`. The pane read was printed but not saved.
+- `pane get` reported the workspace, tab, and a cwd and `foreground_cwd` equal to the fixture project. `pane process-info` reported the foreground `bash` and its cwd. These outputs were printed but not saved.
 
 Caveat: project association was verified only through pane cwd and workspace metadata. Herdr exposes no explicit project binding beyond that.
 
 ### GIT_WORKTREE_READY — PASS (live)
 
 - Round 1: `herdr worktree create --cwd <fixture> --branch mlcore-wt-a --path <scratch>/mlcore-wt-a --no-focus` returned `worktree_created` in `w8`, with `is_linked_worktree: true` and branch `mlcore-wt-a` (`reports/herdr-live/round1/t4-wt.json`).
-- `git worktree list` showed the main checkout on `main` at `3881ce0`, and the linked checkout on `mlcore-wt-a`. A commit made in the linked worktree (`db34709`, adding `WT_ONLY.txt`) was absent from the main checkout, and the main branch stayed at `3881ce0`.
+- `git worktree list` showed the main checkout on `main` at `3881ce0`, and the linked checkout on `mlcore-wt-a`. A commit in the linked worktree (`db34709`, adding `WT_ONLY.txt`) was absent from the main checkout. The main branch stayed at `3881ce0`.
 - `herdr worktree remove --workspace w8` returned `worktree_removed`. The fixture branch was deleted afterward.
 
-### CORE_RECOVERY_READY — NOT VERIFIED
+### CORE_RECOVERY_READY — PENDING_INDEPENDENT_REVIEW (candidate for PASS)
 
-The defined behaviors are: (a) detach and reattach of agent output, (b) supported restoration of an agent to its prior session, and (c) process survival across detach.
+The defined behaviors are: (a) detach and reattach of agent output, (b) supported restoration of an agent to its prior session, and (c) process survival across detach. Cycle 2 tested all three on the Claude agent's own terminal, and is the first evidence for (a) and (c) on the agent pane. Not marked PASS until independent review.
 
-**The tests did not cover the agent's own pane.** Every observer and attach test in the recovery run targeted the disposable ticker terminal `term_65f5d4256e76d14` (pane `w9:p2`). The agent pane `w9:p1` was never observed, attached or detached. Requirement (a) and the agent-output part of (c) are therefore not verified.
+**(a) Agent-terminal observer and attach (cycle 2, `cycle2/named/`).** The agent's terminal was `term_65f5d670305601` in the named session `mlrec-c2`, pane `w1:p1`.
+- An observer ran 40 s on the agent terminal (exit 124). Turn 2 was sent during the window. The capture has 10 frames: seq 1 is a `full=true` snapshot containing the token from turn 1, and seq 2–10 are `full=false` deltas. Delta seq 9 contains a standalone `67`, the answer to turn 2 (`cycle2/observer-A-frames.txt`).
+- The documented detach `ctrl+b q` was sent through a pty with `pty_attach_once.py` (exit 0). The recorded `detach_sent` to `end` gap was 1 ms, which is an upper bound given the 0.2 s poll (`named/08-pty-attach-1.json`).
+- While detached, turn 3 was sent and settled to `idle` with the same session ID. The transcript contains `71` (`named/09-turn3-prompt.json`; the answer is at `named/17-recall-scrollback.txt`).
+- Reattach (`named/10-pty-attach-2.json`, exit 0, 9501 bytes before detach), then recall of the token after a unique marker: `token_after_marker=True` (`named/11-recall-check.txt`).
 
-**(a) Observer output, ticker terminal.** `herdr terminal session observe` was run three times under a 6 s timeout (`run/10-observer-{1,2,3}.out`, exit 124 each, empty stderr). Each capture begins with a full snapshot (`"full": true`, `"seq": 1`) and continues with delta frames (`"full": false`, seq 2–7). The deltas redraw changed cells: the ticker's counter and timestamp digits change in each capture, and in observer 2 the later deltas (seq 5–7) also redraw the command-echo rows. One delta's timestamp (`11:06:59.127Z`) matches the ticker's own log line for that second, so the deltas are real updates and not only the initial snapshot.
+Limit: the reattach is a pty attach with a snapshot read. It is not a long-running observer on the reattached view.
 
-**(a′) Interactive attach and detach, ticker terminal.** `herdr terminal attach <terminal>` was run twice under a pseudo-terminal with a 120×40 window (`run/11-tui-attach-{1,2}.bin`, `.json`, driver `tui_attach.py`). Each attach shows the alternate-screen entry and exit and live ticker content. The `ctrl+b q` detach exited with code 0, and the recorded `detach_sent` to `end` gap is 1 ms (the driver polls at 0.2 s, so this is an upper bound from the timestamps). This is the direct terminal attach command used on the ticker terminal. It is not the main Herdr sidebar TUI, and not the agent pane.
+**(b) Herdr-native restoration (cycle 2).** The `herdr` 0.9.5 schema has a `resume_argv` field, described as the command to resume "after a Herdr restart", but it is integration-supplied, and the pane reported `resume_argv: null` and `restore_error: null` before and after the restart. Herdr persists the agent identity itself, in `sessions/mlrec-c2/session.json`: `agent_name`, `managed_agent_kind: claude`, and `agent_session.value` (`cycle2/README.md`, Test B).
+- `herdr --session mlrec-c2 server stop` (exit 0) ended the session's Claude process. No Claude process with the fixture cwd remained.
+- `herdr --session mlrec-c2 server` was started with no agent arguments. The agent came back as `c2-agent`, `w1:p1`, `claude`, `idle`, with the same session ID.
+- A live process `claude --resume 7ddaa64d-8a22-40dc-872c-1d5fc5dc60a8` exists, and its ancestry is pane bash → `herdr --session mlrec-c2 server` → init (`named/16-process-ancestry.txt`). The `--resume` argument was supplied by Herdr, not by the operator.
+- A recall prompt after the restart returned the token after the marker (`named/17-recall-check.txt`: `token_after_marker=True`).
 
-**(b) Manual restoration via `--resume` after a clean exit.** The agent `mlrec-agent` (Claude, session `f6ae30ec-0f0c-4883-95de-74f71afa29d7`) was given a random token in a prompt and settled to `done` (token prompt visible in `run/06-pane-before-exit.txt`). It was exited with `/exit`. Claude printed `claude --resume f6ae30ec-0f0c-4883-95de-74f71afa29d7`, and the agent left the pane (`run/06-pane-after-exit.txt`). The restart command was `herdr agent start mlrec-agent --kind claude --pane w9:p1 --timeout 90000 -- --resume f6ae30ec-0f0c-4883-95de-74f71afa29d7`, exit 0, empty stderr. The JSON returned `agent_started`, the same session ID, and `argv` including `--resume` (`run/07-*`). A recall prompt with a unique marker was answered with the token after the marker (`run/08-recall-check.txt`: `marker_found=True token_after_marker=True`).
+Limits of (b): only a clean `server stop` was tested, not a crash. The restore relied on the persisted session state with an outdated Claude integration. Restore with an up-to-date integration, or with `resume_argv` reported, was not tested. The production default session was not restarted.
 
-This is an operator-supplied `--resume` argument after a clean exit, passed through `agent start`. It is not a Herdr-native restore that discovers the session without that argument, and it has not been shown to be the only supported restore path.
+Round 2 (`reports/herdr-live/recovery/`, not the agent pane) also showed a manual `--resume` restart after a clean exit. That is superseded by cycle 2 for the restore question.
 
-**(c) Process survival, ticker terminal.** The ticker wrote a timestamped line every second (`run/ticker.log`, 124 contiguous lines at 1.00–1.03 s intervals). Each observer and attach window contains about five to six ticks, including the detached gaps (`run/survival.txt`). This shows the ticker process survived each detach. It is not evidence of streaming, which the delta frames show in (a). It is not evidence about the agent's process.
+**(c) Process survival.** Cycle 2: the agent kept working through a pty detach, and turn 3 completed while the client was detached (`named/09-*`, `named/10-*`). Round 2: a ticker in a separate terminal wrote 124 contiguous timestamped lines, with about five to six ticks in each observer and attach window (`reports/herdr-live/recovery/run/survival.txt`). The ticker evidence is about the ticker process, not the agent. The cycle-2 evidence is about the agent's conversation state across the detach.
 
 **Not tested:**
-- Detach and reattach of the agent's own pane (`w9:p1`) while the agent runs. This is the main missing evidence for (a) and (c).
-- A Herdr-native restore path that needs no operator-supplied `--resume` argument.
-- A Herdr server restart with agents surviving it. The default server was deliberately not stopped; the user's instruction for this run was never to restart the production Herdr server.
-- Crash recovery, rather than a clean `/exit`.
-- The main Herdr sidebar TUI attach/detach.
+- A server crash (`kill -9`, power loss), as opposed to the clean `server stop` used here.
+- Herdr-native restore with an up-to-date Claude integration, or with `resume_argv` reported.
+- The main Herdr sidebar TUI attach/detach. Only `herdr terminal attach` on the agent terminal and on the ticker terminal was used.
+- Restoration of the production default session. It was not stopped and must not be.
 
-**Verdict.** CORE_RECOVERY_READY is NOT VERIFIED. The ticker-terminal evidence does not establish the defined behaviors for the agent's own output, and restoration was manual. Passing it would need: an observer or attach on the agent's pane with a saved detach/reattach capture, plus a restore path shown without an operator-supplied `--resume` argument. Those would need one more agent start, which was outside the authorization for this run.
+**Verdict.** The three defined behaviors have evidence on the agent's own pane. CORE_RECOVERY_READY is therefore a candidate for PASS, and its status is `PENDING_INDEPENDENT_REVIEW`. It is not marked PASS until a fresh review confirms the claims and their limits.
 
-## Gate status
+### Release decision
 
 | Gate | Status | Evidence |
 |---|---|---|
-| HERDR_WORKSPACE_READY | PASS (live) | round 1 (`w7`) in `reports/herdr-live/round1/t1-create.json` and `t1-tab.json`; round 2 (`w9`) in `reports/herdr-live/recovery/run/01-*` |
-| MULTI_AGENT_READY | PASS (live) | round 1 (two agents) in `reports/herdr-live/round1/t2-*-prompt.json`; the scrollback token reads were printed but not saved |
-| TERMINAL_AND_LOGS_READY | PASS (live) | round 1 log file in `reports/herdr-live/round1/logs/t3.log`, and pane cwd/workspace association; pane metadata printed but not saved |
-| GIT_WORKTREE_READY | PASS (live) | Herdr worktree create/remove and isolation, in `reports/herdr-live/round1/t4-wt.json` and the git output |
-| CORE_RECOVERY_READY | NOT VERIFIED | agent-pane detach/reattach untested; restoration was manual via `--resume`; ticker-terminal evidence only |
-| Manual Core release | BLOCKED pending evidence | four gates PASS; CORE_RECOVERY NOT VERIFIED |
+| HERDR_WORKSPACE_READY | PASS (live) | round 1 `round1/t1-*.json`; round 2 `recovery/run/01-*`; cycle 2 `cycle2/named/01-*` |
+| MULTI_AGENT_READY | PASS (live) | round 1 `round1/t2-*`; round 2 and cycle 2 single-agent evidence in the recovery directories |
+| TERMINAL_AND_LOGS_READY | PASS (live) | `round1/logs/t3.log`; pane cwd and workspace metadata |
+| GIT_WORKTREE_READY | PASS (live) | `round1/t4-wt.json` and the git output |
+| CORE_RECOVERY_READY | PENDING_INDEPENDENT_REVIEW (candidate PASS) | cycle 2 agent-pane detach/reattach, native restore after clean server stop, and continuity; limits above |
+| Manual Core release | PENDING_INDEPENDENT_REVIEW | four gates PASS; CORE_RECOVERY awaiting review |
 
 Experiment-infrastructure holds (`RUN_OWNERSHIP`, `CONTAINMENT`, `QUEUE`, `PROVENANCE`, `APPROVAL`, `EXPERIMENT_RECOVERY`) are unchanged and remain BLOCKED per `2026-11-03-manual-core-continuation.md`. This report does not change them.
 
 ## Prior independent reviews
 
-**Round 1** (verdict APPROVE_WITH_CHANGES) found the observer and resume claims unsupported by saved files, and the cleanup incomplete. Those points were addressed in round 2 at `b51a6b3`.
+**Round 1** (verdict APPROVE_WITH_CHANGES) found the observer and resume claims unsupported by saved files and the cleanup incomplete. Addressed at `b51a6b3`.
 
-**Round 2** (`ec3a4d3`, verdict APPROVE_WITH_CHANGES, with no CRITICAL findings) raised the following. Each was checked against the files before responding.
-- HIGH, agent pane not tested: confirmed. The report now states that (a) and (c) used the ticker terminal, and CORE_RECOVERY is NOT VERIFIED.
-- HIGH, restoration was manual: confirmed. (b) is scoped to manual `--resume` after a clean exit.
-- HIGH, "the diff is empty": confirmed false. The inventory differences are listed above and attributed as unverified.
-- MEDIUM, token source: confirmed. The token appears in the pane read `run/06-pane-before-exit.txt`, not in `run/05-prompt-token.json`. Corrected in the README.
-- MEDIUM, delta wording: confirmed. Corrected to describe the observed redraws.
-- LOW, implementation SHA: the PR head moved to `ec3a4d3` because of this evidence commit. The report now states `b51a6b3` as the implementation under test.
-- LOW, version and command-group claims without a file: the version is now cited to `post/herdr-version.txt` and `post/herdr-status.txt`. The command-group and agent-kind lists were removed.
-- LOW, "within about 1 ms": reworded to a recorded gap with a note on the polling bound.
+**Round 2** (`ec3a4d3`, APPROVE_WITH_CHANGES, no CRITICAL) found: the agent pane untested (confirmed; cycle 2 now covers it), restoration was manual (confirmed; cycle 2 adds native restore), the false "diff is empty" claim (confirmed; corrected), the token source (confirmed; corrected), delta wording (confirmed; corrected), the implementation SHA (corrected), unsupported version and command-group claims (corrected), and the "within about 1 ms" wording (corrected).
 
-**Round 3** (`21286ba`, verdict APPROVE_WITH_CHANGES, no CRITICAL). The reviewer confirmed the terminal targeting, the NOT VERIFIED verdict, and the spot-checked resume, recall, survival and inventory claims. Responses:
-- HIGH, round-1 gates cited artifacts that were not in the repository: confirmed. The artifacts still existed in the orchestrator's scratchpad, so they were copied into `reports/herdr-live/round1/` (with `logs/t3.log` and `logs/t5.log`), and every cited path now points there.
-- MEDIUM, "every recovery-run command targeted only w9": confirmed. Corrected to "every state-changing command", with the read-only inventory targets stated.
-- LOW, evidence-commit list: `21286ba` added.
-- LOW, the `HERDR_ENV` check has no saved file: now stated as in-session only.
-- LOW, "supported direct terminal attach": reworded to the command used.
-- LOW, the production-server rule: now attributed to the user's instruction for this run.
+**Round 3** (`21286ba`, APPROVE_WITH_CHANGES, no CRITICAL): the round-1 gates cited artifacts that were not in the repository (confirmed; now in `reports/herdr-live/round1/`), the "every recovery-run command" claim (confirmed; corrected to state-changing commands), the evidence-commit list (corrected), the unsaved `HERDR_ENV` check (now stated as in-session only), the direct-attach wording (corrected), and the production-server rule (attributed to the user's instruction). The round-3 corrections were not independently re-reviewed before this cycle.
 
-The round-3 fixes are documentation and artifact-copy changes. They were not independently re-reviewed. CORE_RECOVERY_READY remains NOT VERIFIED, and the Manual Core release remains BLOCKED.
+**Cycle 2 review**: pending. It will cover the agent-pane and native-restore evidence, the round-3 corrections, and all five gate verdicts, at the commit that contains this revision.

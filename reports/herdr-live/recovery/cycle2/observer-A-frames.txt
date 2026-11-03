@@ -1,0 +1,11 @@
+agent terminal observer frames: 10 (exit 124 at 40 s timeout)
+frame 0 seq=1 full=True bytes=8539 contains_67=False contains_token=True
+frame 1 seq=2 full=False bytes=273 contains_67=False contains_token=False
+frame 2 seq=3 full=False bytes=773 contains_67=False contains_token=False
+frame 3 seq=4 full=False bytes=91 contains_67=False contains_token=False
+frame 4 seq=5 full=False bytes=94 contains_67=False contains_token=False
+frame 5 seq=6 full=False bytes=125 contains_67=False contains_token=False
+frame 6 seq=7 full=False bytes=189 contains_67=False contains_token=False
+frame 7 seq=8 full=False bytes=93 contains_67=False contains_token=False
+frame 8 seq=9 full=False bytes=78 contains_67=True contains_token=False
+frame 9 seq=10 full=False bytes=387 contains_67=False contains_token=False
