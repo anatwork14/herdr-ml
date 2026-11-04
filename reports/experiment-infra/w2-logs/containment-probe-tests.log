@@ -1,0 +1,10 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w2-containment && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -p test_containment_probe.py -v
+# exit code: 0
+test_blocks_even_when_capability_hints_are_positive (test_containment_probe.ContainmentProbeTests.test_blocks_even_when_capability_hints_are_positive) ... ok
+test_detached_descendant_survives_original_process_group (test_containment_probe.ContainmentProbeTests.test_detached_descendant_survives_original_process_group) ... ok
+test_maps_current_membership_to_cgroup2_mount (test_containment_probe.ContainmentProbeTests.test_maps_current_membership_to_cgroup2_mount) ... ok
+
+----------------------------------------------------------------------
+Ran 3 tests in 0.032s
+
+OK

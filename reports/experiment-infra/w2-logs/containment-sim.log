@@ -1,0 +1,23 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w2-containment && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -p test_containment_sim.py -v
+# exit code: 0
+test_escape_attempt_is_counted_as_breach_not_success (test_containment_sim.InMemoryBoundaryTests.test_escape_attempt_is_counted_as_breach_not_success) ... ok
+test_failed_cleanup_leaves_member_and_refuses_release (test_containment_sim.InMemoryBoundaryTests.test_failed_cleanup_leaves_member_and_refuses_release) ... ok
+test_fork_during_cancellation_is_terminated_and_rechecked (test_containment_sim.InMemoryBoundaryTests.test_fork_during_cancellation_is_terminated_and_rechecked) ... ok
+test_interrupted_verification_declares_no_completion (test_containment_sim.InMemoryBoundaryTests.test_interrupted_verification_declares_no_completion) ... ok
+test_occupancy_is_rechecked_at_completion_not_assumed_from_proof (test_containment_sim.InMemoryBoundaryTests.test_occupancy_is_rechecked_at_completion_not_assumed_from_proof) ... ok
+test_partial_termination_refuses_completion_and_release (test_containment_sim.InMemoryBoundaryTests.test_partial_termination_refuses_completion_and_release) ... ok
+test_recovered_supervisor_cannot_release_without_fresh_verification (test_containment_sim.InMemoryBoundaryTests.test_recovered_supervisor_cannot_release_without_fresh_verification) ... ok
+test_signals_never_reach_non_members (test_containment_sim.InMemoryBoundaryTests.test_signals_never_reach_non_members) ... ok
+test_sigterm_ignoring_members_escalate_to_sigkill_and_complete (test_containment_sim.InMemoryBoundaryTests.test_sigterm_ignoring_members_escalate_to_sigkill_and_complete) ... ok
+test_worker_crash_mid_run_stays_unknown_and_unreleased (test_containment_sim.InMemoryBoundaryTests.test_worker_crash_mid_run_stays_unknown_and_unreleased) ... ok
+test_escaped_detached_descendant_is_still_occupancy (test_containment_sim.RealProcessBoundaryTests.test_escaped_detached_descendant_is_still_occupancy) ... ok
+test_fork_during_cancellation_real_children_are_reaped_and_rechecked (test_containment_sim.RealProcessBoundaryTests.test_fork_during_cancellation_real_children_are_reaped_and_rechecked) ... ok
+test_parent_exit_with_descendants_keeps_occupancy_and_refuses_release (test_containment_sim.RealProcessBoundaryTests.test_parent_exit_with_descendants_keeps_occupancy_and_refuses_release) ... ok
+test_partial_cleanup_real_refuses_then_full_cleanup_releases (test_containment_sim.RealProcessBoundaryTests.test_partial_cleanup_real_refuses_then_full_cleanup_releases) ... ok
+test_sigterm_ignoring_descendants_escalate_only_to_spawned_members (test_containment_sim.RealProcessBoundaryTests.test_sigterm_ignoring_descendants_escalate_only_to_spawned_members) ... ok
+test_worker_crash_real_leaves_unknown_state (test_containment_sim.RealProcessBoundaryTests.test_worker_crash_real_leaves_unknown_state) ... ok
+
+----------------------------------------------------------------------
+Ran 16 tests in 1.406s
+
+OK

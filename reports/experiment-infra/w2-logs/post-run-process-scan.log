@@ -1,0 +1,2 @@
+# command: pgrep -fa 'sim-child-[0-9a-f]{32}' (read-only /proc observation after the suite runs)
+# exit code: 1 (1 = no synthetic child remained)
