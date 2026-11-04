@@ -46,6 +46,19 @@ Task status column: DONE means the task's work was delivered. It is not a gate r
 
 LOW residuals carried forward are listed under Known residuals.
 
+## P7 security closure (branch `feat/p7-integration` at `f3123b3`)
+
+| ID | Task | Status | Component status | Evidence |
+|---|---|---|---|---|
+| P7.1 | Legacy ENQUEUE_REFUSED fence | DONE | OFFLINE_TESTED | `QUEUE_LEGACY_MIGRATION.md` |
+| P7.2 | Production worker execution boundary | DONE | OFFLINE_TESTED | `PRODUCTION_WORKER_BOUNDARY.md` |
+| P7.3 | Approval consumption consistency and handoff | DONE | OFFLINE_TESTED | `APPROVAL_CONSISTENCY.md` |
+| P7.4 | Daemon identity | DONE | OFFLINE_TESTED | `QUEUE.md` section 7 |
+| P7.5 | Integration of W1 to W3 (lead grouping) | DONE | OFFLINE_TESTED | `P7_INTEGRATION.md` |
+| P7.6 | Review and repair rounds (lead grouping) | DONE (reviews (c) to (e) NOT CLOSED) | OFFLINE_TESTED | `INDEPENDENT_REVIEW.md`, `P7_SECURITY_CLOSURE.md` |
+
+Suite: 592 tests OK on Python 3.12.14; Python 3.10 and 3.11 NOT_TESTED. `f3123b3` was verified by the lead and not independently re-reviewed. All six gates remain BLOCKED (`FINAL_READINESS.md`).
+
 ## Tests
 
 - Integration branch `69ac8ca`: `/mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests` ran 455 tests, OK, exit 0 (Python 3.12.14).

@@ -24,6 +24,10 @@ No Experiment Infrastructure item is PASS. Simulated results (W2 simulator, TEST
 | APPROVAL_READY | BLOCKED | No live acceptance criterion met on this host. No external trust anchor is provisioned; the production load fails closed with `TRUST_ANCHOR_UNPROVISIONED`. The verifier is OFFLINE_TESTED with TEST-ONLY anchors; production ownership checks are tested only with patched metadata. Not called by `researchctl.py`. | `APPROVAL.md`, `E2E_OFFLINE.md` §3 |
 | EXPERIMENT_RECOVERY_READY | BLOCKED | No live acceptance criterion met on this host. No live containment, so release is always refused (`CONTAINMENT_UNAVAILABLE`). Termination is by recorded identity only (no cgroup, no `cgroup.kill`; unrecorded descendants are not found). Recovery logic is OFFLINE_TESTED; CPU termination is ISOLATED_CPU_VERIFIED. | `RECOVERY.md`, `E2E_OFFLINE.md` |
 
+## P7 status (branch `feat/p7-integration` at `f3123b3`)
+
+**All six gates remain BLOCKED.** P7.1 to P7.6 are OFFLINE_TESTED (see `P7_SECURITY_CLOSURE.md`). Review record: `INDEPENDENT_REVIEW.md` (reviews (c), (d), (e) ended NOT CLOSED; `f3123b3` was not independently re-reviewed). Readiness: `FINAL_READINESS.md`; threat model: `THREAT_MODEL.md`; administrator prerequisites: `ADMIN_HANDOFF.md`. Suite: 592 tests OK on Python 3.12.14; Python 3.10 and 3.11 NOT_TESTED (`~/.local/bin/python3.11` is a broken symlink into a deleted /tmp directory).
+
 ## Component status per phase
 
 | Phase | Component | Source (accepted SHA) | Status |
