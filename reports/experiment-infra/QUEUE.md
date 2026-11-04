@@ -72,10 +72,12 @@ P0 protected tests: `git diff ef673ac -- tests/test_registry_p0.py tests/test_qu
 6. `reports/p0/core-release/pueue-escaped-path-check.py` (historical) copies only two scripts and does not work with the current module layout. It was left unchanged.
 7. Tests rely on SIGSTOP and timing (2 s client timeout). They are CPU-only and have not been run on another host.
 
-## 6. Repairs (three LOW findings)
+## 6. Repairs (review rounds on 267cd1a to 6215ef0)
 
 - A, check-to-use gap: `PrivatePueue` verifies each caller-supplied binary, copies it into `<root>/bin` (0700) via a temp file and rename, re-verifies the copy's sha256, and executes only the copy. The caller's path is never executed. Test: `test_only_the_verified_private_copy_is_executed` swaps the originals after construction and checks argv[0] and `/proc/<pid>/exe` are the private copies. Mutation (execute original path again) makes it fail.
 - B, raw exceptions in reconcile: `subprocess.TimeoutExpired` and `OSError` from the daemon are reported as `daemon_error` with no state transition (tests: `ReconcileErrorTests`).
 - C, enqueue timeout unrecorded: `release` durably records `ENQUEUE_ATTEMPTED` before `pueue enqueue`. A timeout or OS error records `ENQUEUE_UNKNOWN` and fences the row AMBIGUOUS (`ambiguous_from=BOUND`) through `_mark_ambiguous`; restart recovery fences an attempt with no recorded outcome the same way. No retry. AMBIGUOUS from BOUND cannot be resolved by queue evidence. Tests: `EnqueueTimeoutTests`.
 - D (MEDIUM), non-zero enqueue exit read as refused: the pueue client also exits non-zero when the response is lost after the daemon acted, and a signal gives a negative code. Every non-zero exit now records `ENQUEUE_UNKNOWN` and fences the row AMBIGUOUS (`ambiguous_from=BOUND`), like a timeout; `ENQUEUE_REFUSED` is no longer accepted as an outcome. An AMBIGUOUS row cannot be released again (`release` and `queue_enqueue_attempted` require BOUND). Tests: `EnqueueNonZeroExitTests` (exit 1 and -9 after a real enqueue in the private daemon). Mutation (restore `ENQUEUE_REFUSED`) makes both fail.
 - Unchanged: the queue identity still does not authenticate the socket peer; production dispatch stays disabled; the researchctl queued path stays BLOCKED.
+
+Residual (accepted, documented): a store written by the intermediate commit e90e3b1 could hold a BOUND row whose history contains ENQUEUE_REFUSED. Such a row is not fenced by the current code and could be released again. This state existed only on this unmerged development branch within this session and was never in a production store. Before any release that includes this code, `queue_recover` must fence such rows AMBIGUOUS (reviewer LOW, run_registry.py:461/468).
