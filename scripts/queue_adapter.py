@@ -413,8 +413,11 @@ def reconcile(daemon, folder, *, _store_home=None):
 
     Never submits, enqueues, restarts or removes anything, and never resolves an
     AMBIGUOUS row (that needs a VerifiedProof, and no verifier is registered).
+    Fencing requires quiescence: while a submitter, claimant or local owner of the
+    run is live or undeterminable, run_registry.RecoveryDeferred is raised and
+    nothing is written.
     """
-    phase = run_registry.queue_recover(folder, _store_home=_store_home)
+    phase = run_registry.queue_recover(folder, _store_home=_store_home, require_quiescent=True)
     row = run_registry.inspect_queue(folder, _store_home=_store_home)
     report = {'phase': phase, 'resubmitted': False, 'instance_matches': None,
               'daemon_reachable': False, 'tasks_for_intent': [], 'bound_task_present': None,
