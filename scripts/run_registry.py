@@ -51,23 +51,43 @@ INSPECT_FIELDS = ('run_id', 'project', 'manifest_sha256', 'state', 'owner_pid', 
 
 
 def _connect(folder, create=True):
-    """Open the run-local registry for writing. Mutators pass create=False and never create a file."""
+    """Open the run-local registry for writing. Mutators pass create=False and never create a file.
+
+    DDL runs only when the run table is absent, which is a new store. An existing
+    file, legacy or not, gets no DDL, so a refused mutator leaves its schema
+    unchanged. A sqlite3 error while opening or reading the store becomes a
+    RegistryError with code REGISTRY_UNREADABLE, and the file is left untouched.
+    """
     path = Path(folder) / 'registry.sqlite3'
     if not create and not path.is_file():
         raise RegistryError('No registry record; refusing to create one on a mutation')
-    db = sqlite3.connect(str(path), timeout=30, isolation_level=None)
-    db.execute('PRAGMA synchronous=FULL')
-    db.execute('PRAGMA busy_timeout=30000')
-    db.execute(RUN_TABLE)
-    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
+    db = None
+    try:
+        db = sqlite3.connect(str(path), timeout=30, isolation_level=None)
+        db.execute('PRAGMA busy_timeout=30000')
+        db.execute('PRAGMA synchronous=FULL')
+        present = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='run'").fetchone()
+        if not present:
+            if not create:
+                raise RegistryError('No run record in registry; refusing to create one on a mutation')
+            db.execute(RUN_TABLE)
+            db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
         id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
         boot TEXT, start_ticks TEXT)''')
-    db.execute('''CREATE TABLE IF NOT EXISTS process_namespaces (
+            db.execute('''CREATE TABLE IF NOT EXISTS process_namespaces (
         role TEXT PRIMARY KEY CHECK (role IN ('owner','child')),
         pid_namespace TEXT, mount_namespace TEXT)''')
-    db.execute('''CREATE TABLE IF NOT EXISTS events (
+            db.execute('''CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         owner TEXT, state TEXT NOT NULL, detail TEXT)''')
+    except RegistryError:
+        if db is not None:
+            db.close()
+        raise
+    except sqlite3.Error as exc:
+        if db is not None:
+            db.close()
+        raise RegistryError('REGISTRY_UNREADABLE: registry.sqlite3 is not a valid run store; not reset') from exc
     return db
 
 
@@ -549,7 +569,7 @@ def _insert_local_claim(folder, identity, token, fault_hook):
 
 def claim(folder, run_id, project, digest, initial_state, *,
           queue_instance=None, queue_task_id=None, queue_worker_id=None,
-          queue_attempt_id=None, queue_fence=None, queue_store_home=None, _fault=None):
+          queue_attempt_id=None, queue_fence=None, _store_home=None, _fault=None):
     """Atomically create a run and claim it exactly once, never stealing owners.
 
     A queued claim verifies the queue row under the queue write lock, adopts the
@@ -571,7 +591,7 @@ def claim(folder, run_id, project, digest, initial_state, *,
             claimant = _this_claimant()
             if claimant is None:
                 raise RegistryError('Process identity unavailable; cannot verify queue claimant')
-            queue_db = _queue_connect(folder, queue_store_home)
+            queue_db = _queue_connect(folder, _store_home)
             queue_db.execute('BEGIN IMMEDIATE')
             attempt_id = _verify_queued_claim(queue_db, folder, run_id, digest, queue_instance,
                                               queue_task_id, queue_worker_id, queue_fence,

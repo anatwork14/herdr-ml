@@ -106,7 +106,7 @@ class FaultBase(unittest.TestCase):
     def queued_local_claim(self, fence, attempt=None):
         return registry.claim(self.folder, 'run-1', 'project-a', DIGEST, 'QUEUED',
                               queue_instance=QUEUE, queue_task_id='task-1', queue_worker_id='worker-A',
-                              queue_fence=fence, queue_attempt_id=attempt, queue_store_home=self.home)
+                              queue_fence=fence, queue_attempt_id=attempt, _store_home=self.home)
 
 
 class QueueBoundaryFaults(FaultBase):
@@ -186,7 +186,7 @@ class QueueBoundaryFaults(FaultBase):
             fence = registry.queue_claim(FOLDER, 'run-1', DIGEST, QUEUE, 'task-1', 'worker-A', _store_home=HOME)
             registry.claim(FOLDER, 'run-1', 'project-a', DIGEST, 'QUEUED', queue_instance=QUEUE,
                            queue_task_id='task-1', queue_worker_id='worker-A', queue_fence=fence,
-                           queue_store_home=HOME, _fault=hook)
+                           _store_home=HOME, _fault=hook)
             print('NOT_REACHED')
         ''', 'claim:before_commit')
         self.assertIsNone(registry.inspect(self.folder))
@@ -204,7 +204,7 @@ class QueueBoundaryFaults(FaultBase):
             fence = registry.queue_claim(FOLDER, 'run-1', DIGEST, QUEUE, 'task-1', 'worker-A', _store_home=HOME)
             registry.claim(FOLDER, 'run-1', 'project-a', DIGEST, 'QUEUED', queue_instance=QUEUE,
                            queue_task_id='task-1', queue_worker_id='worker-A', queue_fence=fence,
-                           queue_store_home=HOME, _fault=hook)
+                           _store_home=HOME, _fault=hook)
             print('NOT_REACHED')
         ''', 'claim:after_commit')
         self.assertEqual(registry.queue_recover(self.folder, _store_home=self.home), 'CLAIMED')

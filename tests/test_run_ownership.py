@@ -5,6 +5,7 @@ containment layer or workload is used. Proof objects are synthetic and only
 shape-checked; no production issuer exists.
 """
 import importlib.util
+import inspect
 import json
 import os
 from pathlib import Path
@@ -106,7 +107,7 @@ class OwnershipBase(unittest.TestCase):
         return registry.claim(folder, run_id, 'project-a', digest, 'QUEUED',
                               queue_instance=QUEUE, queue_task_id=task, queue_worker_id=worker,
                               queue_fence=fence, queue_attempt_id=attempt,
-                              queue_store_home=self.home, _fault=fault)
+                              _store_home=self.home, _fault=fault)
 
 
 class IdentityTests(unittest.TestCase):
@@ -884,7 +885,7 @@ class RefusalHygieneTests(OwnershipBase):
         with self.assertRaisesRegex(registry.RegistryError, 'project'):
             registry.claim(folder, 'run-1', 'project-b', DIGEST, 'QUEUED', queue_instance=QUEUE,
                            queue_task_id='task-1', queue_worker_id='worker-A', queue_fence=fence,
-                           queue_store_home=self.home)
+                           _store_home=self.home)
         self.assertEqual(registry.inspect_queue(folder, _store_home=self.home)['phase'], 'CLAIMED')
         self.assertFalse((folder / 'execution.claim').exists())
         self.assertIsNone(registry.inspect(folder))
@@ -907,6 +908,144 @@ class RefusalHygieneTests(OwnershipBase):
             with self.subTest(call=index), self.assertRaises(registry.RegistryError):
                 call()
         self.assertEqual(registry.inspect(folder)['state'], 'FENCED')
+
+
+class ReviewRevisionTests(OwnershipBase):
+    """Regression tests for review items N1 to N5 and L1."""
+
+    def tamper(self, folder, assignment):
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            db.execute('UPDATE run SET %s WHERE id=1' % assignment)
+            db.commit()
+        finally:
+            db.close()
+
+    def raw_run(self, folder):
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            return db.execute('SELECT state, owner, fence FROM run WHERE id=1').fetchone()
+        finally:
+            db.close()
+
+    def schema(self, folder):
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            return db.execute('SELECT type, name, sql FROM sqlite_master ORDER BY name').fetchall()
+        finally:
+            db.close()
+
+    def claimed_run(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        return folder, token
+
+    def test_supersede_refuses_tampered_current_row(self):
+        folder, token = self.claimed_run()
+        attempt, fence = ownership.decode_token(token)
+        self.tamper(folder, "project='tampered'")
+        with self.assertRaises(registry.RegistryError):
+            registry.supersede(folder, token, self.proof('run-1', attempt, fence))
+        self.assertEqual(self.raw_run(folder), ('DISPATCHING', token, 1))
+
+    def test_advance_claimed_to_dispatching_refuses_tampered_current_row(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        self.tamper(folder, "manifest_sha256='%s'" % OTHER_DIGEST)
+        with self.assertRaises(registry.RegistryError):
+            registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        self.assertEqual(self.raw_run(folder), ('CLAIMED', token, 1))
+
+    def test_advance_dispatching_to_running_without_child_reason(self):
+        folder, token = self.claimed_run()
+        with self.assertRaisesRegex(registry.RegistryError, 'RUNNING requires a recorded child identity'):
+            registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        self.assertEqual(self.raw_run(folder)[0], 'DISPATCHING')
+
+    def test_running_without_recorded_child_is_refused(self):
+        folder, token = self.claimed_run()
+        with self.assertRaises(registry.RegistryError):
+            registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        self.assertEqual(self.raw_run(folder)[0], 'DISPATCHING')
+        registry.record_child(folder, token, os.getpid())
+        registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        self.assertEqual(self.raw_run(folder)[0], 'RUNNING')
+
+    def test_bindings_are_read_once_so_verification_and_minting_agree(self):
+        class Drifting:
+            """Mapping whose values change on every pass after the first."""
+            def __init__(self):
+                self.passes = 0
+
+            def keys(self):
+                self.passes += 1
+                return ['run_id', 'attempt_id', 'fence']
+
+            def __getitem__(self, key):
+                if self.passes > 1:
+                    return 'drifted'
+                return {'run_id': 'run-1', 'attempt_id': ATTEMPT, 'fence': 1}[key]
+
+        seen = {}
+
+        def verifier(kind, bindings, raw_evidence):
+            seen.update(bindings)
+            return True
+
+        with patch.dict(ownership._VERIFIED_ISSUERS, {TEST_ISSUER: verifier}):
+            proof = ownership.issue_proof(TEST_ISSUER, WHOLE, Drifting(), None)
+        self.assertEqual(seen, {'run_id': 'run-1', 'attempt_id': ATTEMPT, 'fence': 1})
+        self.assertEqual(proof.binding('run_id'), 'run-1')
+        self.assertEqual(proof.binding('attempt_id'), ATTEMPT)
+        self.assertEqual(proof.binding('fence'), 1)
+
+    def test_corrupt_store_makes_mutators_registry_errors_and_leaves_bytes(self):
+        folder = self.run_folder()
+        garbage = b'this is not a sqlite database' * 64
+        path = folder / 'registry.sqlite3'
+        path.write_bytes(garbage)
+        token = ownership.encode_token(ATTEMPT, 1)
+        calls = [lambda: registry.advance(folder, token, 'CLAIMED', 'DISPATCHING'),
+                 lambda: registry.finish(folder, token, {'state': 'UNKNOWN'}),
+                 lambda: registry.supersede(folder, token, None)]
+        for index, call in enumerate(calls):
+            with self.subTest(call=index), self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
+                call()
+            self.assertEqual(path.read_bytes(), garbage)
+
+    def test_refused_mutators_leave_legacy_schema_unchanged(self):
+        folder = self.run_folder()
+        self.write_legacy_registry(folder)
+        before = self.schema(folder)
+        token = ownership.encode_token(ATTEMPT, 1)
+        refusals = [lambda: registry.advance(folder, token, 'CLAIMED', 'DISPATCHING'),
+                    lambda: registry.record_child(folder, token, os.getpid()),
+                    lambda: registry.finish(folder, token, {'state': 'UNKNOWN'}),
+                    lambda: registry.verified_finish(folder, token, None, {'state': 'COMPLETED'}),
+                    lambda: registry.supersede(folder, token, None),
+                    lambda: registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')]
+        for index, call in enumerate(refusals):
+            with self.subTest(call=index), self.assertRaises(registry.RegistryError):
+                call()
+        self.assertEqual(self.schema(folder), before)
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            self.assertEqual(db.execute('SELECT state FROM run WHERE id=1').fetchone()[0], 'CLAIMED')
+        finally:
+            db.close()
+
+    def test_claim_has_no_public_queue_store_parameter(self):
+        params = inspect.signature(registry.claim).parameters
+        public_path_params = [name for name in params
+                              if not name.startswith('_') and ('store' in name or 'home' in name)]
+        self.assertEqual(public_path_params, [])
+        self.assertIn('_store_home', params)
+        self.assertIsNone(params['_store_home'].default)
+        folder = self.run_folder()
+        with self.assertRaises(TypeError):
+            registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED', queue_store_home=self.home)
+        self.assertFalse((folder / 'execution.claim').exists())
 
 
 if __name__ == '__main__':

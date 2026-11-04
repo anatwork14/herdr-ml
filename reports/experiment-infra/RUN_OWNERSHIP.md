@@ -13,7 +13,7 @@ Implementation: `scripts/run_ownership.py` (vocabulary and proof shapes), `scrip
 | `status.json`, `result.json`, logs | Projections | Never consulted for ownership decisions. |
 | Process identity (PID, boot, start ticks) | Observation only | A match is not containment proof or authority. A mismatch or absent PID is never treated as termination or permission to reclaim. |
 
-A successful leader exit is not completion. Whole-workload termination is a **required proof input**: a `VerifiedProof` of kind `WHOLE_WORKLOAD_TERMINATED`, minted only by `issue_proof()` after the verifier registered for its issuer accepts raw evidence. `_VERIFIED_ISSUERS` in `scripts/run_ownership.py` is empty, so no production path can obtain a proof, and production code cannot reach `COMPLETED`, `FAILED`, `INTERRUPTED` or `FENCED` today. Plain dicts, hand-built objects, unregistered issuers and verifiers that return anything other than `True` are refused. This is an in-process guard against accidental or naive forgery. It is not a security boundary against code running in the same process, and this document does not claim more than that.
+A successful leader exit is not completion. Whole-workload termination is a **required proof input**: a `VerifiedProof` of kind `WHOLE_WORKLOAD_TERMINATED`, minted only by `issue_proof()` after the verifier registered for its issuer accepts raw evidence. `_VERIFIED_ISSUERS` in `scripts/run_ownership.py` is empty, so no production path can obtain a proof, and production code cannot reach `COMPLETED`, `FAILED`, `INTERRUPTED` or `FENCED` today. Plain dicts, hand-built objects, unregistered issuers and verifiers that return anything other than `True` are refused. This is an in-process guard against accidental or naive forgery. It is not a security boundary against code running in the same process, and this document does not claim more than that. In-process forgery (`object.__new__`, reading `_ISSUE_KEY`, mutating `_VERIFIED_ISSUERS`) is out of scope and is not defended against.
 
 ## 2. Execution identity
 
@@ -130,7 +130,7 @@ The in-process claim-failure branch (queued claim, exception raised at `claim:be
 3. `RELEASED` and resource-release verification are not implemented.
 4. `researchctl` still refuses queued execution (guard unchanged). `queue_*` functions are not called by `researchctl`.
 5. Queue lookup evidence (`QUEUE_LOOKUP_*`) has no producer.
-6. Test-only parameters `_fault` and `_store_home` / `queue_store_home` exist on the registry and queue functions. Production callers pass `None`. `_store_home` changes where the queue index lives, so it must never be wired to user input.
+6. Test-only parameters `_fault` and `_store_home` exist on the registry and queue functions, including `claim`. The public signature of `claim` has no queue store parameter. Production callers pass `None`. `_store_home` changes where the queue index lives, so it must never be wired to user input.
 
 ## 9. Not covered
 

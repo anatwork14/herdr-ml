@@ -202,9 +202,10 @@ def issue_proof(issuer_id, kind, bindings, raw_evidence):
         raise RegistryError('No registered verifier for issuer %s' % issuer_id)
     if kind not in (WHOLE_WORKLOAD_TERMINATED, QUEUE_LOOKUP_TASK, QUEUE_LOOKUP_NO_TASK):
         raise RegistryError('Unknown proof kind')
-    if verifier(kind, dict(bindings), raw_evidence) is not True:
+    frozen = dict(bindings)  # read once: the verifier and the minted proof see the same values
+    if verifier(kind, dict(frozen), raw_evidence) is not True:
         raise RegistryError('Verifier rejected the evidence')
-    return VerifiedProof(_ISSUE_KEY, kind, bindings)
+    return VerifiedProof(_ISSUE_KEY, kind, frozen)
 
 
 def require_containment_proof(proof, *, run_id, attempt_id, fence):
