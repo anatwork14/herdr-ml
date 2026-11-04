@@ -290,7 +290,7 @@ def _queue_connect(folder, store_home=None):
             db.execute(QUEUE_EVENTS)
             db.execute(QUEUE_SUBMITTERS)
         except sqlite3.DatabaseError as exc:
-            raise RegistryError('Queue index unreadable or corrupt; fail closed') from exc
+            raise _unreadable('is corrupt or unreadable') from exc
         os.fsync(file_fd)
         os.fsync(dir_fd)
         os.close(file_fd)
@@ -503,6 +503,12 @@ def queue_enqueue_attempted(folder, intent_token, *, _store_home=None):
     db = _queue_connect(folder, _store_home)
     try:
         db.execute('BEGIN IMMEDIATE')
+        ident = db.execute('SELECT run_id FROM queue_binding WHERE intent_token=? AND run_folder=?',
+                           (intent_token, _folder_key(folder))).fetchone()
+        if ident is not None and _legacy_fence_in_tx(db, ident[0]) is not None:
+            # A historical refusal is fenced (or already was); the fence is committed, never released.
+            db.execute('COMMIT')
+            raise RegistryError(LEGACY_REFUSED_MESSAGE)
         row = db.execute("SELECT run_id, task_id FROM queue_binding WHERE intent_token=? AND run_folder=? "
                          "AND phase='BOUND'", (intent_token, _folder_key(folder))).fetchone()
         if row is None:
@@ -555,6 +561,94 @@ def queue_enqueue_outcome(folder, intent_token, outcome, detail='', *, _store_ho
         db.close()
 
 
+# -- historical ENQUEUE_REFUSED (P7.1) ----------------------------------------------
+# Commit e90e3b1 recorded ENQUEUE_REFUSED for a non-zero `pueue enqueue` exit and left the
+# row BOUND. The daemon may still have accepted the enqueue (a lost response reports
+# non-zero), and the old code allowed the same BOUND row to be released again: the replay
+# is shown in tests/fixtures/legacy_e90e3b1 (run-2 was enqueued and ran). A row whose queue
+# history contains ENQUEUE_REFUSED is therefore fenced AMBIGUOUS (origin BOUND) and never
+# released, claimed or retried. The fence and the LEGACY_REFUSED_FENCED marker are written
+# in the same transaction as the decision; an interrupted run commits nothing.
+# There is no flag, environment variable or parameter that lifts this fence.
+LEGACY_REFUSED = 'ENQUEUE_REFUSED'
+LEGACY_FENCE_MARKER = 'LEGACY_REFUSED_FENCED'
+LEGACY_REFUSED_MESSAGE = 'Historical enqueue refusal recorded for this run; fenced, never retried or released again'
+LEGACY_REFUSAL_REASON = ('historical ENQUEUE_REFUSED (daemon may have accepted the enqueue); '
+                         'fenced by migration')
+
+
+def _legacy_refused(db, run_id):
+    """True when the run's queue history holds ENQUEUE_REFUSED. A damaged event is unreadable."""
+    rows = db.execute('SELECT detail FROM queue_events WHERE run_id=? AND phase=?',
+                      (run_id, LEGACY_REFUSED)).fetchall()
+    for (detail,) in rows:
+        try:
+            if not isinstance(json.loads(detail), dict):
+                raise ValueError('detail is not an object')
+        except (TypeError, ValueError) as exc:
+            raise _unreadable('holds a damaged %s event' % LEGACY_REFUSED) from exc
+    return bool(rows)
+
+
+def _legacy_fence_in_tx(db, run_id):
+    """Caller holds BEGIN IMMEDIATE. Fence run_id if its history has a historical refusal.
+
+    Returns None when there is no refusal history (nothing written). Otherwise returns
+    (resulting_phase, action) with action FENCED, ALREADY_FENCED or KEPT. Only a BOUND row
+    is fenced; a CLAIMED row keeps its owner and is left unchanged; any other phase with
+    refusal history is inconsistent and stays blocked as REGISTRY_UNREADABLE.
+    """
+    if not _legacy_refused(db, run_id):
+        return None
+    row = db.execute('SELECT phase, ambiguous_from FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()
+    if row is None:
+        raise _unreadable('has refusal history without a queue binding')
+    phase, origin = row
+    marked = db.execute('SELECT 1 FROM queue_events WHERE run_id=? AND phase=? LIMIT 1',
+                        (run_id, LEGACY_FENCE_MARKER)).fetchone() is not None
+    if phase == 'BOUND':
+        _mark_ambiguous(db, run_id, 'BOUND', LEGACY_REFUSAL_REASON)
+        _queue_event(db, run_id, LEGACY_FENCE_MARKER, {'origin': 'BOUND'})
+        return 'AMBIGUOUS', 'FENCED'
+    if phase == 'AMBIGUOUS' and origin == 'BOUND':
+        if not marked:
+            _queue_event(db, run_id, LEGACY_FENCE_MARKER, {'origin': 'BOUND', 'note': 'fence already present'})
+            return 'AMBIGUOUS', 'FENCED'
+        return 'AMBIGUOUS', 'ALREADY_FENCED'
+    if phase == 'CLAIMED':
+        return 'CLAIMED', 'KEPT'
+    raise _unreadable('has refusal history on a %s row' % phase)
+
+
+def queue_migrate_legacy_refusals(folder, *, _store_home=None):
+    """Explicit reconciliation of every run in the queue store holding ENQUEUE_REFUSED history.
+
+    One transaction: either every fence and marker is committed, or none is. Idempotent: a
+    second run finds the fences in place and writes nothing. Returns a report mapping each
+    run_id to FENCED, ALREADY_FENCED or KEPT. Unreadable or inconsistent history raises
+    REGISTRY_UNREADABLE and nothing is written.
+    """
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        run_ids = sorted(r[0] for r in db.execute(
+            'SELECT DISTINCT run_id FROM queue_events WHERE phase=?', (LEGACY_REFUSED,)).fetchall())
+        report = {}
+        for run_id in run_ids:
+            outcome = _legacy_fence_in_tx(db, run_id)
+            report[run_id] = outcome[1]
+        db.execute('COMMIT')
+        return report
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
 def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker_id, *,
                 _store_home=None, _fault=None):
     """Claim a bound task once. Issues a new attempt and a monotonic fence; never steals.
@@ -572,6 +666,9 @@ def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker
     db = _queue_connect(folder, _store_home)
     try:
         db.execute('BEGIN IMMEDIATE')
+        if _legacy_fence_in_tx(db, run_id) is not None:
+            db.execute('COMMIT')
+            raise RegistryError(LEGACY_REFUSED_MESSAGE)
         updated = db.execute(
             "UPDATE queue_binding SET phase='CLAIMED', worker_id=?, attempt_id=?, claimant=?, fence=fence+1 "
             "WHERE run_id=? AND manifest_sha256=? AND queue_instance=? AND task_id=? "
@@ -629,6 +726,9 @@ def queue_claim_idempotent(folder, run_id, manifest_sha256, queue_instance, task
             return row[6], row[7], True
         if phase != 'BOUND':
             raise RegistryError('Queue row is %s; only a BOUND task can be claimed' % phase)
+        if _legacy_fence_in_tx(db, run_id) is not None:
+            db.execute('COMMIT')
+            raise RegistryError(LEGACY_REFUSED_MESSAGE)
         attempt_id = run_ownership.new_attempt_id()
         updated = db.execute(
             "UPDATE queue_binding SET phase='CLAIMED', worker_id=?, attempt_id=?, claimant=?, fence=fence+1 "
@@ -669,6 +769,9 @@ def queue_recover(folder, *, _store_home=None, require_quiescent=False):
             db.execute('COMMIT')
             return None
         run_id, phase, attempt_id, fence = row
+        legacy = _legacy_fence_in_tx(db, run_id)
+        if legacy is not None:
+            phase = legacy[0]
         if require_quiescent:
             origin = None
             if phase == 'INTENT' or (phase == 'BOUND' and _enqueue_pending(db, run_id)):
