@@ -88,7 +88,11 @@ The defined behaviors are: (a) detach and reattach of agent output, (b) restorat
 - Restoration of the production default session. It was not stopped and must not be.
 - Output observed during the detach window on the agent pane.
 
-**Verdict.** CORE_RECOVERY_READY is `PENDING_INDEPENDENT_REVIEW`. It is a candidate for PASS, but the limits above, especially the single outdated-integration restore and the absent detach-window output, need review before any PASS.
+**Final isolated cycle (`integration-upgrade/final/`, commit `c19c3e8`-`2dfcbb3`).** Run on the isolated v11 Claude config (P2 login by the account owner) in named session `mlrec-final`. One token prompt (exit 0, acknowledged `OK`); clean `server stop` (exit 0); restart with no agent arguments; the agent was restored in the same session `2d592efa-…`, with argv `claude --resume 2d592efa-…` and the server as grandparent (`run/21`). The server log records a restore with `workspaces=1` but not the argv or sender (`run/23`). One marker-only recall prompt returned the token (`run/26`, `run/28`). This is one case of clean-stop restoration on v11. It does not establish the restore mechanism, crash recovery, or the sidebar TUI.
+
+Cleanup and isolation are not clean. The agent's exit before the stop was not verified: the `/exit` send outputs and exit codes were not saved. The zero-process count was taken after the stop. The default session's production pane `w1:p1` `scroll.max_offset_from_bottom` changed 1235 → 1239, and that change is unexplained. Stable inventories are otherwise identical, and two production files are hash-verified.
+
+**Verdict.** CORE_RECOVERY_READY is `PENDING_INDEPENDENT_REVIEW`. It is a candidate for PASS, but the limits above, especially the single outdated-integration restore, the absent detach-window output, the unverified pre-stop exit and the unexplained production scroll change, need review before any PASS. Two independent reviews of the final cycle (at `4322889` and `24bd1d1`) did not clear it; the corrections are at `2dfcbb3`. The closure plan is in `reports/herdr-live/recovery-closure/PLAN.md`.
 
 ### Release decision
 
@@ -98,8 +102,8 @@ The defined behaviors are: (a) detach and reattach of agent output, (b) restorat
 | MULTI_AGENT_READY | PASS (live) | `round1/t2-*-prompt.json`; trust-dialog states unsaved |
 | TERMINAL_AND_LOGS_READY | PASS (live) | `gates/run2/logs/gate.log`, `steps/pane-read.out`, `steps/pane-get.out` |
 | GIT_WORKTREE_READY | PASS (live) | `gates/run2/steps/worktree-create.out`, `wt-head.out`, `isolation-check.out`, `worktree-remove.out`, `branch-after.out` |
-| CORE_RECOVERY_READY | PENDING_INDEPENDENT_REVIEW | see (a)–(c) and the limits |
-| Manual Core release | PENDING_INDEPENDENT_REVIEW | four gates PASS on saved evidence; CORE_RECOVERY awaiting review |
+| CORE_RECOVERY_READY | PENDING_INDEPENDENT_REVIEW | see (a)–(c), the final-cycle paragraph and the limits |
+| Manual Core release | BLOCKED | four gates PASS on saved evidence; CORE_RECOVERY is PENDING and its closure criteria are in `reports/herdr-live/recovery-closure/PLAN.md` |
 
 Experiment-infrastructure holds (`RUN_OWNERSHIP`, `CONTAINMENT`, `QUEUE`, `PROVENANCE`, `APPROVAL`, `EXPERIMENT_RECOVERY`) are unchanged and remain BLOCKED per `2026-11-03-manual-core-continuation.md`.
 
