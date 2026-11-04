@@ -1,7 +1,7 @@
 COMMAND: cd /mnt/ssd/genos2/workspace/herdr-ml-w1-ownership && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest tests.test_run_ownership -v
 EXIT_CODE: 0
 PYTHON: Python 3.12.14
-BRANCH: feat/exp-w1-ownership  HEAD: 3002ac0
+BRANCH: feat/exp-w1-ownership  HEAD: 15d475c
 ----- raw output -----
 test_state_machine_doc_names_every_state_phase_and_crash_point (tests.test_run_ownership.DocumentationConsistencyTests.test_state_machine_doc_names_every_state_phase_and_crash_point) ... ok
 test_unknown_crash_point_names_are_rejected_by_the_hook (tests.test_run_ownership.DocumentationConsistencyTests.test_unknown_crash_point_names_are_rejected_by_the_hook) ... ok
@@ -54,11 +54,19 @@ test_wrong_task_to_run_mappings_are_rejected (tests.test_run_ownership.QueueBind
 test_claim_with_another_project_is_refused_on_both_paths_and_creates_nothing (tests.test_run_ownership.RefusalHygieneTests.test_claim_with_another_project_is_refused_on_both_paths_and_creates_nothing) ... ok
 test_derived_successor_token_is_inert_after_supersede (tests.test_run_ownership.RefusalHygieneTests.test_derived_successor_token_is_inert_after_supersede) ... ok
 test_refused_mutators_never_create_a_registry_file (tests.test_run_ownership.RefusalHygieneTests.test_refused_mutators_never_create_a_registry_file) ... ok
+test_advance_claimed_to_dispatching_refuses_tampered_current_row (tests.test_run_ownership.ReviewRevisionTests.test_advance_claimed_to_dispatching_refuses_tampered_current_row) ... ok
+test_advance_dispatching_to_running_without_child_reason (tests.test_run_ownership.ReviewRevisionTests.test_advance_dispatching_to_running_without_child_reason) ... ok
+test_bindings_are_read_once_so_verification_and_minting_agree (tests.test_run_ownership.ReviewRevisionTests.test_bindings_are_read_once_so_verification_and_minting_agree) ... ok
+test_claim_has_no_public_queue_store_parameter (tests.test_run_ownership.ReviewRevisionTests.test_claim_has_no_public_queue_store_parameter) ... ok
+test_corrupt_store_makes_mutators_registry_errors_and_leaves_bytes (tests.test_run_ownership.ReviewRevisionTests.test_corrupt_store_makes_mutators_registry_errors_and_leaves_bytes) ... ok
+test_refused_mutators_leave_legacy_schema_unchanged (tests.test_run_ownership.ReviewRevisionTests.test_refused_mutators_leave_legacy_schema_unchanged) ... ok
+test_running_without_recorded_child_is_refused (tests.test_run_ownership.ReviewRevisionTests.test_running_without_recorded_child_is_refused) ... ok
+test_supersede_refuses_tampered_current_row (tests.test_run_ownership.ReviewRevisionTests.test_supersede_refuses_tampered_current_row) ... ok
 test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed (tests.test_run_ownership.TamperAndLegacyRowTests.test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed) ... ok
 test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors (tests.test_run_ownership.TamperAndLegacyRowTests.test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors) ... ok
 test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish (tests.test_run_ownership.TamperAndLegacyRowTests.test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish) ... ok
 
 ----------------------------------------------------------------------
-Ran 54 tests in 7.595s
+Ran 62 tests in 9.072s
 
 OK
