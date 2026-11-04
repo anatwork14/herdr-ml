@@ -67,9 +67,9 @@ Evidence is a directory with these parts:
   - `steps`: a list of `{command, exit_code, started_utc, finished_utc, stdout_sha256}`
   - `result`: `populated_after_termination`, `procs_after_termination`, `escape_write_result`, and `forked_during_termination_terminated`
 - Transcript files whose hashes appear in `manifest.json`.
-- A signature over the bundle, made with an administrator-controlled key that the worker cannot read.
+- A signature over the bundle, made with a key held outside the worker's reach. This is a requirement to verify on the delegated host. It is not a present property: the current W2 verifier seals proofs with an in-process key, which same-user worker code can read.
 
-Per run attempt, the production verifier also needs a fresh challenge. It issues a nonce and epoch for the attempt, and the verifier emits a `ContainmentProof` for exactly that run, attempt and boundary. The proof is checked by `verify_for_release` in `scripts/containment_contract.py`. Its trust anchor must be provisioned by the operator, separately from the worker. The current production anchor set is empty and must stay empty until this evidence has been independently reviewed.
+Per run attempt, the production verifier also needs a fresh challenge. It issues a nonce and epoch for the attempt, and the verifier emits a `ContainmentProof` for exactly that run, attempt and boundary. The proof is checked by `verify_for_release` in `scripts/containment_contract.py`. Its trust anchor must be provisioned by the operator, separately from the worker, in the same way as the trust-anchor requirement in the W4 APPROVAL.md (not verified from this worktree). The HMAC seal in `containment_contract.py` is not authority against a same-user worker and does not satisfy this requirement. The current production anchor set is empty and must stay empty until this evidence has been independently reviewed.
 
 ## Current status
 
