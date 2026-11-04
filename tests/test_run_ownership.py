@@ -234,6 +234,19 @@ class LocalOwnershipTests(OwnershipBase):
         registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
         self.assertEqual(registry.inspect(folder)['state'], 'RUNNING')
 
+    def test_interrupted_finish_commit_keeps_running_and_writes_no_result(self):
+        folder = self.run_folder()
+        token = self.claim(folder)
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        leader = {'state': 'UNKNOWN', 'leader_state': 'COMPLETED', 'exit_code': 0}
+        with self.assertRaises(SimulatedCrash):
+            registry.finish(folder, token, leader, _fault=self.crash_at('finish:before_commit'))
+        row = registry.inspect(folder)
+        self.assertEqual((row['state'], row['result']), ('RUNNING', None))
+        registry.finish(folder, token, leader)
+        self.assertEqual(registry.inspect(folder)['state'], 'UNKNOWN')
+
     def test_crash_before_local_claim_commit_leaves_marker_and_no_row(self):
         folder = self.run_folder()
         with self.assertRaises(SimulatedCrash):
@@ -568,6 +581,25 @@ class QueueBindingTests(OwnershipBase):
         with self.assertRaises(registry.RegistryError):
             registry.queue_intent(self.run_folder(), 'run-1', DIGEST, QUEUE, _store_home=self.home)
         self.assertEqual(store.read_bytes(), garbage)
+
+
+class DocumentationConsistencyTests(unittest.TestCase):
+    """The protocol document must name every state, phase and crash boundary the code uses."""
+
+    def test_state_machine_doc_names_every_state_phase_and_crash_point(self):
+        doc = (Path(__file__).resolve().parents[1] / 'reports' / 'experiment-infra' / 'RUN_OWNERSHIP.md').read_text()
+        names = (set(ownership.LOCAL_STATES) | set(ownership.QUEUE_PHASES) | set(ownership.CRASH_POINTS) |
+                 {'CANCEL_REQUESTED', 'RELEASED', 'LEGACY_FENCED', 'RETRYABLE'})
+        missing = sorted(name for name in names if name not in doc)
+        self.assertEqual(missing, [])
+        self.assertIn('OFFLINE_TESTED', doc)
+        self.assertIn('BLOCKED', doc)
+        self.assertNotIn('OPERATIONALLY_READY: PASS', doc)
+
+    def test_unknown_crash_point_names_are_rejected_by_the_hook(self):
+        with self.assertRaises(ownership.RegistryError):
+            ownership.fault(lambda point: None, 'claim:before_comit')
+        ownership.fault(None, 'claim:before_comit')
 
 
 if __name__ == '__main__':
