@@ -1,6 +1,6 @@
 # RUN_OWNERSHIP: execution identity, fencing and cross-database recovery
 
-Phase 1 (P1.2), worker W1. Gate status: **OFFLINE_TESTED is withheld in this revision.** The ownership tests pass, but 9 P0 registry tests in `tests/test_registry_p0.py` fail under the M2 and L1 rules, and that conflict needs a coordinator decision (section 8, item 1). Live queue integration, live containment and cross-host operation remain **BLOCKED**. Nothing here authorizes official execution, queue dispatch or GPU work.
+Phase 1 (P1.2), worker W1. Gate status: **OFFLINE_TESTED** for the offline protocol tests in this document only (full suite: 185 tests OK, see section 10). Live queue integration, live containment and cross-host operation remain **BLOCKED**. Nothing here authorizes official execution, queue dispatch or GPU work.
 
 Implementation: `scripts/run_ownership.py` (vocabulary and proof shapes), `scripts/run_registry.py` (SQLite transactions), `scripts/researchctl.py` (test-only hook at named boundaries). Tests: `tests/test_run_ownership.py`, `tests/test_run_ownership_faults.py`.
 
@@ -125,7 +125,7 @@ The in-process claim-failure branch (queued claim, exception raised at `claim:be
 
 ## 8. Known deviations and open items (for reviewer decision)
 
-1. **Closed in this revision (M2).** A local claim must match the run folder project on both the SUBMITTED and queued paths. A mismatch is refused before any marker or registry file is created. P0 input change: `tests/test_queue_protocol.py` claim calls use `project='project-a'` (4 calls, lines 127, 169, 172, 175; assertions unchanged). `tests/test_registry_p0.py` was **not** changed in this revision. Its fixtures need a standard run-folder layout and a recorded child before RUNNING, and those changes go beyond the authorised input change. As a result 9 P0 registry tests currently fail, pending a coordinator decision.
+1. **Closed (M2).** A local claim must match the run folder project on both the SUBMITTED and queued paths. A mismatch is refused before any marker or registry file is created. P0 input change: `tests/test_queue_protocol.py` claim calls use `project='project-a'` (4 calls, lines 127, 169, 172, 175; assertions unchanged). `tests/test_registry_p0.py` fixture changes were authorised by the owner and are in their own commit: setUp and CrashTests use the standard run-folder layout, and fixtures call `record_child` before RUNNING (L1). No assertion, expected value, test name or test set changed.
 2. `CANCEL_REQUESTED` is not durable. The signal handler sets an in-memory flag only.
 3. `RELEASED` and resource-release verification are not implemented.
 4. `researchctl` still refuses queued execution (guard unchanged). `queue_*` functions are not called by `researchctl`.
@@ -149,4 +149,4 @@ Logs: `reports/experiment-infra/w1-logs/`. Each file records the exact command a
 - `ownership-unit.log`: `tests/test_run_ownership.py`.
 - `ownership-faults.log`: `tests/test_run_ownership_faults.py`.
 
-Concurrency tests: the local claim race uses 10 threads, the queued claim race uses 8 threads, and the P0 cross-process race uses 20 processes. Gate: OFFLINE_TESTED is withheld in this revision (9 failing P0 registry tests, pending a coordinator decision on `tests/test_registry_p0.py`). Live integration remains BLOCKED. The gate matrix files were not edited in this phase.
+Concurrency tests: the local claim race uses 10 threads, the queued claim race uses 8 threads, and the P0 cross-process race uses 20 processes. Gate: OFFLINE_TESTED, backed by `w1-logs/full-suite.log` (185 tests OK). Live integration remains BLOCKED. The gate matrix files were not edited in this phase.
