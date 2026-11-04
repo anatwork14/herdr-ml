@@ -570,6 +570,32 @@ LATE_SUBMITTER = textwrap.dedent('''
 ''')
 
 
+# Records an INTENT (no binding) and stays a live submitter until the test closes stdin.
+INTENT_SUBMITTER = textwrap.dedent('''
+    import sys
+    sys.path.insert(0, {scripts!r})
+    import run_registry as registry
+    registry.queue_intent({folder!r}, 'run-1', {digest!r}, {queue!r}, _store_home={home!r})
+    print('INTENT', flush=True)
+    sys.stdin.read()
+''')
+
+
+class _NoTouchDaemon:
+    """Reconcile must not reach the daemon when recovery is deferred."""
+
+    def __init__(self):
+        self.calls = []
+
+    def instance_id(self):
+        self.calls.append('instance_id')
+        return QUEUE
+
+    def status(self):
+        self.calls.append('status')
+        return {'tasks': {}}
+
+
 class LaunchQuiescenceTests(RecoveryBase):
     """Fix 1: interrupted-launch fencing only when no submitter or worker of the run is active.
 
@@ -663,6 +689,26 @@ class LaunchQuiescenceTests(RecoveryBase):
                                      _store_home=case['home'])
 
 
+    def test_reconcile_with_live_intent_submitter_defers_and_leaves_intent_unchanged(self):
+        import queue_adapter
+        case = self.new_case()
+        submitter = self.spawn(INTENT_SUBMITTER, case)
+        self.assertEqual(submitter.stdout.readline().strip(), 'INTENT')
+        before = self.queue_db(case).read_bytes()
+        daemon = _NoTouchDaemon()
+        with self.assertRaises(run_registry.RecoveryDeferred) as raised:
+            queue_adapter.reconcile(daemon, case['folder'], _store_home=case['home'])
+        self.assertIn('RECOVERY_DEFERRED', str(raised.exception))
+        self.assertIn('submitter', str(raised.exception))
+        self.assertEqual(daemon.calls, [])
+        self.assertEqual(run_registry.inspect_queue(case['folder'], _store_home=case['home'])['phase'], 'INTENT')
+        self.assertEqual(self.queue_db(case).read_bytes(), before)
+        self.stop(submitter)
+        # Once the submitter is gone, reconcile fences the intent and never resubmits.
+        report = queue_adapter.reconcile(daemon, case['folder'], _store_home=case['home'])
+        self.assertEqual((report['phase'], report['resubmitted']), ('AMBIGUOUS', False))
+
+
 class DescendantLineageTests(RecoveryBase):
     """Fix 2: only the leader, its session or its parent chain can be recorded as descendants."""
 
@@ -707,6 +753,40 @@ class DescendantLineageTests(RecoveryBase):
             self.assertNotIn(outsider['pid'], signalled)
             self.assertIsNone(proc.poll())
             self.assertEqual(run_recovery.observe(outsider)[0], run_recovery.ALIVE)
+
+
+    def test_session_sibling_of_non_session_leader_cannot_be_recorded_or_signalled(self):
+        case = self.new_case()
+        token = self.local_run(case['folder'])
+        procs = []
+        for _ in range(2):  # leader and sibling: both children of this test, neither leads a session
+            proc = subprocess.Popen([sys.executable, '-I', '-c', 'import time; time.sleep(60)', self.marker],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            self.handles.append(proc)
+            procs.append(proc)
+        leader, sibling = procs
+        leader_identity = run_recovery.read_identity(leader.pid, role='leader')
+        sibling_identity = run_recovery.read_identity(sibling.pid, role='sibling')
+        self.recorded.extend([leader_identity, sibling_identity])
+        self.assertNotEqual(os.getsid(leader.pid), leader.pid)
+        self.assertEqual(os.getsid(sibling.pid), os.getsid(leader.pid))
+        run_registry.record_child(case['folder'], token, leader.pid)
+        run_registry.advance(case['folder'], token, 'DISPATCHING', 'RUNNING')
+        for batch in ([sibling_identity], [leader_identity, sibling_identity]):
+            with self.subTest(size=len(batch)):
+                with self.assertRaises(RegistryError) as raised:
+                    run_recovery.record_descendants(case['folder'], token, batch)
+                self.assertIn('lineage', str(raised.exception))
+        self.assertEqual(run_recovery.inspect_recovery(case['folder'])['descendants'], [])
+        self.assertNotIn(sibling.pid, {i['pid'] for i in run_recovery.recorded_identities(case['folder'])})
+        entry = run_registry.inspect(case['folder'])
+        run_registry.recovery_fence(case['folder'], (entry['owner_pid'], entry['owner_boot'],
+                                                     entry['owner_start']), 'test: owner treated as gone')
+        report = run_recovery.recover(case['folder'], queued=False, grace_s=0.3)
+        signalled = {e['identity']['pid'] for e in (report.get('termination') or {}).get('entries', [])}
+        self.assertNotIn(sibling.pid, signalled)
+        self.assertIsNone(sibling.poll())
+        self.assertEqual(run_recovery.observe(sibling_identity)[0], run_recovery.ALIVE)
 
 
 class SafetyInvariantTests(unittest.TestCase):

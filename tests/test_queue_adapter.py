@@ -339,7 +339,11 @@ class PrivateDaemonTests(Base):
     def test_restart_after_crash_before_submission_fences_intent_without_resubmitting(self):
         self.daemon.start()
         folder = self.folder()
-        registry.queue_intent(folder, 'run-1', DIGEST, self.daemon.instance_id(), _store_home=self.home)
+        # The submitter records the intent and then dies (the crash), so reconcile sees it gone.
+        code = ('import sys; sys.path.insert(0, %r); import run_registry as r; '
+                'r.queue_intent(%r, "run-1", %r, %r, _store_home=%r)'
+                % (str(SCRIPTS), str(folder), DIGEST, self.daemon.instance_id(), str(self.home)))
+        subprocess.run([sys.executable, '-I', '-c', code], check=True, timeout=60)
         self.daemon.kill()
         restarted = self.new_daemon()
         restarted.start()

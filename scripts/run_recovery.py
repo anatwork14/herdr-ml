@@ -228,7 +228,8 @@ def _proc_lineage(pid):
 
 def _lineage_refusal(leader, identity):
     """None when identity is the recorded leader, or a current process whose parent chain reaches
-    the leader or whose session id equals the leader's. Otherwise the refusal reason.
+    the leader or, when the leader is a session leader (session id == its pid), whose session id
+    equals the leader's. Otherwise the refusal reason.
 
     The leader must still be observable (running or an unreaped zombie) with its
     recorded start time; each presented identity must match the live process now.
@@ -246,7 +247,9 @@ def _lineage_refusal(leader, identity):
         _, ppid, session, start = _proc_lineage(identity['pid'])
         if start != identity['start_ticks']:
             return 'PID %d changed identity during verification' % identity['pid']
-        if session == leader_session:
+        # The session clause applies only when the leader leads its own session; otherwise the
+        # session is shared with the leader's parent and siblings, so only the parent chain counts.
+        if leader_session == leader['pid'] and session == leader_session:
             return None
         pid = ppid
         for _ in range(MAX_LINEAGE_DEPTH):
@@ -265,8 +268,8 @@ def record_descendants(folder, token, identities, *, _fault=None):
     """Record descendant identities under the current owner token (DISPATCHING or RUNNING).
 
     Each identity must belong to the recorded leader: be the leader itself, have
-    a parent chain reaching the leader, or share the leader's session id
-    (checked against /proc now, under the registry write lock). One outsider
+    a parent chain reaching the leader, or share the leader's session id when the
+    leader is a session leader (checked against /proc now, under the registry write lock). One outsider
     refuses the whole call and nothing is recorded, so recovery never signals it.
 
     The registry write lock is held across the recovery-store commit, so recovery
