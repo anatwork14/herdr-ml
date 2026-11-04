@@ -34,7 +34,6 @@ from pathlib import Path
 import secrets
 import stat
 import sys
-import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import execution_manifest as em  # noqa: E402
@@ -133,8 +132,20 @@ def _is_abs(path):
     return isinstance(path, (str, os.PathLike)) and os.path.isabs(os.fspath(path))
 
 
-def _tempdir():
-    return tempfile.gettempdir()
+def _test_root(test_root, code):
+    """The directory a test-only anchor or state must live under.
+
+    It must be passed explicitly by the test; nothing is derived from the environment
+    (TMPDIR) or tempfile.gettempdir().
+    """
+    if test_root is None:
+        raise VerificationError(code, 'test-only mode requires an explicit test_root')
+    if not _is_abs(test_root):
+        raise VerificationError(code, 'test_root must be absolute')
+    root = os.path.realpath(os.fspath(test_root))
+    if root == os.sep:
+        raise VerificationError(code, 'test_root cannot be the filesystem root')
+    return root
 
 
 def _within(path, base):
@@ -310,7 +321,7 @@ def _load_key(path, *, admin, workers, test_only):
 
 
 def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_uids=None,
-                      worker_uids=None):
+                      worker_uids=None, test_root=None):
     """Load an operator-provisioned anchor.
 
     Production mode requires admin_uids and worker_uids. Every directory from the anchor
@@ -319,7 +330,9 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_
     group- or other-accessible (files).
 
     test_only=True is for the test suite only: it requires the TEST-ONLY- label, a
-    directory under the system temp directory, and skips ownership checks.
+    directory under the test_root the test passes explicitly (never TMPDIR or
+    tempfile.gettempdir()), and skips ownership checks. test_root is refused in
+    production mode.
     """
     anchor_dir = _plain_path(anchor_dir, TRUST_ANCHOR_INVALID)
     try:
@@ -334,9 +347,11 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_
     _check_location(real, repo_root, run_dir)
     if test_only:
         admin, workers = (), ()
-        if not _within(real, os.path.realpath(_tempdir())):
-            raise VerificationError(TRUST_ANCHOR_INVALID, 'test-only anchors must live in the temp directory')
+        if not _within(real, _test_root(test_root, TRUST_ANCHOR_INVALID)):
+            raise VerificationError(TRUST_ANCHOR_INVALID, 'test-only anchors must live under test_root')
     else:
+        if test_root is not None:
+            raise VerificationError(TRUST_ANCHOR_INVALID, 'test_root is only valid in test-only mode')
         admin, workers = _uid_sets(admin_uids, worker_uids, TRUST_ANCHOR_INVALID)
         _check_ancestors(real, admin=admin, workers=workers)
     _check_directory(real, admin=admin, workers=workers, test_only=test_only, code=TRUST_ANCHOR_INVALID)
@@ -378,14 +393,17 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_
 
 # ---------------------------------------------------------------- state directories
 
-def _open_state_dir(directory, *, repo_root, run_dir, admin_uids, worker_uids, test_only, code):
+def _open_state_dir(directory, *, repo_root, run_dir, admin_uids, worker_uids, test_only, code,
+                    test_root=None):
     real = _plain_path(directory, code)
     _check_location(real, repo_root, run_dir, code)
     if test_only:
         admin, workers = (), ()
-        if not _within(real, os.path.realpath(_tempdir())):
-            raise VerificationError(code, 'test-only state must live in the temp directory')
+        if not _within(real, _test_root(test_root, code)):
+            raise VerificationError(code, 'test-only state must live under test_root')
     else:
+        if test_root is not None:
+            raise VerificationError(code, 'test_root is only valid in test-only mode')
         admin, workers = _uid_sets(admin_uids, worker_uids, code)
         _check_ancestors(real, admin=admin, workers=workers, code=code)
     _check_directory(real, admin=admin, workers=workers, test_only=test_only, code=code)
@@ -400,10 +418,11 @@ class RevocationState(object):
     """
 
     def __init__(self, directory, *, repo_root, run_dir, anchor_id, admin_uids=None, worker_uids=None,
-                 test_only=False):
+                 test_only=False, test_root=None):
         self.directory, self._admin, self._workers = _open_state_dir(
             directory, repo_root=repo_root, run_dir=run_dir, admin_uids=admin_uids,
-            worker_uids=worker_uids, test_only=test_only, code=REVOCATION_STATE_INVALID)
+            worker_uids=worker_uids, test_only=test_only, code=REVOCATION_STATE_INVALID,
+            test_root=test_root)
         self.anchor_id = anchor_id
         self._test_only = test_only
 
@@ -483,10 +502,11 @@ class ConsumptionStore(object):
     """
 
     def __init__(self, directory, *, repo_root, run_dir, admin_uids=None, worker_uids=None,
-                 test_only=False):
+                 test_only=False, test_root=None):
         self.directory, self._admin, self._workers = _open_state_dir(
             directory, repo_root=repo_root, run_dir=run_dir, admin_uids=admin_uids,
-            worker_uids=worker_uids, test_only=test_only, code=CONSUMPTION_STORE_INVALID)
+            worker_uids=worker_uids, test_only=test_only, code=CONSUMPTION_STORE_INVALID,
+            test_root=test_root)
         self._test_only = test_only
 
     def claim(self, approval_id, *, run_id, attempt_id, record):

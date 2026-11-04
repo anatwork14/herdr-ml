@@ -71,19 +71,25 @@ class ApprovalFixture(unittest.TestCase):
             'output': {'root': 'run-output', 'path': 'result.json'}}
         self.revocations = self.revocation_list(sequence=1)
 
-    def load(self, directory, **kwargs):
+    def _fixture_options(self, kwargs, **extra):
+        """The explicit test_root is passed only in test-only mode (production mode refuses it)."""
         options = {'repo_root': REPO, 'run_dir': self.run_dir, 'test_only': True}
+        options.update(extra)
         options.update(kwargs)
+        if options['test_only']:
+            options.setdefault('test_root', str(self.temp))
+        return options
+
+    def load(self, directory, **kwargs):
+        options = self._fixture_options(kwargs)
         return ap.load_trust_anchor(str(directory), **options)
 
     def open_state(self, directory, **kwargs):
-        options = {'repo_root': REPO, 'run_dir': self.run_dir, 'anchor_id': ANCHOR_ID, 'test_only': True}
-        options.update(kwargs)
+        options = self._fixture_options(kwargs, anchor_id=ANCHOR_ID)
         return ap.RevocationState(str(directory), **options)
 
     def open_store(self, directory, **kwargs):
-        options = {'repo_root': REPO, 'run_dir': self.run_dir, 'test_only': True}
-        options.update(kwargs)
+        options = self._fixture_options(kwargs)
         return ap.ConsumptionStore(str(directory), **options)
 
     def revocation_list(self, *, sequence, approval_ids=(), manifest_sha256s=(), anchor=None):
@@ -343,7 +349,42 @@ class TrustAnchorProvisioningTests(ApprovalFixture):
 
     def test_relative_anchor_path_is_refused(self):
         self.assertCode(ap.TRUST_ANCHOR_INVALID, ap.load_trust_anchor, 'relative/anchor',
-                        repo_root=REPO, run_dir=self.run_dir, test_only=True)
+                        repo_root=REPO, run_dir=self.run_dir, test_only=True, test_root=str(self.temp))
+
+    def test_test_only_anchor_outside_explicit_root_is_refused_even_when_tmpdir_points_there(self):
+        # The test-only root is pinned to what the caller passes; TMPDIR and
+        # tempfile.gettempdir() are never consulted.
+        unlisted = self.temp / 'unlisted'
+        unlisted.mkdir(mode=0o700)
+        listed = self.temp / 'listed'
+        listed.mkdir(mode=0o700)
+        anchor = write_anchor(unlisted / 'TEST-ONLY-elsewhere')
+        state = unlisted / 'state'
+        state.mkdir(mode=0o700)
+        ap.provision_revocation_state(str(state), anchor_id=ANCHOR_ID)
+        saved_env, saved_tempdir = os.environ.get('TMPDIR'), tempfile.tempdir
+        os.environ['TMPDIR'] = str(unlisted)
+        tempfile.tempdir = None
+        try:
+            self.assertEqual(os.path.realpath(tempfile.gettempdir()), str(unlisted))
+            for root in (None, str(listed)):
+                self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, anchor, test_root=root)
+                self.assertCode(ap.REVOCATION_STATE_INVALID, self.open_state, state, test_root=root)
+                self.assertCode(ap.CONSUMPTION_STORE_INVALID, self.open_store, state, test_root=root)
+            self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, anchor, test_root='relative/root')
+            self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, anchor, test_root='/')
+            # Production mode refuses a test_root outright.
+            self.assertCode(ap.TRUST_ANCHOR_INVALID, ap.load_trust_anchor, str(anchor), repo_root=REPO,
+                            run_dir=self.run_dir, test_root=str(unlisted), admin_uids=(0,),
+                            worker_uids=(os.getuid(),))
+        finally:
+            if saved_env is None:
+                os.environ.pop('TMPDIR', None)
+            else:
+                os.environ['TMPDIR'] = saved_env
+            tempfile.tempdir = saved_tempdir
+        # The same anchor loads when its directory is the explicit root.
+        self.assertEqual(self.load(anchor, test_root=str(unlisted)).anchor_id, ANCHOR_ID)
 
     def test_production_mode_refuses_test_only_anchor(self):
         self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, test_only=False)
