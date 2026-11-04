@@ -34,6 +34,9 @@ test_expectation_built_from_proof_fields_is_refused_by_production_path (test_con
 test_new_challenge_supersedes_earlier_one_for_the_same_boundary (test_containment_contract.ChallengeAndReplayTests.test_new_challenge_supersedes_earlier_one_for_the_same_boundary) ... ok
 test_production_entry_point_takes_no_caller_time_or_anchor (test_containment_contract.ChallengeAndReplayTests.test_production_entry_point_takes_no_caller_time_or_anchor) ... ok
 test_release_consumes_nonce_and_refuses_second_use (test_containment_contract.ChallengeAndReplayTests.test_release_consumes_nonce_and_refuses_second_use) ... ok
+test_allow_simulated_must_be_a_real_bool (test_containment_contract.ConstructorValidationTests.test_allow_simulated_must_be_a_real_bool) ... ok
+test_max_age_must_be_positive_int_not_bool_and_bounded (test_containment_contract.ConstructorValidationTests.test_max_age_must_be_positive_int_not_bool_and_bounded) ... ok
+test_max_skew_must_be_non_negative_int_not_bool_and_bounded (test_containment_contract.ConstructorValidationTests.test_max_skew_must_be_non_negative_int_not_bool_and_bounded) ... ok
 test_bool_epoch_does_not_match_integer_epoch (test_containment_contract.MalformedInputTests.test_bool_epoch_does_not_match_integer_epoch) ... ok
 test_empty_nonce_refused_on_both_sides (test_containment_contract.MalformedInputTests.test_empty_nonce_refused_on_both_sides) ... ok
 test_exception_inside_verifier_becomes_refusal (test_containment_contract.MalformedInputTests.test_exception_inside_verifier_becomes_refusal) ... ok
@@ -48,7 +51,8 @@ test_selector_returns_unavailable_and_never_the_simulator (test_containment_cont
 test_stale_and_mismatched_run_attempt_refused_at_backend (test_containment_contract.ProductionBackendTests.test_stale_and_mismatched_run_attempt_refused_at_backend) ... ok
 test_test_anchor_in_verifier_still_refuses_unverified_boundary (test_containment_contract.ProductionBackendTests.test_test_anchor_in_verifier_still_refuses_unverified_boundary)
 LOW-6b: a well-formed, test-verified proof must not release an unestablished boundary. ... ok
-test_rebinding_module_names_does_not_change_outcome (test_containment_contract.ProductionIsolationTests.test_rebinding_module_names_does_not_change_outcome) ... ok
+test_limitation_text_is_documented (test_containment_contract.ProductionIsolationTests.test_limitation_text_is_documented) ... ok
+test_rebinding_production_verifier_global_does_not_change_release (test_containment_contract.ProductionIsolationTests.test_rebinding_production_verifier_global_does_not_change_release) ... ok
 test_direct_dataclass_construction_never_verifies (test_containment_contract.ProofModelTests.test_direct_dataclass_construction_never_verifies) ... ok
 test_key_material_checked_and_no_public_checker_remains (test_containment_contract.ProofModelTests.test_key_material_checked_and_no_public_checker_remains) ... ok
 test_mismatched_run_attempt_boundary_refused (test_containment_contract.ProofModelTests.test_mismatched_run_attempt_boundary_refused) ... ok
@@ -72,6 +76,7 @@ test_interrupted_verification_declares_no_completion (test_containment_sim.InMem
 test_member_adopted_after_completion_blocks_release (test_containment_sim.InMemoryBoundaryTests.test_member_adopted_after_completion_blocks_release)
 Mutation M1: removing the occupancy re-check in release() must fail this test. ... ok
 test_occupancy_is_rechecked_at_completion_not_assumed_from_proof (test_containment_sim.InMemoryBoundaryTests.test_occupancy_is_rechecked_at_completion_not_assumed_from_proof) ... ok
+test_partial_line_child_fails_within_deadline_instead_of_blocking (test_containment_sim.InMemoryBoundaryTests.test_partial_line_child_fails_within_deadline_instead_of_blocking) ... ok
 test_partial_termination_refuses_completion_and_release (test_containment_sim.InMemoryBoundaryTests.test_partial_termination_refuses_completion_and_release) ... ok
 test_recovered_supervisor_cannot_release_without_fresh_verification (test_containment_sim.InMemoryBoundaryTests.test_recovered_supervisor_cannot_release_without_fresh_verification) ... ok
 test_release_refused_from_any_state_other_than_completed (test_containment_sim.InMemoryBoundaryTests.test_release_refused_from_any_state_other_than_completed)
@@ -123,7 +128,7 @@ ERROR: Invalid submission manifest project or type
 ERROR: Invalid submission command
 ERROR: Invalid submission command
 ok
-test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmp6xces1hz/.runtime/demo/runs/test
+test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpq77jvxvz/.runtime/demo/runs/test
 ok
 test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
 test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
@@ -131,7 +136,7 @@ test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_
 test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
 test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
 test_status_reports_legacy_claim_and_corrupt_registry_unknown (test_p0_ownership.CancellationTests.test_status_reports_legacy_claim_and_corrupt_registry_unknown) ... ok
-test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp__byercq/.runtime/demo/runs/test
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmptnnth1pc/.runtime/demo/runs/test
 ok
 test_absent_pid_is_only_not_visible (test_process_identity.IdentityTests.test_absent_pid_is_only_not_visible) ... ok
 test_live_current_process_matches (test_process_identity.IdentityTests.test_live_current_process_matches) ... ok
@@ -177,11 +182,11 @@ test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registr
 test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
 test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
 test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
-test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T034940Z-a821bd5b07bb folder=/tmp/tmpp7n7hq2r/research/.runtime/demo/runs/20261104T034940Z-a821bd5b07bb
-UNKNOWN run=20261104T034940Z-a821bd5b07bb exit=0 logs=/tmp/tmpp7n7hq2r/research/.runtime/demo/runs/20261104T034940Z-a821bd5b07bb
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T035412Z-27c54dc94b78 folder=/tmp/tmpvtjp6ue_/research/.runtime/demo/runs/20261104T035412Z-27c54dc94b78
+UNKNOWN run=20261104T035412Z-27c54dc94b78 exit=0 logs=/tmp/tmpvtjp6ue_/research/.runtime/demo/runs/20261104T035412Z-27c54dc94b78
 ok
-test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T034940Z-c5537186bf5c folder=/tmp/tmps3_wa6s2/research/.runtime/demo/runs/20261104T034940Z-c5537186bf5c
-UNKNOWN run=20261104T034940Z-c5537186bf5c exit=9 logs=/tmp/tmps3_wa6s2/research/.runtime/demo/runs/20261104T034940Z-c5537186bf5c
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T035412Z-2cd1e44facec folder=/tmp/tmpm965dym9/research/.runtime/demo/runs/20261104T035412Z-2cd1e44facec
+UNKNOWN run=20261104T035412Z-2cd1e44facec exit=9 logs=/tmp/tmpm965dym9/research/.runtime/demo/runs/20261104T035412Z-2cd1e44facec
 ok
 test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
 test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
@@ -191,22 +196,22 @@ ok
 test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
 ok
 test_reconcile_never_accepts_unrecognized_registry_state (test_researchctl.ResearchCtlTests.test_reconcile_never_accepts_unrecognized_registry_state) ... ok
-test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T034940Z-2180bf208edf folder=/tmp/tmpygtvx9x5/research/.runtime/demo/runs/20261104T034940Z-2180bf208edf
-UNKNOWN run=20261104T034940Z-2180bf208edf exit=0 logs=/tmp/tmpygtvx9x5/research/.runtime/demo/runs/20261104T034940Z-2180bf208edf
+test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T035412Z-d0de6eca6660 folder=/tmp/tmpwcccf69k/research/.runtime/demo/runs/20261104T035412Z-d0de6eca6660
+UNKNOWN run=20261104T035412Z-d0de6eca6660 exit=0 logs=/tmp/tmpwcccf69k/research/.runtime/demo/runs/20261104T035412Z-d0de6eca6660
 ok
-test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T034940Z-17ee1361fe48 folder=/tmp/tmpd7_b6vb8/research/.runtime/demo/runs/20261104T034940Z-17ee1361fe48
-UNKNOWN run=20261104T034940Z-17ee1361fe48 exit=0 logs=/tmp/tmpd7_b6vb8/research/.runtime/demo/runs/20261104T034940Z-17ee1361fe48
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T035413Z-42d5129584ca folder=/tmp/tmpdsoyfpih/research/.runtime/demo/runs/20261104T035413Z-42d5129584ca
+UNKNOWN run=20261104T035413Z-42d5129584ca exit=0 logs=/tmp/tmpdsoyfpih/research/.runtime/demo/runs/20261104T035413Z-42d5129584ca
 ok
 test_status_reports_non_object_json_as_unknown_per_run (test_researchctl.ResearchCtlTests.test_status_reports_non_object_json_as_unknown_per_run) ... ok
 test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
-test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T034941Z-33aedbc7f543 folder=/tmp/tmptzui36z4/research/.runtime/demo/runs/20261104T034941Z-33aedbc7f543
-UNKNOWN run=20261104T034941Z-33aedbc7f543 exit=0 logs=/tmp/tmptzui36z4/research/.runtime/demo/runs/20261104T034941Z-33aedbc7f543
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T035413Z-61ebcf0fa174 folder=/tmp/tmp9bnbhvj7/research/.runtime/demo/runs/20261104T035413Z-61ebcf0fa174
+UNKNOWN run=20261104T035413Z-61ebcf0fa174 exit=0 logs=/tmp/tmp9bnbhvj7/research/.runtime/demo/runs/20261104T035413Z-61ebcf0fa174
 ERROR: Refusing execution: queued or repeated state=UNKNOWN
 ok
 test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIdentityTests.test_matching_and_changed_interpreter_identity) ... ok
 test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
 
 ----------------------------------------------------------------------
-Ran 180 tests in 13.639s
+Ran 185 tests in 20.873s
 
 OK

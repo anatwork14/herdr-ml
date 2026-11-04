@@ -63,6 +63,28 @@ class ObservationError(RuntimeError):
     """The boundary could not be observed; any verdict must be UNKNOWN."""
 
 
+def _read_ready_line(fd: int, timeout: float) -> bytes:
+    """Read until newline, EOF, or the overall deadline. Never blocks past the deadline.
+
+    A child that writes a partial line and stays alive returns after the deadline
+    with whatever arrived, which the caller treats as not ready.
+    """
+    deadline = time.monotonic() + timeout
+    buffered = b''
+    while b'\n' not in buffered and len(buffered) < 64:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        readable, _, _ = select.select([fd], [], [], remaining)
+        if not readable:
+            break
+        chunk = os.read(fd, 64)
+        if not chunk:
+            break
+        buffered += chunk
+    return buffered
+
+
 class SpawnRegistry:
     """The only place this module creates OS processes. Keeps every Popen handle."""
 
@@ -78,14 +100,13 @@ class SpawnRegistry:
                                 stderr=subprocess.DEVNULL, start_new_session=detach, close_fds=True)
         self.procs.append(proc)
         try:
-            readable, _, _ = select.select([proc.stdout], [], [], READY_TIMEOUT_S)
-            ready = proc.stdout.readline() if readable else b''
+            ready = _read_ready_line(proc.stdout.fileno(), READY_TIMEOUT_S)
         finally:
             proc.stdout.close()
         if ready != b'ready\n':
             proc.kill()
             proc.wait(timeout=5)
-            raise RuntimeError('synthetic child did not report ready within %.0fs' % READY_TIMEOUT_S)
+            raise RuntimeError('synthetic child did not report ready within %.1fs' % READY_TIMEOUT_S)
         return proc
 
     def reap_all(self, timeout: float = 5.0) -> List[int]:

@@ -13,6 +13,9 @@ test_expectation_built_from_proof_fields_is_refused_by_production_path (test_con
 test_new_challenge_supersedes_earlier_one_for_the_same_boundary (test_containment_contract.ChallengeAndReplayTests.test_new_challenge_supersedes_earlier_one_for_the_same_boundary) ... ok
 test_production_entry_point_takes_no_caller_time_or_anchor (test_containment_contract.ChallengeAndReplayTests.test_production_entry_point_takes_no_caller_time_or_anchor) ... ok
 test_release_consumes_nonce_and_refuses_second_use (test_containment_contract.ChallengeAndReplayTests.test_release_consumes_nonce_and_refuses_second_use) ... ok
+test_allow_simulated_must_be_a_real_bool (test_containment_contract.ConstructorValidationTests.test_allow_simulated_must_be_a_real_bool) ... ok
+test_max_age_must_be_positive_int_not_bool_and_bounded (test_containment_contract.ConstructorValidationTests.test_max_age_must_be_positive_int_not_bool_and_bounded) ... ok
+test_max_skew_must_be_non_negative_int_not_bool_and_bounded (test_containment_contract.ConstructorValidationTests.test_max_skew_must_be_non_negative_int_not_bool_and_bounded) ... ok
 test_bool_epoch_does_not_match_integer_epoch (test_containment_contract.MalformedInputTests.test_bool_epoch_does_not_match_integer_epoch) ... ok
 test_empty_nonce_refused_on_both_sides (test_containment_contract.MalformedInputTests.test_empty_nonce_refused_on_both_sides) ... ok
 test_exception_inside_verifier_becomes_refusal (test_containment_contract.MalformedInputTests.test_exception_inside_verifier_becomes_refusal) ... ok
@@ -27,7 +30,8 @@ test_selector_returns_unavailable_and_never_the_simulator (test_containment_cont
 test_stale_and_mismatched_run_attempt_refused_at_backend (test_containment_contract.ProductionBackendTests.test_stale_and_mismatched_run_attempt_refused_at_backend) ... ok
 test_test_anchor_in_verifier_still_refuses_unverified_boundary (test_containment_contract.ProductionBackendTests.test_test_anchor_in_verifier_still_refuses_unverified_boundary)
 LOW-6b: a well-formed, test-verified proof must not release an unestablished boundary. ... ok
-test_rebinding_module_names_does_not_change_outcome (test_containment_contract.ProductionIsolationTests.test_rebinding_module_names_does_not_change_outcome) ... ok
+test_limitation_text_is_documented (test_containment_contract.ProductionIsolationTests.test_limitation_text_is_documented) ... ok
+test_rebinding_production_verifier_global_does_not_change_release (test_containment_contract.ProductionIsolationTests.test_rebinding_production_verifier_global_does_not_change_release) ... ok
 test_direct_dataclass_construction_never_verifies (test_containment_contract.ProofModelTests.test_direct_dataclass_construction_never_verifies) ... ok
 test_key_material_checked_and_no_public_checker_remains (test_containment_contract.ProofModelTests.test_key_material_checked_and_no_public_checker_remains) ... ok
 test_mismatched_run_attempt_boundary_refused (test_containment_contract.ProofModelTests.test_mismatched_run_attempt_boundary_refused) ... ok
@@ -41,6 +45,6 @@ test_tampered_proofs_refused (test_containment_contract.ProofModelTests.test_tam
 test_untrusted_verifier_and_wrong_key_refused (test_containment_contract.ProofModelTests.test_untrusted_verifier_and_wrong_key_refused) ... ok
 
 ----------------------------------------------------------------------
-Ran 38 tests in 1.080s
+Ran 42 tests in 1.231s
 
 OK

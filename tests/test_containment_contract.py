@@ -308,20 +308,62 @@ class ChallengeAndReplayTests(sim.ReapingTestCase):
 
 
 class ProductionIsolationTests(sim.ReapingTestCase):
-    """LOW-4: rebinding module-level names does not change verifier outcomes."""
+    """LOW-4 / R1: the production release function is bound to its verifier object.
 
-    def test_rebinding_module_names_does_not_change_outcome(self):
-        v = make_verifier(FixedClock(NOW))
-        exp = challenge(v)
-        stale = sealed(exp, observed=NOW - contract.MAX_PROOF_AGE_NS - 1)
-        production_candidate = sealed(derived(stale), key=sim.SIM_KEY, verifier_id=sim.SIM_VERIFIER_ID)
-        with mock.patch.object(contract, 'MAX_PROOF_AGE_NS', 10**30), \
-                mock.patch.object(contract, 'PRODUCTION_TRUST_ANCHORS', {sim.SIM_VERIFIER_ID: sim.SIM_KEY},
-                                  create=True), \
-                mock.patch.object(contract, 'SIM_ANCHORS', {sim.SIM_VERIFIER_ID: sim.SIM_KEY}, create=True):
-            self.assertFalse(v.preview(stale, exp).allowed)
-            self.assertFalse(contract.verify_for_release(production_candidate, derived(production_candidate)).allowed)
-            self.assertEqual(getattr(contract._PRODUCTION_VERIFIER, '_Verifier__anchors'), {})
+    Rebinding the module global _PRODUCTION_VERIFIER does not change outcomes.
+    Editing private verifier fields in-process is NOT prevented and is out of the
+    threat model. The documented limitation is asserted below.
+    """
+
+    def test_rebinding_production_verifier_global_does_not_change_release(self):
+        permissive = make_verifier(FixedClock(NOW))  # trusts the simulator key
+        exp = challenge(permissive)
+        proof_ = sealed(exp, simulated=False)
+        self.assertTrue(permissive.preview(proof_, exp).allowed)  # the proof is otherwise valid
+        with mock.patch.object(contract, '_PRODUCTION_VERIFIER', permissive):
+            decision = contract.verify_for_release(proof_, exp)
+        self.assertFalse(decision.allowed)
+        self.assertIn('not trusted', decision.reason)
+
+    def test_limitation_text_is_documented(self):
+        doc = (ROOT / 'reports' / 'experiment-infra' / 'CONTAINMENT.md').read_text(encoding='utf-8')
+        self.assertIn('In-process tampering', doc)
+        self.assertIn('rebinding module globals', doc)
+        self.assertIn('outside the threat model', doc)
+
+
+class ConstructorValidationTests(sim.ReapingTestCase):
+    """R3: a Verifier rejects malformed policy arguments at construction."""
+
+    def build(self, **overrides):
+        fields = dict(anchors={}, clock=FixedClock(), allow_simulated=False)
+        fields.update(overrides)
+        return contract.Verifier(**fields)
+
+    def test_allow_simulated_must_be_a_real_bool(self):
+        for value in ('False', 0, 1, None):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                self.build(allow_simulated=value)
+
+    def test_max_age_must_be_positive_int_not_bool_and_bounded(self):
+        with self.assertRaises(ValueError):
+            self.build(max_age_ns=-1)
+        with self.assertRaises(TypeError):
+            self.build(max_age_ns=True)
+        with self.assertRaises(ValueError):
+            self.build(max_age_ns=0)
+        with self.assertRaises(ValueError):
+            self.build(max_age_ns=contract.MAX_WINDOW_NS + 1)
+        with self.assertRaises(TypeError):
+            self.build(max_age_ns=1.5)
+        self.assertIsNotNone(self.build(max_age_ns=contract.MAX_WINDOW_NS))
+
+    def test_max_skew_must_be_non_negative_int_not_bool_and_bounded(self):
+        with self.assertRaises(ValueError):
+            self.build(max_skew_ns=-1)
+        with self.assertRaises(TypeError):
+            self.build(max_skew_ns=False)
+        self.assertIsNotNone(self.build(max_skew_ns=0))
 
 
 class ProductionBackendTests(sim.ReapingTestCase):

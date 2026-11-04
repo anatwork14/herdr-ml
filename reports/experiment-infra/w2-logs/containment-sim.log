@@ -9,6 +9,7 @@ test_interrupted_verification_declares_no_completion (test_containment_sim.InMem
 test_member_adopted_after_completion_blocks_release (test_containment_sim.InMemoryBoundaryTests.test_member_adopted_after_completion_blocks_release)
 Mutation M1: removing the occupancy re-check in release() must fail this test. ... ok
 test_occupancy_is_rechecked_at_completion_not_assumed_from_proof (test_containment_sim.InMemoryBoundaryTests.test_occupancy_is_rechecked_at_completion_not_assumed_from_proof) ... ok
+test_partial_line_child_fails_within_deadline_instead_of_blocking (test_containment_sim.InMemoryBoundaryTests.test_partial_line_child_fails_within_deadline_instead_of_blocking) ... ok
 test_partial_termination_refuses_completion_and_release (test_containment_sim.InMemoryBoundaryTests.test_partial_termination_refuses_completion_and_release) ... ok
 test_recovered_supervisor_cannot_release_without_fresh_verification (test_containment_sim.InMemoryBoundaryTests.test_recovered_supervisor_cannot_release_without_fresh_verification) ... ok
 test_release_refused_from_any_state_other_than_completed (test_containment_sim.InMemoryBoundaryTests.test_release_refused_from_any_state_other_than_completed)
@@ -25,6 +26,6 @@ test_sigterm_ignoring_descendants_escalate_only_to_spawned_members (test_contain
 test_worker_crash_real_leaves_unknown_state (test_containment_sim.RealProcessBoundaryTests.test_worker_crash_real_leaves_unknown_state) ... ok
 
 ----------------------------------------------------------------------
-Ran 20 tests in 2.060s
+Ran 21 tests in 2.559s
 
 OK

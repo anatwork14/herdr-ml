@@ -206,6 +206,17 @@ class InMemoryBoundaryTests(sim.ReapingTestCase):
         self.assertFalse(c.release(proof).allowed)
         self.assertFalse(b.released)
 
+    def test_partial_line_child_fails_within_deadline_instead_of_blocking(self):
+        partial_src = "import sys, time; sys.stdout.write('r'); sys.stdout.flush(); time.sleep(30)"
+        with mock.patch.object(sim, 'CHILD_SRC', partial_src), \
+                mock.patch.object(sim, 'READY_TIMEOUT_S', 0.5):
+            started = time.monotonic()
+            with self.assertRaises(RuntimeError) as ctx:
+                self.registry.spawn('sleep', seconds=30)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 5)
+        self.assertIn('0.5s', str(ctx.exception))
+
     def test_hanging_child_startup_fails_the_test_instead_of_blocking(self):
         registry = self.registry
         with mock.patch.object(sim, 'CHILD_SRC', 'import time; time.sleep(30)'), \

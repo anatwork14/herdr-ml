@@ -6,7 +6,9 @@ boundary at one observation time.
 What this module enforces:
 
 - A Verifier object owns its trust anchors, its clock, its outstanding challenges
-  and its consumed-nonce store. Module-level names are not read after import.
+  and its consumed-nonce store. The production release function is a closure over
+  its verifier object. Rebinding module globals does not change which verifier it
+  uses. Editing private verifier fields from inside the process is NOT prevented.
 - Challenges come only from Verifier.issue_challenge(). An Expectation built from
   a proof's own fields is refused. Issuing a new challenge for a boundary
   supersedes earlier ones for that boundary.
@@ -54,6 +56,7 @@ MIN_KEY_BYTES = 32
 MAX_TEXT_LEN = 256
 MAX_INT = 2**63 - 1
 MAX_OCCUPANCY = 2**20
+MAX_WINDOW_NS = 24 * 3600 * 10**9  # no freshness or skew window may exceed 24 h
 _MAC_DOMAIN = b'herdr-containment-proof-v1\n'
 
 Key = Tuple[str, str, str, str, int]
@@ -157,6 +160,13 @@ class Verifier:
     def __init__(self, *, anchors: Mapping[str, bytes], clock: Callable[[], int],
                  allow_simulated: bool = False, max_age_ns: int = MAX_PROOF_AGE_NS,
                  max_skew_ns: int = MAX_CLOCK_SKEW_NS):
+        if type(allow_simulated) is not bool:
+            raise TypeError('allow_simulated must be a bool')
+        for name, window, minimum in (('max_age_ns', max_age_ns, 1), ('max_skew_ns', max_skew_ns, 0)):
+            if type(window) is not int:
+                raise TypeError('%s must be an int' % name)
+            if not minimum <= window <= MAX_WINDOW_NS:
+                raise ValueError('%s must be between %d and %d nanoseconds' % (name, minimum, MAX_WINDOW_NS))
         copied = {}
         for verifier_id, key in dict(anchors).items():
             if not _text(verifier_id) or not isinstance(key, (bytes, bytearray)) or len(key) < MIN_KEY_BYTES:
@@ -255,11 +265,24 @@ _PRODUCTION_VERIFIER = Verifier(anchors={}, clock=time.time_ns, allow_simulated=
                                 max_age_ns=MAX_PROOF_AGE_NS, max_skew_ns=MAX_CLOCK_SKEW_NS)
 
 
-def verify_for_release(proof: object, expectation: object) -> Decision:
-    """The only production verification entry point. Refuses on this host.
+def _bind_release(verifier: Verifier) -> Callable[[object, object], Decision]:
+    """Return a release function that holds verifier in its closure.
 
-    The production verifier supplies its own clock, anchors and challenge store.
-    Callers cannot choose the time, the anchors, or the challenge: the expectation
-    must have been issued by the production verifier.
+    Rebinding the module-level _PRODUCTION_VERIFIER name later does not change
+    which verifier this function uses. In-process code that edits the verifier's
+    private fields or rebinds this function's module name is outside the threat
+    model (see docs/CONTAINMENT.md and reports/experiment-infra/CONTAINMENT.md).
     """
-    return _PRODUCTION_VERIFIER.verify_for_release(proof, expectation)
+    def verify_for_release(proof: object, expectation: object) -> Decision:
+        """The only production verification entry point. Refuses on this host.
+
+        The production verifier supplies its own clock, anchors and challenge store.
+        Callers cannot choose the time, the anchors, or the challenge: the expectation
+        must have been issued by the production verifier.
+        """
+        return verifier.verify_for_release(proof, expectation)
+
+    return verify_for_release
+
+
+verify_for_release = _bind_release(_PRODUCTION_VERIFIER)

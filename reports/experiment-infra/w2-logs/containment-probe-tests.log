@@ -5,6 +5,6 @@ test_detached_descendant_survives_original_process_group (test_containment_probe
 test_maps_current_membership_to_cgroup2_mount (test_containment_probe.ContainmentProbeTests.test_maps_current_membership_to_cgroup2_mount) ... ok
 
 ----------------------------------------------------------------------
-Ran 3 tests in 0.030s
+Ran 3 tests in 0.032s
 
 OK

@@ -25,7 +25,7 @@ The production trust-anchor set is empty, so the production verifier refuses eve
 
 A `ContainmentProof` carries `run_id`, `attempt_id`, `boundary_id`, `verifier_id`, `observed_at_ns`, `nonce`, `epoch`, `occupancy`, `verdict` (`EMPTY`, `OCCUPIED`, `UNKNOWN`, `BREACHED`), `simulated` and `mac`.
 
-A `Verifier` object holds, privately: its trust anchors (copied at construction), its clock, its maximum age and skew, its outstanding challenges and its consumed-nonce set. Module-level names are not read after import.
+A `Verifier` object holds, privately: its trust anchors (copied at construction), its clock, its maximum age and skew, its outstanding challenges and its consumed-nonce set. Constructor arguments are validated: `allow_simulated` must be a bool, and the age and skew windows must be integers (not bool) within bounds. The production release function is a closure over its verifier object, so rebinding the module global `_PRODUCTION_VERIFIER` does not change outcomes. **In-process tampering (rebinding module globals, editing private verifier fields) is outside the threat model** and is not prevented.
 
 Release requires all of the following. Each is a refusal if it fails.
 
@@ -87,7 +87,7 @@ Each requirement is marked as **Enforced** (a test fails if the property is brok
   4. The challenge must have been issued by the verifier. An expectation built from the proof's own fields is refused, as is a superseded challenge (`test_expectation_built_from_proof_fields_is_refused_by_production_path`, `test_new_challenge_supersedes_earlier_one_for_the_same_boundary`).
   5. Release consumes the nonce atomically. A second use is refused, including under 16-way concurrency (`test_release_consumes_nonce_and_refuses_second_use`, `test_concurrent_release_consumes_the_nonce_exactly_once`).
   6. Freshness uses the verifier's own clock. The production entry point takes no caller time (`test_stale_and_future_proofs_refused_by_verifier_clock`, `test_production_entry_point_takes_no_caller_time_or_anchor`).
-  7. Module-level rebinding does not change outcomes (`test_rebinding_module_names_does_not_change_outcome`).
+  7. Rebinding the module global `_PRODUCTION_VERIFIER` does not change the production outcome (`test_rebinding_production_verifier_global_does_not_change_release`). Editing private verifier fields in-process is not prevented; it is outside the threat model (`test_limitation_text_is_documented` checks this text is present). Invalid constructor arguments are rejected (`test_allow_simulated_must_be_a_real_bool`, `test_max_age_must_be_positive_int_not_bool_and_bounded`).
   8. Simulated proofs are refused unless the verifier allows them (`test_real_simulated_run_proof_refused_by_production_verifier`).
   9. Process identity and non-`ContainmentProof` inputs are refused (`test_non_proof_inputs_never_confer_authority`, `test_process_identity_match_is_observation_not_containment`).
   10. Any exception inside the verifier is a refusal (`test_exception_inside_verifier_becomes_refusal`).
@@ -95,7 +95,7 @@ Each requirement is marked as **Enforced** (a test fails if the property is brok
 - **Not enforced:**
   - Forgery by same-process code (see Trust boundary).
   - Replay across a verifier restart. The consumed-nonce set is in memory. A production verifier must persist consumed nonces durably before it can be relied on. Until then, a restart forgets them. Outstanding challenges are also lost on restart, which fails closed.
-  - Clock tampering by same-process code.
+  - Clock tampering, and any other in-process tampering with module globals or private verifier fields.
 - **Status:** enforced for the in-process checks listed above. Not authority against a same-user worker.
 
 ## Simulator isolation
