@@ -1,7 +1,7 @@
 COMMAND: cd /mnt/ssd/genos2/workspace/herdr-ml-w1-ownership && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest tests.test_run_ownership -v
 EXIT_CODE: 0
 PYTHON: Python 3.12.14
-BRANCH: feat/exp-w1-ownership  HEAD: 15d475c
+BRANCH: feat/exp-w1-ownership  HEAD: 1fcfd6b
 ----- raw output -----
 test_state_machine_doc_names_every_state_phase_and_crash_point (tests.test_run_ownership.DocumentationConsistencyTests.test_state_machine_doc_names_every_state_phase_and_crash_point) ... ok
 test_unknown_crash_point_names_are_rejected_by_the_hook (tests.test_run_ownership.DocumentationConsistencyTests.test_unknown_crash_point_names_are_rejected_by_the_hook) ... ok
@@ -62,11 +62,14 @@ test_corrupt_store_makes_mutators_registry_errors_and_leaves_bytes (tests.test_r
 test_refused_mutators_leave_legacy_schema_unchanged (tests.test_run_ownership.ReviewRevisionTests.test_refused_mutators_leave_legacy_schema_unchanged) ... ok
 test_running_without_recorded_child_is_refused (tests.test_run_ownership.ReviewRevisionTests.test_running_without_recorded_child_is_refused) ... ok
 test_supersede_refuses_tampered_current_row (tests.test_run_ownership.ReviewRevisionTests.test_supersede_refuses_tampered_current_row) ... ok
+test_corrupt_later_pages_make_mutators_registry_errors_and_leave_bytes (tests.test_run_ownership.StoreIntegrityTests.test_corrupt_later_pages_make_mutators_registry_errors_and_leave_bytes) ... ok
+test_incomplete_schema_is_refused_as_registry_unreadable (tests.test_run_ownership.StoreIntegrityTests.test_incomplete_schema_is_refused_as_registry_unreadable) ... ok
+test_interrupted_schema_creation_commits_nothing_and_next_open_recreates_it (tests.test_run_ownership.StoreIntegrityTests.test_interrupted_schema_creation_commits_nothing_and_next_open_recreates_it) ... ok
 test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed (tests.test_run_ownership.TamperAndLegacyRowTests.test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed) ... ok
 test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors (tests.test_run_ownership.TamperAndLegacyRowTests.test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors) ... ok
 test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish (tests.test_run_ownership.TamperAndLegacyRowTests.test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish) ... ok
 
 ----------------------------------------------------------------------
-Ran 62 tests in 9.072s
+Ran 65 tests in 6.827s
 
 OK

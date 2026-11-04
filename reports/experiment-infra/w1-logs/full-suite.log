@@ -1,7 +1,7 @@
 COMMAND: cd /mnt/ssd/genos2/workspace/herdr-ml-w1-ownership && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -v
 EXIT_CODE: 0
 PYTHON: Python 3.12.14
-BRANCH: feat/exp-w1-ownership  HEAD: 15d475c
+BRANCH: feat/exp-w1-ownership  HEAD: 1fcfd6b
 ----- raw output -----
 test_boolean_integer_fields_are_rejected (test_artifact_tree.ArtifactTreeTests.test_boolean_integer_fields_are_rejected) ... ok
 test_changes_additions_and_removals_detected (test_artifact_tree.ArtifactTreeTests.test_changes_additions_and_removals_detected) ... ok
@@ -62,7 +62,7 @@ ERROR: Invalid submission manifest project or type
 ERROR: Invalid submission command
 ERROR: Invalid submission command
 ok
-test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpxub29yxf/.runtime/demo/runs/test
+test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpjmsvpz1g/.runtime/demo/runs/test
 ok
 test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
 test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
@@ -70,7 +70,7 @@ test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_
 test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
 test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
 test_status_reports_legacy_claim_and_corrupt_registry_unknown (test_p0_ownership.CancellationTests.test_status_reports_legacy_claim_and_corrupt_registry_unknown) ... ok
-test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmpgsj4pe6f/.runtime/demo/runs/test
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp948n41k1/.runtime/demo/runs/test
 ok
 test_absent_pid_is_only_not_visible (test_process_identity.IdentityTests.test_absent_pid_is_only_not_visible) ... ok
 test_live_current_process_matches (test_process_identity.IdentityTests.test_live_current_process_matches) ... ok
@@ -116,11 +116,11 @@ test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registr
 test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
 test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
 test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
-test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T080002Z-ccfdee7f0cd6 folder=/tmp/tmpsbmod7ej/research/.runtime/demo/runs/20261104T080002Z-ccfdee7f0cd6
-UNKNOWN run=20261104T080002Z-ccfdee7f0cd6 exit=0 logs=/tmp/tmpsbmod7ej/research/.runtime/demo/runs/20261104T080002Z-ccfdee7f0cd6
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T080814Z-750459000709 folder=/tmp/tmpd7rkh2pc/research/.runtime/demo/runs/20261104T080814Z-750459000709
+UNKNOWN run=20261104T080814Z-750459000709 exit=0 logs=/tmp/tmpd7rkh2pc/research/.runtime/demo/runs/20261104T080814Z-750459000709
 ok
-test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T080002Z-778013a291be folder=/tmp/tmp2us28__e/research/.runtime/demo/runs/20261104T080002Z-778013a291be
-UNKNOWN run=20261104T080002Z-778013a291be exit=9 logs=/tmp/tmp2us28__e/research/.runtime/demo/runs/20261104T080002Z-778013a291be
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T080814Z-aad875061e47 folder=/tmp/tmp3fpr6ccl/research/.runtime/demo/runs/20261104T080814Z-aad875061e47
+UNKNOWN run=20261104T080814Z-aad875061e47 exit=9 logs=/tmp/tmp3fpr6ccl/research/.runtime/demo/runs/20261104T080814Z-aad875061e47
 ok
 test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
 test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
@@ -130,16 +130,16 @@ ok
 test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
 ok
 test_reconcile_never_accepts_unrecognized_registry_state (test_researchctl.ResearchCtlTests.test_reconcile_never_accepts_unrecognized_registry_state) ... ok
-test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T080002Z-ff99be3c09a1 folder=/tmp/tmpgq_6j4iz/research/.runtime/demo/runs/20261104T080002Z-ff99be3c09a1
-UNKNOWN run=20261104T080002Z-ff99be3c09a1 exit=0 logs=/tmp/tmpgq_6j4iz/research/.runtime/demo/runs/20261104T080002Z-ff99be3c09a1
+test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T080814Z-de1f63b66712 folder=/tmp/tmpyb9kru6u/research/.runtime/demo/runs/20261104T080814Z-de1f63b66712
+UNKNOWN run=20261104T080814Z-de1f63b66712 exit=0 logs=/tmp/tmpyb9kru6u/research/.runtime/demo/runs/20261104T080814Z-de1f63b66712
 ok
-test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T080002Z-03218ebf0525 folder=/tmp/tmpx3vai6pe/research/.runtime/demo/runs/20261104T080002Z-03218ebf0525
-UNKNOWN run=20261104T080002Z-03218ebf0525 exit=0 logs=/tmp/tmpx3vai6pe/research/.runtime/demo/runs/20261104T080002Z-03218ebf0525
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T080814Z-a0e4075e3e04 folder=/tmp/tmpkp78fktu/research/.runtime/demo/runs/20261104T080814Z-a0e4075e3e04
+UNKNOWN run=20261104T080814Z-a0e4075e3e04 exit=0 logs=/tmp/tmpkp78fktu/research/.runtime/demo/runs/20261104T080814Z-a0e4075e3e04
 ok
 test_status_reports_non_object_json_as_unknown_per_run (test_researchctl.ResearchCtlTests.test_status_reports_non_object_json_as_unknown_per_run) ... ok
 test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
-test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T080003Z-9844547c0ae8 folder=/tmp/tmp0js71d23/research/.runtime/demo/runs/20261104T080003Z-9844547c0ae8
-UNKNOWN run=20261104T080003Z-9844547c0ae8 exit=0 logs=/tmp/tmp0js71d23/research/.runtime/demo/runs/20261104T080003Z-9844547c0ae8
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T080815Z-df20b98ba664 folder=/tmp/tmpj2d2gwvu/research/.runtime/demo/runs/20261104T080815Z-df20b98ba664
+UNKNOWN run=20261104T080815Z-df20b98ba664 exit=0 logs=/tmp/tmpj2d2gwvu/research/.runtime/demo/runs/20261104T080815Z-df20b98ba664
 ERROR: Refusing execution: queued or repeated state=UNKNOWN
 ok
 test_state_machine_doc_names_every_state_phase_and_crash_point (test_run_ownership.DocumentationConsistencyTests.test_state_machine_doc_names_every_state_phase_and_crash_point) ... ok
@@ -201,6 +201,9 @@ test_corrupt_store_makes_mutators_registry_errors_and_leaves_bytes (test_run_own
 test_refused_mutators_leave_legacy_schema_unchanged (test_run_ownership.ReviewRevisionTests.test_refused_mutators_leave_legacy_schema_unchanged) ... ok
 test_running_without_recorded_child_is_refused (test_run_ownership.ReviewRevisionTests.test_running_without_recorded_child_is_refused) ... ok
 test_supersede_refuses_tampered_current_row (test_run_ownership.ReviewRevisionTests.test_supersede_refuses_tampered_current_row) ... ok
+test_corrupt_later_pages_make_mutators_registry_errors_and_leave_bytes (test_run_ownership.StoreIntegrityTests.test_corrupt_later_pages_make_mutators_registry_errors_and_leave_bytes) ... ok
+test_incomplete_schema_is_refused_as_registry_unreadable (test_run_ownership.StoreIntegrityTests.test_incomplete_schema_is_refused_as_registry_unreadable) ... ok
+test_interrupted_schema_creation_commits_nothing_and_next_open_recreates_it (test_run_ownership.StoreIntegrityTests.test_interrupted_schema_creation_commits_nothing_and_next_open_recreates_it) ... ok
 test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed (test_run_ownership.TamperAndLegacyRowTests.test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed) ... ok
 test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors (test_run_ownership.TamperAndLegacyRowTests.test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors) ... ok
 test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish (test_run_ownership.TamperAndLegacyRowTests.test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish) ... ok
@@ -223,7 +226,7 @@ test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIde
 test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
 
 ----------------------------------------------------------------------
-Ran 193 tests in 25.924s
+Ran 196 tests in 22.780s
 
 OK
 run-exec	UNKNOWN	diagnostic
