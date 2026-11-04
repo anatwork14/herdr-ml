@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 spec = importlib.util.spec_from_file_location('run_registry_repairs', SCRIPTS / 'run_registry.py')
@@ -143,6 +144,68 @@ class IncompleteSchemaTests(RepairBase):
         with self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
             registry.claim(self.folder, RUN, PROJECT, DIGEST, 'SUBMITTED')
         self.assertEqual(path.read_bytes(), before)
+
+    def test_under_lock_recheck_refuses_events_only_store(self):
+        """The first table listing sees an empty file; the re-check under the write lock must still refuse."""
+        path = self.folder / 'registry.sqlite3'
+        db = sqlite3.connect(str(path))
+        try:
+            db.execute('''CREATE TABLE events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        owner TEXT, state TEXT NOT NULL, detail TEXT)''')
+            db.commit()
+        finally:
+            db.close()
+        before = path.read_bytes()
+        real = registry._user_tables
+        calls = []
+
+        def first_empty(conn):
+            calls.append(1)
+            return set() if len(calls) == 1 else real(conn)
+
+        with mock.patch.object(registry, '_user_tables', side_effect=first_empty):
+            # 'missing run)' is the under-lock guard's message, not the later REQUIRED_TABLES check.
+            with self.assertRaisesRegex(registry.RegistryError, r'REGISTRY_UNREADABLE.*missing run\)'):
+                registry.claim(self.folder, RUN, PROJECT, DIGEST, 'SUBMITTED')
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(path.read_bytes(), before)
+
+
+class _FailingRollback:
+    """Connection proxy whose ROLLBACK fails, as a lost or locked store would."""
+
+    def __init__(self, db):
+        self._db = db
+
+    def execute(self, sql, *args):
+        if sql.strip().upper() == 'ROLLBACK':
+            raise sqlite3.OperationalError('simulated rollback failure')
+        return self._db.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._db, name)
+
+
+class RollbackFailureTests(RepairBase):
+    """A failed ROLLBACK on an error path surfaces REGISTRY_UNREADABLE, never a raw sqlite3 error."""
+
+    def failing_rollback_connect(self):
+        real = registry._queue_connect
+        return mock.patch.object(registry, '_queue_connect',
+                                 side_effect=lambda *a, **k: _FailingRollback(real(*a, **k)))
+
+    def test_integrity_error_with_failed_rollback(self):
+        registry.queue_intent(self.folder, RUN, DIGEST, QUEUE, _store_home=self.home)
+        with self.failing_rollback_connect():
+            with self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
+                registry.queue_intent(self.folder, RUN, DIGEST, QUEUE, _store_home=self.home)
+
+    def test_registry_error_with_failed_rollback(self):
+        registry.queue_intent(self.folder, RUN, DIGEST, QUEUE, _store_home=self.home)
+        with self.failing_rollback_connect():
+            with self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
+                registry.queue_bind_task(self.folder, 'stale-intent', TASK, _store_home=self.home)
 
 
 if __name__ == '__main__':

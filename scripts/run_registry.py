@@ -185,6 +185,14 @@ def _safe_rollback(db):
         pass
 
 
+def _rollback_or_unreadable(db):
+    """Roll back on an error path. A failed ROLLBACK becomes REGISTRY_UNREADABLE, never a raw sqlite3 error."""
+    try:
+        _rollback(db)
+    except sqlite3.Error as exc:
+        raise _unreadable() from exc
+
+
 def _decode_owner(token):
     """Every mutating call starts here; malformed or replayed tokens fail closed."""
     return run_ownership.decode_token(token)
@@ -383,14 +391,14 @@ def queue_intent(folder, run_id, manifest_sha256, queue_instance, *, project=Non
         run_ownership.fault(_fault, 'queue_intent:before_commit')
         db.execute('COMMIT')
     except sqlite3.IntegrityError as exc:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise RegistryError('Queue intent or queue instance/task binding already exists; '
                             'never retry enqueue automatically') from exc
     except sqlite3.Error as exc:
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -415,13 +423,13 @@ def queue_bind_task(folder, intent_token, task_id, *, _store_home=None, _fault=N
         run_ownership.fault(_fault, 'queue_bind_task:before_commit')
         db.execute('COMMIT')
     except sqlite3.IntegrityError as exc:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise RegistryError('Queue task ID is already bound to another run') from exc
     except sqlite3.Error as exc:
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -442,7 +450,7 @@ def queue_mark_ambiguous(folder, intent_token, detail='', *, _store_home=None):
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -481,7 +489,7 @@ def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -514,7 +522,7 @@ def queue_recover(folder, *, _store_home=None):
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -546,13 +554,13 @@ def queue_resolve_ambiguous(folder, proof, *, _store_home=None):
         db.execute('COMMIT')
         return new_phase
     except sqlite3.IntegrityError as exc:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise RegistryError('Queue task ID is already bound to another run') from exc
     except sqlite3.Error as exc:
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -627,7 +635,7 @@ def _insert_local_claim(folder, identity, token, fault_hook):
         run_ownership.fault(fault_hook, 'claim:before_commit')
         db.execute('COMMIT')
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -743,7 +751,7 @@ def record_child(folder, token, pid):
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -771,7 +779,7 @@ def advance(folder, token, expected, target, *, _fault=None):
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -799,7 +807,7 @@ def finish(folder, token, result, *, _fault=None):
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -830,7 +838,7 @@ def verified_finish(folder, token, proof, result):
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
@@ -868,7 +876,7 @@ def supersede(folder, token, proof):
         _safe_rollback(db)
         raise _unreadable() from exc
     except BaseException:
-        _rollback(db)
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
