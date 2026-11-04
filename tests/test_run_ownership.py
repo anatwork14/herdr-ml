@@ -15,6 +15,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 
@@ -37,6 +38,14 @@ OTHER_QUEUE = 'e' * 64
 SHA = '1' * 64
 NOW = '2026-11-04T00:00:00Z'
 ATTEMPT = 'f' * 32
+TEST_ISSUER = 'synthetic-test-issuer'
+WHOLE = ownership.WHOLE_WORKLOAD_TERMINATED
+
+
+def issue_proof(kind, bindings):
+    """Mint a proof through the real issuance path, with a synthetic verifier registered for this call only."""
+    with patch.dict(ownership._VERIFIED_ISSUERS, {TEST_ISSUER: lambda k, b, raw: True}):
+        return ownership.issue_proof(TEST_ISSUER, kind, bindings, None)
 
 
 class SimulatedCrash(BaseException):
@@ -56,12 +65,36 @@ class OwnershipBase(unittest.TestCase):
         folder.mkdir(parents=True, exist_ok=True)
         return folder
 
-    def proof(self, run_id, attempt_id, fence_value, **overrides):
-        evidence = {'kind': ownership.WHOLE_WORKLOAD_TERMINATED, 'run_id': run_id,
-                    'attempt_id': attempt_id, 'fence': fence_value, 'verifier': 'synthetic-test-shape',
-                    'observed_at': NOW, 'evidence_sha256': SHA}
-        evidence.update(overrides)
-        return evidence
+    def proof(self, run_id, attempt_id, fence_value, kind=WHOLE):
+        return issue_proof(kind, {'run_id': run_id, 'attempt_id': attempt_id, 'fence': fence_value})
+
+    def start_running(self, folder, token):
+        registry.record_child(folder, token, os.getpid())
+        registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+
+    @staticmethod
+    def crash_at(name):
+        def hook(point):
+            if point == name:
+                raise SimulatedCrash(point)
+        return hook
+
+    @staticmethod
+    def write_legacy_registry(folder):
+        """Old run table: no attempt, fence, worker or identity columns; one row for run-1."""
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            db.execute('''CREATE TABLE run (
+                id INTEGER PRIMARY KEY CHECK (id = 1), run_id TEXT NOT NULL,
+                project TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+                state TEXT NOT NULL, owner TEXT NOT NULL, owner_pid INTEGER NOT NULL,
+                owner_host TEXT NOT NULL, owner_boot TEXT, owner_start TEXT,
+                queue_task_id TEXT, result_json TEXT)''')
+            db.execute("INSERT INTO run VALUES (1,'run-1','project-a',?,'CLAIMED','oldtoken',99,'host',NULL,NULL,NULL,NULL)",
+                       (DIGEST,))
+            db.commit()
+        finally:
+            db.close()
 
     def bound_queue(self, folder, run_id='run-1', task='task-1', digest=DIGEST):
         token = registry.queue_intent(folder, run_id, digest, QUEUE, _store_home=self.home)
@@ -163,15 +196,11 @@ class LocalOwnershipTests(OwnershipBase):
         token = self.claim(folder)
         attempt, fence = ownership.decode_token(token)
         registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
-        registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
-        bad_proofs = [None, 'yes', {},
-                      self.proof('other-run', attempt, fence),
-                      self.proof('run-1', '0' * 32, fence),
-                      self.proof('run-1', attempt, fence + 1),
-                      self.proof('run-1', attempt, fence, kind='LEADER_EXITED'),
-                      self.proof('run-1', attempt, fence, verifier=''),
-                      self.proof('run-1', attempt, fence, evidence_sha256='not-a-digest'),
-                      self.proof('run-1', attempt, fence, fence=str(fence))]
+        self.start_running(folder, token)
+        bad_proofs = [None, 'yes', {}, self.proof('other-run', attempt, fence),
+                      self.proof('run-1', '0' * 32, fence), self.proof('run-1', attempt, fence + 1),
+                      self.proof('run-1', attempt, fence, kind=ownership.QUEUE_LOOKUP_NO_TASK),
+                      self.proof('run-1', attempt, str(fence))]
         for proof in bad_proofs:
             with self.subTest(proof=proof), self.assertRaises(registry.RegistryError):
                 registry.verified_finish(folder, token, proof, {'state': 'COMPLETED', 'exit_code': 0})
@@ -181,7 +210,7 @@ class LocalOwnershipTests(OwnershipBase):
         folder = self.run_folder()
         token = self.claim(folder)
         registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
-        registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        self.start_running(folder, token)
         registry.finish(folder, token, {'state': 'UNKNOWN', 'leader_state': 'COMPLETED', 'exit_code': 0})
         row = registry.inspect(folder)
         self.assertEqual(row['state'], 'UNKNOWN')
@@ -197,7 +226,7 @@ class LocalOwnershipTests(OwnershipBase):
         old_token = self.claim(folder)
         attempt, fence = ownership.decode_token(old_token)
         registry.advance(folder, old_token, 'CLAIMED', 'DISPATCHING')
-        registry.advance(folder, old_token, 'DISPATCHING', 'RUNNING')
+        self.start_running(folder, old_token)
         with self.assertRaises(registry.RegistryError):
             registry.supersede(folder, old_token, self.proof('run-1', attempt, fence + 1))
         self.assertEqual(registry.inspect(folder)['state'], 'RUNNING')
@@ -228,6 +257,7 @@ class LocalOwnershipTests(OwnershipBase):
         folder = self.run_folder()
         token = self.claim(folder)
         registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        registry.record_child(folder, token, os.getpid())
         with self.assertRaises(SimulatedCrash):
             registry.advance(folder, token, 'DISPATCHING', 'RUNNING', _fault=self.crash_at('advance:before_commit'))
         self.assertEqual(registry.inspect(folder)['state'], 'DISPATCHING')
@@ -238,7 +268,7 @@ class LocalOwnershipTests(OwnershipBase):
         folder = self.run_folder()
         token = self.claim(folder)
         registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
-        registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        self.start_running(folder, token)
         leader = {'state': 'UNKNOWN', 'leader_state': 'COMPLETED', 'exit_code': 0}
         with self.assertRaises(SimulatedCrash):
             registry.finish(folder, token, leader, _fault=self.crash_at('finish:before_commit'))
@@ -257,13 +287,6 @@ class LocalOwnershipTests(OwnershipBase):
             self.claim(folder)
         self.assertIsNone(registry.inspect(folder))
 
-    @staticmethod
-    def crash_at(name):
-        def hook(point):
-            if point == name:
-                raise SimulatedCrash(point)
-        return hook
-
     def test_corrupt_registry_fails_closed_and_is_not_reset(self):
         folder = self.run_folder()
         garbage = b'this is not a sqlite database' * 64
@@ -274,22 +297,6 @@ class LocalOwnershipTests(OwnershipBase):
         with self.assertRaises(sqlite3.DatabaseError):
             registry.inspect(folder)
         self.assertEqual((folder / 'registry.sqlite3').read_bytes(), garbage)
-
-    def write_legacy_registry(self, folder, *, tampered=False):
-        """Old run table: no attempt, fence, worker or identity columns."""
-        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
-        try:
-            db.execute('''CREATE TABLE run (
-                id INTEGER PRIMARY KEY CHECK (id = 1), run_id TEXT NOT NULL,
-                project TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
-                state TEXT NOT NULL, owner TEXT NOT NULL, owner_pid INTEGER NOT NULL,
-                owner_host TEXT NOT NULL, owner_boot TEXT, owner_start TEXT,
-                queue_task_id TEXT, result_json TEXT)''')
-            db.execute("INSERT INTO run VALUES (1,'run-1','project-a',?,'CLAIMED','oldtoken',99,'host',NULL,NULL,NULL,NULL)",
-                       (DIGEST,))
-            db.commit()
-        finally:
-            db.close()
 
     def test_legacy_rows_load_as_fenced_unknown_and_are_never_claimable(self):
         folder = self.run_folder()
@@ -487,31 +494,30 @@ class QueueBindingTests(OwnershipBase):
         folder = self.run_folder()
         token = registry.queue_intent(folder, 'run-1', DIGEST, QUEUE, _store_home=self.home)
         registry.queue_mark_ambiguous(folder, token, 'client timed out', _store_home=self.home)
-        no_task = {'kind': ownership.QUEUE_LOOKUP_NO_TASK, 'intent_token': token,
-                   'queue_instance': QUEUE, 'lookup_id': 'q-1', 'observed_at': NOW}
-        with self.assertRaises(registry.RegistryError):
-            registry.queue_resolve_ambiguous(folder, None, _store_home=self.home)
-        with self.assertRaises(registry.RegistryError):
-            registry.queue_resolve_ambiguous(folder, dict(no_task, intent_token='0' * 32),
-                                             _store_home=self.home)
-        with self.assertRaises(registry.RegistryError):
-            registry.queue_resolve_ambiguous(folder, dict(no_task, task_id='T-1'), _store_home=self.home)
+        no_task = issue_proof(ownership.QUEUE_LOOKUP_NO_TASK, {'intent_token': token, 'queue_instance': QUEUE})
+        wrong_intent = issue_proof(ownership.QUEUE_LOOKUP_NO_TASK,
+                                   {'intent_token': '0' * 32, 'queue_instance': QUEUE})
+        with_task = issue_proof(ownership.QUEUE_LOOKUP_NO_TASK,
+                                {'intent_token': token, 'queue_instance': QUEUE, 'task_id': 'T-1'})
+        unregistered_shape = {'kind': ownership.QUEUE_LOOKUP_NO_TASK, 'intent_token': token,
+                              'queue_instance': QUEUE}
+        for bad in (None, unregistered_shape, wrong_intent, with_task):
+            with self.subTest(bad=bad), self.assertRaises(registry.RegistryError):
+                registry.queue_resolve_ambiguous(folder, bad, _store_home=self.home)
         self.assertEqual(registry.inspect_queue(folder, _store_home=self.home)['phase'], 'AMBIGUOUS')
         self.assertEqual(registry.queue_resolve_ambiguous(folder, no_task, _store_home=self.home), 'RETRYABLE')
         with self.assertRaises(registry.RegistryError):
             registry.queue_bind_task(folder, token, 'late-task', _store_home=self.home)
         with self.assertRaises(registry.RegistryError):
-            registry.queue_claim(folder, 'run-1', DIGEST, QUEUE, 'late-task', 'worker-A',
-                                 _store_home=self.home)
+            registry.queue_claim(folder, 'run-1', DIGEST, QUEUE, 'late-task', 'worker-A', _store_home=self.home)
 
     def test_task_evidence_rebinds_intent_origin_but_never_a_claimed_ambiguity(self):
         folder_two = self.run_folder(run_id='run-2')
         token = registry.queue_intent(folder_two, 'run-2', DIGEST, QUEUE, _store_home=self.home)
         registry.queue_mark_ambiguous(folder_two, token, 'lost response', _store_home=self.home)
-        task_evidence = {'kind': ownership.QUEUE_LOOKUP_TASK, 'intent_token': token,
-                         'queue_instance': QUEUE, 'lookup_id': 'q-2', 'observed_at': NOW,
-                         'task_id': 'T-2'}
-        self.assertEqual(registry.queue_resolve_ambiguous(folder_two, task_evidence, _store_home=self.home), 'BOUND')
+        task_proof = issue_proof(ownership.QUEUE_LOOKUP_TASK,
+                                 {'intent_token': token, 'queue_instance': QUEUE, 'task_id': 'T-2'})
+        self.assertEqual(registry.queue_resolve_ambiguous(folder_two, task_proof, _store_home=self.home), 'BOUND')
         self.assertEqual(registry.queue_claim(folder_two, 'run-2', DIGEST, QUEUE, 'T-2', 'worker-A',
                                               _store_home=self.home), 1)
 
@@ -519,10 +525,11 @@ class QueueBindingTests(OwnershipBase):
         self.bound_queue(folder_three, 'run-3', task='T-3')
         registry.queue_claim(folder_three, 'run-3', DIGEST, QUEUE, 'T-3', 'worker-A', _store_home=self.home)
         self.assertEqual(registry.queue_recover(folder_three, _store_home=self.home), 'AMBIGUOUS')
-        claimed_evidence = dict(task_evidence, intent_token=registry.inspect_queue(
-            folder_three, _store_home=self.home)['intent_token'], task_id='T-3')
+        token_three = registry.inspect_queue(folder_three, _store_home=self.home)['intent_token']
+        claimed_proof = issue_proof(ownership.QUEUE_LOOKUP_TASK,
+                                    {'intent_token': token_three, 'queue_instance': QUEUE, 'task_id': 'T-3'})
         with self.assertRaisesRegex(registry.RegistryError, 'containment-verified'):
-            registry.queue_resolve_ambiguous(folder_three, claimed_evidence, _store_home=self.home)
+            registry.queue_resolve_ambiguous(folder_three, claimed_proof, _store_home=self.home)
 
     def test_recovery_fences_unbound_intents_and_unlocal_claims_without_retrying(self):
         folder_intent = self.run_folder(run_id='run-4')
@@ -600,6 +607,306 @@ class DocumentationConsistencyTests(unittest.TestCase):
         with self.assertRaises(ownership.RegistryError):
             ownership.fault(lambda point: None, 'claim:before_comit')
         ownership.fault(None, 'claim:before_comit')
+
+class ForgedAndUnregisteredProofTests(OwnershipBase):
+    """A well-shaped dict, a hand-built object or an unregistered issuer must never complete, fence or bind."""
+
+    def running_run(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        self.start_running(folder, token)
+        return folder, token
+
+    @staticmethod
+    def forged(run_id, attempt, fence, kind=WHOLE):
+        return {'kind': kind, 'run_id': run_id, 'attempt_id': attempt, 'fence': fence,
+                'verifier': 'anyone', 'observed_at': NOW, 'evidence_sha256': SHA}
+
+    def test_well_shaped_dict_is_refused_for_completed(self):
+        folder, token = self.running_run()
+        attempt, fence = ownership.decode_token(token)
+        with self.assertRaises(registry.RegistryError):
+            registry.verified_finish(folder, token, self.forged('run-1', attempt, fence),
+                                     {'state': 'COMPLETED', 'exit_code': 0})
+        self.assertEqual(registry.inspect(folder)['state'], 'RUNNING')
+
+    def test_well_shaped_dict_is_refused_for_fenced(self):
+        folder, token = self.running_run()
+        attempt, fence = ownership.decode_token(token)
+        with self.assertRaises(registry.RegistryError):
+            registry.supersede(folder, token, self.forged('run-1', attempt, fence))
+        row = registry.inspect(folder)
+        self.assertEqual((row['state'], row['fence']), ('RUNNING', 1))
+
+    def test_well_shaped_dict_is_refused_for_queue_task_lookup(self):
+        folder = self.run_folder()
+        token = registry.queue_intent(folder, 'run-1', DIGEST, QUEUE, _store_home=self.home)
+        registry.queue_mark_ambiguous(folder, token, 'lost', _store_home=self.home)
+        forged = {'kind': ownership.QUEUE_LOOKUP_TASK, 'intent_token': token, 'queue_instance': QUEUE,
+                  'lookup_id': 'q-1', 'observed_at': NOW, 'task_id': 'attacker-task'}
+        with self.assertRaises(registry.RegistryError):
+            registry.queue_resolve_ambiguous(folder, forged, _store_home=self.home)
+        row = registry.inspect_queue(folder, _store_home=self.home)
+        self.assertEqual((row['phase'], row['task_id']), ('AMBIGUOUS', None))
+
+    def test_well_shaped_dict_is_refused_for_queue_no_task_lookup(self):
+        folder = self.run_folder()
+        token = registry.queue_intent(folder, 'run-1', DIGEST, QUEUE, _store_home=self.home)
+        registry.queue_mark_ambiguous(folder, token, 'lost', _store_home=self.home)
+        forged = {'kind': ownership.QUEUE_LOOKUP_NO_TASK, 'intent_token': token, 'queue_instance': QUEUE,
+                  'lookup_id': 'q-2', 'observed_at': NOW}
+        with self.assertRaises(registry.RegistryError):
+            registry.queue_resolve_ambiguous(folder, forged, _store_home=self.home)
+        self.assertEqual(registry.inspect_queue(folder, _store_home=self.home)['phase'], 'AMBIGUOUS')
+
+    def test_hand_built_unregistered_and_rejected_proofs_are_refused(self):
+        bindings = {'run_id': 'run-1', 'attempt_id': ATTEMPT, 'fence': 1}
+        with self.assertRaises(ownership.RegistryError):
+            ownership.VerifiedProof('guess', WHOLE, bindings)
+        with self.assertRaises(ownership.RegistryError):
+            ownership.VerifiedProof(None, WHOLE, bindings)
+        with patch.dict(ownership._VERIFIED_ISSUERS, {}, clear=True):
+            with self.assertRaises(ownership.RegistryError):
+                ownership.issue_proof('nobody', WHOLE, bindings, None)
+        with patch.dict(ownership._VERIFIED_ISSUERS, {'reject': lambda k, b, r: False}):
+            with self.assertRaises(ownership.RegistryError):
+                ownership.issue_proof('reject', WHOLE, bindings, None)
+        with patch.dict(ownership._VERIFIED_ISSUERS, {'truthy': lambda k, b, r: 'yes'}):
+            with self.assertRaises(ownership.RegistryError):
+                ownership.issue_proof('truthy', WHOLE, bindings, None)
+        with patch.dict(ownership._VERIFIED_ISSUERS, {'raw': lambda k, b, r: r == 'good'}):
+            with self.assertRaises(ownership.RegistryError):
+                ownership.issue_proof('raw', WHOLE, bindings, 'bad')
+
+    def test_no_verifier_is_registered_by_default(self):
+        self.assertEqual(dict(ownership._VERIFIED_ISSUERS), {})
+
+    def test_registered_verifier_path_completes_and_binds_only_the_proven_task(self):
+        folder, token = self.running_run()
+        attempt, fence = ownership.decode_token(token)
+        registry.verified_finish(folder, token, self.proof('run-1', attempt, fence),
+                                 {'state': 'COMPLETED', 'exit_code': 0})
+        self.assertEqual(registry.inspect(folder)['state'], 'COMPLETED')
+
+        folder_two = self.run_folder(run_id='run-2')
+        token_two = registry.queue_intent(folder_two, 'run-2', DIGEST, QUEUE, _store_home=self.home)
+        registry.queue_mark_ambiguous(folder_two, token_two, 'lost', _store_home=self.home)
+        proof = issue_proof(ownership.QUEUE_LOOKUP_TASK,
+                            {'intent_token': token_two, 'queue_instance': QUEUE, 'task_id': 'T-9'})
+        self.assertEqual(registry.queue_resolve_ambiguous(folder_two, proof, _store_home=self.home), 'BOUND')
+        self.assertEqual(registry.inspect_queue(folder_two, _store_home=self.home)['task_id'], 'T-9')
+
+        folder_three = self.run_folder(run_id='run-3')
+        token_three = registry.queue_intent(folder_three, 'run-3', DIGEST, QUEUE, _store_home=self.home)
+        registry.queue_mark_ambiguous(folder_three, token_three, 'lost', _store_home=self.home)
+        taskless = issue_proof(ownership.QUEUE_LOOKUP_TASK, {'intent_token': token_three, 'queue_instance': QUEUE})
+        with self.assertRaises(registry.RegistryError):
+            registry.queue_resolve_ambiguous(folder_three, taskless, _store_home=self.home)
+
+
+class TamperAndLegacyRowTests(OwnershipBase):
+    def test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        db = registry._connect(folder)
+        try:
+            db.execute("UPDATE run SET project='tampered', manifest_sha256=? WHERE id=1", ('b' * 64,))
+            db.commit()
+        finally:
+            db.close()
+        attempt, fence = ownership.decode_token(token)
+        with self.assertRaises(registry.RegistryError):
+            registry.record_child(folder, token, os.getpid())
+        with self.assertRaises(registry.RegistryError):
+            registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        with self.assertRaises(registry.RegistryError):
+            registry.finish(folder, token, {'state': 'UNKNOWN'})
+        with self.assertRaises(registry.RegistryError):
+            registry.verified_finish(folder, token, self.proof('run-1', attempt, fence),
+                                     {'state': 'COMPLETED'})
+        row = registry.inspect(folder)
+        self.assertEqual(row['identity'], 'LEGACY_FENCED')
+        self.assertIsNone(row['child'])
+        self.assertNotEqual(row['state'], 'COMPLETED')
+
+    def test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed(self):
+        folder = self.run_folder()
+        self.write_legacy_registry(folder)
+        token = ownership.encode_token(ATTEMPT, 1)
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            for column, kind in (('attempt_id', 'TEXT'), ('fence', 'INTEGER'), ('worker_id', 'TEXT'),
+                                 ('identity_version', 'INTEGER'), ('identity_sha256', 'TEXT')):
+                db.execute('ALTER TABLE run ADD COLUMN %s %s' % (column, kind))
+            db.execute("UPDATE run SET owner=?, attempt_id=?, fence=1, worker_id='w', state='RUNNING' WHERE id=1",
+                       (token, ATTEMPT))
+            db.commit()
+        finally:
+            db.close()
+        proof = self.proof('run-1', ATTEMPT, 1)
+        with self.assertRaises(registry.RegistryError):
+            registry.verified_finish(folder, token, proof, {'state': 'COMPLETED', 'exit_code': 0})
+        with self.assertRaises(registry.RegistryError):
+            registry.finish(folder, token, {'state': 'UNKNOWN'})
+        row = registry.inspect(folder)
+        self.assertEqual((row['identity'], row['state'], row['legacy_state']),
+                         ('LEGACY_FENCED', 'UNKNOWN', 'RUNNING'))
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            self.assertEqual(db.execute('SELECT state FROM run WHERE id=1').fetchone()[0], 'RUNNING')
+        finally:
+            db.close()
+
+    def test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors(self):
+        folder = self.run_folder()
+        self.write_legacy_registry(folder)
+        token = ownership.encode_token(ATTEMPT, 1)
+        calls = [lambda: registry.advance(folder, token, 'CLAIMED', 'DISPATCHING'),
+                 lambda: registry.record_child(folder, token, os.getpid()),
+                 lambda: registry.finish(folder, token, {'state': 'UNKNOWN'}),
+                 lambda: registry.verified_finish(folder, token, None, {'state': 'COMPLETED'}),
+                 lambda: registry.supersede(folder, token, None)]
+        for index, call in enumerate(calls):
+            with self.subTest(call=index), self.assertRaises(registry.RegistryError):
+                call()
+        with self.assertRaises(registry.RegistryError):
+            registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        self.assertEqual(registry.inspect(folder)['state'], 'UNKNOWN')
+
+
+class GuardMutationTests(OwnershipBase):
+    """Each test fails if the named guard is removed."""
+
+    def test_advance_state_guard_refuses_regression_from_unknown_or_running(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        self.start_running(folder, token)
+        registry.finish(folder, token, {'state': 'UNKNOWN', 'leader_state': 'COMPLETED', 'exit_code': 0})
+        for expected, target in (('CLAIMED', 'DISPATCHING'), ('DISPATCHING', 'RUNNING')):
+            with self.subTest(expected=expected, target=target), self.assertRaises(registry.RegistryError):
+                registry.advance(folder, token, expected, target)
+        self.assertEqual(registry.inspect(folder)['state'], 'UNKNOWN')
+
+        folder_two = self.run_folder(run_id='run-2')
+        token_two = registry.claim(folder_two, 'run-2', 'project-a', DIGEST, 'SUBMITTED')
+        registry.advance(folder_two, token_two, 'CLAIMED', 'DISPATCHING')
+        self.start_running(folder_two, token_two)
+        with self.assertRaises(registry.RegistryError):
+            registry.advance(folder_two, token_two, 'CLAIMED', 'DISPATCHING')
+        self.assertEqual(registry.inspect(folder_two)['state'], 'RUNNING')
+
+    def test_record_child_requires_dispatching_state(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        with self.assertRaises(registry.RegistryError):
+            registry.record_child(folder, token, os.getpid())
+        self.assertIsNone(registry.inspect(folder)['child'])
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        registry.record_child(folder, token, os.getpid())
+        self.assertIsNotNone(registry.inspect(folder)['child'])
+
+    def test_supersede_refuses_completed_run(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        attempt, fence = ownership.decode_token(token)
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        self.start_running(folder, token)
+        proof = self.proof('run-1', attempt, fence)
+        registry.verified_finish(folder, token, proof, {'state': 'COMPLETED', 'exit_code': 0})
+        with self.assertRaises(registry.RegistryError):
+            registry.supersede(folder, token, proof)
+        row = registry.inspect(folder)
+        self.assertEqual((row['state'], row['fence']), ('COMPLETED', 1))
+
+    def test_queue_recover_requires_a_current_local_record(self):
+        folder = self.run_folder()
+        self.bound_queue(folder)
+        fence = registry.queue_claim(folder, 'run-1', DIGEST, QUEUE, 'task-1', 'worker-A', _store_home=self.home)
+        self.queued_claim(folder, fence)
+        self.assertEqual(registry.queue_recover(folder, _store_home=self.home), 'CLAIMED')
+        db = registry._connect(folder)
+        try:
+            db.execute("UPDATE run SET project='tampered' WHERE id=1")
+            db.commit()
+        finally:
+            db.close()
+        self.assertEqual(registry.queue_recover(folder, _store_home=self.home), 'AMBIGUOUS')
+        self.assertEqual(registry.inspect_queue(folder, _store_home=self.home)['ambiguous_from'], 'CLAIMED')
+
+    def test_claim_failure_after_queue_verification_fences_the_queue_row_in_process(self):
+        folder = self.run_folder()
+        self.bound_queue(folder)
+        fence = registry.queue_claim(folder, 'run-1', DIGEST, QUEUE, 'task-1', 'worker-A', _store_home=self.home)
+        with self.assertRaises(SimulatedCrash):
+            self.queued_claim(folder, fence, fault=self.crash_at('claim:before_commit'))
+        row = registry.inspect_queue(folder, _store_home=self.home)
+        self.assertEqual((row['phase'], row['ambiguous_from']), ('AMBIGUOUS', 'CLAIMED'))
+        self.assertIsNone(registry.inspect(folder))
+        with self.assertRaises(registry.RegistryError):
+            self.queued_claim(folder, fence)
+
+    def test_insert_refuses_existing_row_with_named_error(self):
+        folder = self.run_folder()
+        registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        (folder / 'execution.claim').rmdir()
+        with self.assertRaisesRegex(registry.RegistryError, 'Run already claimed'):
+            registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        self.assertEqual(registry.inspect(folder)['state'], 'CLAIMED')
+
+
+class RefusalHygieneTests(OwnershipBase):
+    def test_refused_mutators_never_create_a_registry_file(self):
+        folder = self.run_folder()
+        token = ownership.encode_token(ATTEMPT, 1)
+        calls = [lambda: registry.record_child(folder, token, os.getpid()),
+                 lambda: registry.advance(folder, token, 'CLAIMED', 'DISPATCHING'),
+                 lambda: registry.finish(folder, token, {'state': 'UNKNOWN'}),
+                 lambda: registry.verified_finish(folder, token, None, {'state': 'COMPLETED'}),
+                 lambda: registry.supersede(folder, token, None)]
+        for index, call in enumerate(calls):
+            with self.subTest(call=index), self.assertRaises(registry.RegistryError):
+                call()
+        self.assertFalse((folder / 'registry.sqlite3').exists())
+        self.assertFalse((folder / 'execution.claim').exists())
+
+    def test_claim_with_another_project_is_refused_on_both_paths_and_creates_nothing(self):
+        folder = self.run_folder()
+        with self.assertRaisesRegex(registry.RegistryError, 'project'):
+            registry.claim(folder, 'run-1', 'project-b', DIGEST, 'SUBMITTED')
+        self.assertFalse((folder / 'execution.claim').exists())
+        self.assertFalse((folder / 'registry.sqlite3').exists())
+
+        self.bound_queue(folder)
+        fence = registry.queue_claim(folder, 'run-1', DIGEST, QUEUE, 'task-1', 'worker-A', _store_home=self.home)
+        with self.assertRaisesRegex(registry.RegistryError, 'project'):
+            registry.claim(folder, 'run-1', 'project-b', DIGEST, 'QUEUED', queue_instance=QUEUE,
+                           queue_task_id='task-1', queue_worker_id='worker-A', queue_fence=fence,
+                           queue_store_home=self.home)
+        self.assertEqual(registry.inspect_queue(folder, _store_home=self.home)['phase'], 'CLAIMED')
+        self.assertFalse((folder / 'execution.claim').exists())
+        self.assertIsNone(registry.inspect(folder))
+
+    def test_derived_successor_token_is_inert_after_supersede(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        attempt, fence = ownership.decode_token(token)
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        self.start_running(folder, token)
+        registry.supersede(folder, token, self.proof('run-1', attempt, fence))
+        successor = ownership.encode_token(attempt, fence + 1)
+        proof = self.proof('run-1', attempt, fence + 1)
+        calls = [lambda: registry.record_child(folder, successor, os.getpid()),
+                 lambda: registry.advance(folder, successor, 'RUNNING', 'DISPATCHING'),
+                 lambda: registry.finish(folder, successor, {'state': 'UNKNOWN'}),
+                 lambda: registry.verified_finish(folder, successor, proof, {'state': 'COMPLETED'}),
+                 lambda: registry.supersede(folder, successor, proof)]
+        for index, call in enumerate(calls):
+            with self.subTest(call=index), self.assertRaises(registry.RegistryError):
+                call()
+        self.assertEqual(registry.inspect(folder)['state'], 'FENCED')
 
 
 if __name__ == '__main__':

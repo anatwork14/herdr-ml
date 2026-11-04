@@ -151,9 +151,11 @@ class QueueBoundaryFaults(FaultBase):
             registry.queue_claim(self.folder, 'run-1', DIGEST, QUEUE, 'task-1', 'worker-A', _store_home=self.home)
         self.assertEqual(self.queue()['phase'], 'AMBIGUOUS')
         self.assertEqual(self.submissions(), ['task-1'])
-        evidence = {'kind': ownership.QUEUE_LOOKUP_TASK, 'intent_token': token, 'queue_instance': QUEUE,
-                    'lookup_id': 'lookup-1', 'observed_at': NOW, 'task_id': 'task-1'}
-        self.assertEqual(registry.queue_resolve_ambiguous(self.folder, evidence, _store_home=self.home), 'BOUND')
+        with patch.dict(ownership._VERIFIED_ISSUERS, {'synthetic-test-issuer': lambda k, b, raw: True}):
+            proof = ownership.issue_proof('synthetic-test-issuer', ownership.QUEUE_LOOKUP_TASK,
+                                          {'intent_token': token, 'queue_instance': QUEUE, 'task_id': 'task-1'},
+                                          None)
+        self.assertEqual(registry.queue_resolve_ambiguous(self.folder, proof, _store_home=self.home), 'BOUND')
         self.assertEqual(self.submissions(), ['task-1'])
 
     def test_crash_after_global_claim_before_local_claim_is_refused_then_fenced(self):
