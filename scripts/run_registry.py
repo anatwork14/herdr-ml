@@ -50,8 +50,12 @@ INSPECT_FIELDS = ('run_id', 'project', 'manifest_sha256', 'state', 'owner_pid', 
                   'worker_id', 'identity_version', 'identity_sha256')
 
 
-def _connect(folder):
-    db = sqlite3.connect(str(Path(folder) / 'registry.sqlite3'), timeout=30, isolation_level=None)
+def _connect(folder, create=True):
+    """Open the run-local registry for writing. Mutators pass create=False and never create a file."""
+    path = Path(folder) / 'registry.sqlite3'
+    if not create and not path.is_file():
+        raise RegistryError('No registry record; refusing to create one on a mutation')
+    db = sqlite3.connect(str(path), timeout=30, isolation_level=None)
     db.execute('PRAGMA synchronous=FULL')
     db.execute('PRAGMA busy_timeout=30000')
     db.execute(RUN_TABLE)
@@ -435,8 +439,8 @@ def queue_recover(folder, *, _store_home=None):
         db.close()
 
 
-def queue_resolve_ambiguous(folder, evidence, *, _store_home=None):
-    """Move an AMBIGUOUS intent only on recorded queue evidence. Absence alone never qualifies."""
+def queue_resolve_ambiguous(folder, proof, *, _store_home=None):
+    """Move an AMBIGUOUS intent only on a VerifiedProof of queue lookup. Absence alone never qualifies."""
     db = _queue_connect(folder, _store_home)
     try:
         db.execute('BEGIN IMMEDIATE')
@@ -447,17 +451,17 @@ def queue_resolve_ambiguous(folder, evidence, *, _store_home=None):
         run_id, intent_token, queue_instance, origin = row
         if origin != 'INTENT':
             raise RegistryError('A claimed ambiguity needs containment-verified termination, not queue evidence')
-        kind = run_ownership.require_queue_lookup(evidence, intent_token=intent_token,
-                                                  queue_instance=queue_instance)
+        kind = run_ownership.require_queue_lookup(proof, intent_token=intent_token, queue_instance=queue_instance)
         if kind == run_ownership.QUEUE_LOOKUP_NO_TASK:
             db.execute("UPDATE queue_binding SET phase='RETRYABLE', resolution='NOT_SUBMITTED_VERIFIED' "
                        "WHERE run_id=? AND phase='AMBIGUOUS'", (run_id,))
             new_phase = 'RETRYABLE'
         else:
+            task = proof.binding('task_id')
             db.execute("UPDATE queue_binding SET phase='BOUND', task_id=?, resolution='TASK_VERIFIED' "
-                       "WHERE run_id=? AND phase='AMBIGUOUS'", (evidence['task_id'], run_id))
+                       "WHERE run_id=? AND phase='AMBIGUOUS'", (task, run_id))
             new_phase = 'BOUND'
-        _queue_event(db, run_id, new_phase, {'resolved_from': 'AMBIGUOUS', 'evidence': evidence})
+        _queue_event(db, run_id, new_phase, {'resolved_from': 'AMBIGUOUS', 'kind': kind})
         db.execute('COMMIT')
         return new_phase
     except sqlite3.IntegrityError as exc:
@@ -555,6 +559,8 @@ def claim(folder, run_id, project, digest, initial_state, *,
     """
     if initial_state not in ('SUBMITTED', 'QUEUED'):
         raise RegistryError('Run is not eligible for execution')
+    if project != _folder_project(folder):
+        raise RegistryError('Run project does not match the run folder project')
     queue_db = None
     try:
         if initial_state == 'QUEUED':
@@ -602,6 +608,26 @@ def claim(folder, run_id, project, digest, initial_state, *,
     return token
 
 
+def _owner_row(db, token, attempt_id, fence):
+    """Read the run row inside the caller's transaction and verify it before any mutation.
+
+    Owner, attempt and fence must match the presented token, and the row must
+    recompute as CURRENT. Legacy-schema rows are read with SELECT *, so every
+    refusal here is a RegistryError rather than an OperationalError on a missing column.
+    """
+    rows = _dict_rows(db, 'SELECT * FROM run WHERE id=1')
+    if (not rows or rows[0].get('owner') != token or rows[0].get('attempt_id') != attempt_id or
+            rows[0].get('fence') != fence):
+        raise RegistryError('Stale owner or illegal execution state')
+    if run_ownership.classify_row(rows[0]) != 'CURRENT':
+        raise RegistryError('Run identity fails verification; fenced')
+    return rows[0]
+
+
+def _child_recorded(db):
+    return bool(_optional_rows(db, 'SELECT 1 AS present FROM child_identity WHERE id=1'))
+
+
 def record_child(folder, token, pid):
     """Record forensic identity; this is not evidence of containment."""
     attempt_id, fence = _decode_owner(token)
@@ -611,13 +637,17 @@ def record_child(folder, token, pid):
         start = stat[stat.rfind(')') + 2:].split()[19]
     except (OSError, IndexError):
         boot, start = None, None
-    db = _connect(folder)
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
+        _owner_row(db, token, attempt_id, fence)
         if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND attempt_id=? AND fence=? "
                           "AND state='DISPATCHING'", (token, attempt_id, fence)).fetchone():
             raise RegistryError('Stale owner or illegal child registration')
-        db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        try:
+            db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        except sqlite3.IntegrityError as exc:
+            raise RegistryError('Child identity already recorded') from exc
         pid_ns, mount_ns = _namespaces(pid)
         db.execute("INSERT INTO process_namespaces VALUES ('child',?,?)", (pid_ns, mount_ns))
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
@@ -631,12 +661,16 @@ def record_child(folder, token, pid):
 
 
 def advance(folder, token, expected, target, *, _fault=None):
+    """Owner-only transition. The state guard is the CAS in the UPDATE; RUNNING also needs a child identity."""
     if (expected, target) not in {('CLAIMED', 'DISPATCHING'), ('DISPATCHING', 'RUNNING')}:
         raise RegistryError('Illegal execution transition')
     attempt_id, fence = _decode_owner(token)
-    db = _connect(folder)
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
+        _owner_row(db, token, attempt_id, fence)
+        if target == 'RUNNING' and not _child_recorded(db):
+            raise RegistryError('RUNNING requires a recorded child identity')
         updated = db.execute('UPDATE run SET state=? WHERE id=1 AND owner=? AND attempt_id=? AND fence=? AND state=?',
                              (target, token, attempt_id, fence, expected)).rowcount
         if updated != 1:
@@ -657,9 +691,10 @@ def finish(folder, token, result, *, _fault=None):
         raise RegistryError('Invalid terminal state')
     attempt_id, fence = _decode_owner(token)
     data = json.dumps(result, sort_keys=True)
-    db = _connect(folder)
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
+        _owner_row(db, token, attempt_id, fence)
         updated = db.execute("UPDATE run SET state='UNKNOWN', result_json=? WHERE id=1 AND owner=? "
                              "AND attempt_id=? AND fence=? AND state IN ('RUNNING','DISPATCHING')",
                              (data, token, attempt_id, fence)).rowcount
@@ -675,25 +710,25 @@ def finish(folder, token, result, *, _fault=None):
         db.close()
 
 
-def verified_finish(folder, token, evidence, result):
-    """Record a leader outcome as verified only with whole-workload termination proof.
+def verified_finish(folder, token, proof, result):
+    """Record a leader outcome as verified only with a VerifiedProof of whole-workload termination.
 
-    No production issuer exists, so this refuses every real call today.
+    No verifier is registered, so every real call is refused today.
     """
     if not isinstance(result, dict) or result.get('state') not in run_ownership.VERIFIED_OUTCOMES:
         raise RegistryError('Verified completion requires a leader outcome state')
     attempt_id, fence = _decode_owner(token)
     data = json.dumps(result, sort_keys=True)
-    db = _connect(folder)
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute("SELECT run_id FROM run WHERE id=1 AND owner=? AND attempt_id=? AND fence=? "
-                         "AND state IN ('RUNNING','DISPATCHING')", (token, attempt_id, fence)).fetchone()
-        if row is None:
+        row = _owner_row(db, token, attempt_id, fence)
+        run_ownership.require_containment_proof(proof, run_id=row['run_id'], attempt_id=attempt_id, fence=fence)
+        updated = db.execute("UPDATE run SET state=?, result_json=? WHERE id=1 AND owner=? AND attempt_id=? "
+                             "AND fence=? AND state IN ('RUNNING','DISPATCHING')",
+                             (result['state'], data, token, attempt_id, fence)).rowcount
+        if updated != 1:
             raise RegistryError('Stale owner or illegal terminal state')
-        run_ownership.require_containment_proof(evidence, run_id=row[0], attempt_id=attempt_id, fence=fence)
-        db.execute("UPDATE run SET state=?, result_json=? WHERE id=1 AND owner=? AND attempt_id=? AND fence=?",
-                   (result['state'], data, token, attempt_id, fence))
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, result['state'], data))
         db.execute('COMMIT')
     except BaseException:
@@ -703,37 +738,32 @@ def verified_finish(folder, token, evidence, result):
         db.close()
 
 
-def supersede(folder, token, evidence):
-    """Revoke the presented authority after proof that its whole workload terminated.
+def supersede(folder, token, proof):
+    """Revoke the presented authority after a VerifiedProof that its whole workload terminated.
 
-    The run moves to FENCED with a higher fence and a token nobody holds. Nothing
-    can claim it again; a retry needs a new run identity.
+    The run moves to FENCED with fence+1 and owner set to the successor token. FENCED
+    is terminal for every mutator: each requires a state that FENCED lacks, so the
+    derivable successor token cannot act. A retry needs a new run identity.
     """
     attempt_id, fence = _decode_owner(token)
-    db = _connect(folder)
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT run_id, project, manifest_sha256, worker_id, queue_task_id, state '
-                         'FROM run WHERE id=1 AND owner=? AND attempt_id=? AND fence=?',
-                         (token, attempt_id, fence)).fetchone()
-        if row is None:
-            raise RegistryError('Stale owner or illegal fence transition')
-        run_id, project, digest, worker_id, task_id, state = row
-        if state not in ('CLAIMED', 'DISPATCHING', 'RUNNING', 'UNKNOWN'):
-            raise RegistryError('Only unfinished or unknown executions can be fenced')
-        run_ownership.require_containment_proof(evidence, run_id=run_id, attempt_id=attempt_id, fence=fence)
+        row = _owner_row(db, token, attempt_id, fence)
+        run_ownership.require_containment_proof(proof, run_id=row['run_id'], attempt_id=attempt_id, fence=fence)
         new_fence = fence + 1
-        new_digest = run_ownership.ExecutionIdentity(run_id, project, attempt_id, digest, worker_id,
-                                                     new_fence, task_id).validate().sha256()
+        new_digest = run_ownership.ExecutionIdentity(row['run_id'], row['project'], attempt_id,
+                                                     row['manifest_sha256'], row['worker_id'], new_fence,
+                                                     row['queue_task_id']).validate().sha256()
         new_token = run_ownership.encode_token(attempt_id, new_fence)
         updated = db.execute("UPDATE run SET state='FENCED', owner=?, fence=?, identity_sha256=? "
-                             "WHERE id=1 AND owner=? AND attempt_id=? AND fence=?",
+                             "WHERE id=1 AND owner=? AND attempt_id=? AND fence=? "
+                             "AND state IN ('CLAIMED','DISPATCHING','RUNNING','UNKNOWN')",
                              (new_token, new_fence, new_digest, token, attempt_id, fence)).rowcount
         if updated != 1:
-            raise RegistryError('Stale owner or illegal fence transition')
+            raise RegistryError('Only unfinished or unknown executions can be fenced')
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
-                   (new_token, 'FENCED', json.dumps({'previous_fence': fence, 'fence': new_fence,
-                                                     'evidence_sha256': evidence['evidence_sha256']},
+                   (new_token, 'FENCED', json.dumps({'previous_fence': fence, 'fence': new_fence},
                                                     sort_keys=True)))
         db.execute('COMMIT')
     except BaseException:

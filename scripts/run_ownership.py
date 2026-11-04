@@ -2,10 +2,10 @@
 state names, crash-point names and the shape of required proof inputs.
 
 Pure functions only. SQLite transactions live in run_registry.py. Nothing here
-proves containment, process liveness, queue state or resource release. Proof
-inputs are validated for shape and identity binding only; no issuer is
-registered (containment_backend._VERIFIED_ISSUERS is empty), so no production
-path can produce one yet. A missing or mismatched proof always fails closed.
+proves containment, process liveness, queue state or resource release. Proofs
+are VerifiedProof objects minted only by issue_proof() after a registered
+verifier accepts raw evidence. No verifier is registered, so no production path
+can obtain a proof today. A missing, forged or mismatched proof always fails closed.
 """
 import dataclasses
 import hashlib
@@ -168,51 +168,72 @@ def fault(hook, point):
     hook(point)
 
 
-def require_containment_proof(evidence, *, run_id, attempt_id, fence):
-    """Require whole-workload termination evidence bound to one run/attempt/fence.
+# Proofs are minted only by issue_proof(), after the verifier registered for
+# issuer_id accepts the raw evidence. _VERIFIED_ISSUERS is empty: no production
+# verifier is registered, so no production path can obtain a proof today. A dict,
+# a hand-built object or an unregistered issuer is refused. This is an in-process
+# guard against accidental or naive forgery; it is not a security boundary against
+# code that runs in the same process.
+_VERIFIED_ISSUERS = {}
+_ISSUE_KEY = object()
 
-    Absence is the normal state today: the containment layer that would issue
-    this evidence does not exist, so callers must treat any failure as a
-    refusal and never as a soft warning.
-    """
-    if not isinstance(evidence, dict):
-        raise RegistryError('Whole-workload termination proof absent; containment layer must verify it')
-    if evidence.get('kind') != WHOLE_WORKLOAD_TERMINATED:
+
+class VerifiedProof:
+    """Immutable proof minted by issue_proof(). Construction without the module key fails."""
+    __slots__ = ('kind', '_bindings')
+
+    def __init__(self, key, kind, bindings):
+        if key is not _ISSUE_KEY:
+            raise RegistryError('Proof objects are issued only by a registered verifier')
+        object.__setattr__(self, 'kind', kind)
+        object.__setattr__(self, '_bindings', tuple(sorted(dict(bindings).items())))
+
+    def __setattr__(self, name, value):
+        raise RegistryError('Proof objects are immutable')
+
+    def binding(self, name):
+        return dict(self._bindings).get(name)
+
+
+def issue_proof(issuer_id, kind, bindings, raw_evidence):
+    """Return a VerifiedProof only if the registered verifier accepts raw_evidence."""
+    verifier = _VERIFIED_ISSUERS.get(issuer_id)
+    if not callable(verifier):
+        raise RegistryError('No registered verifier for issuer %s' % issuer_id)
+    if kind not in (WHOLE_WORKLOAD_TERMINATED, QUEUE_LOOKUP_TASK, QUEUE_LOOKUP_NO_TASK):
+        raise RegistryError('Unknown proof kind')
+    if verifier(kind, dict(bindings), raw_evidence) is not True:
+        raise RegistryError('Verifier rejected the evidence')
+    return VerifiedProof(_ISSUE_KEY, kind, bindings)
+
+
+def require_containment_proof(proof, *, run_id, attempt_id, fence):
+    """Require a VerifiedProof of whole-workload termination bound to run, attempt and fence."""
+    if not isinstance(proof, VerifiedProof):
+        raise RegistryError('Whole-workload termination proof absent or not issued by a registered verifier')
+    if proof.kind != WHOLE_WORKLOAD_TERMINATED:
         raise RegistryError('Termination proof has the wrong kind')
-    bound = {'run_id': run_id, 'attempt_id': attempt_id, 'fence': fence}
-    for key, value in bound.items():
-        if type(evidence.get(key)) is not type(value) or evidence.get(key) != value:
+    for name, value in (('run_id', run_id), ('attempt_id', attempt_id), ('fence', fence)):
+        bound = proof.binding(name)
+        if type(bound) is not type(value) or bound != value:
             raise RegistryError('Termination proof does not bind this run, attempt and fence')
-    for key in ('verifier', 'observed_at'):
-        if not isinstance(evidence.get(key), str) or not evidence[key].strip():
-            raise RegistryError('Termination proof is incomplete')
-    if not isinstance(evidence.get('evidence_sha256'), str) or not _HEX64.fullmatch(evidence['evidence_sha256']):
-        raise RegistryError('Termination proof digest is invalid')
     return True
 
 
-def require_queue_lookup(evidence, *, intent_token, queue_instance, task_id=None):
-    """Require recorded queue-side evidence that resolves an AMBIGUOUS intent.
+def require_queue_lookup(proof, *, intent_token, queue_instance):
+    """Require a VerifiedProof of queue lookup bound to one intent; return its kind.
 
-    Shape and binding are checked here. The queue lookup that produces the
-    evidence is not implemented in this phase.
+    The task ID for QUEUE_LOOKUP_TASK comes only from the verified proof.
     """
-    if not isinstance(evidence, dict):
-        raise RegistryError('Queue lookup evidence absent; intent stays AMBIGUOUS')
-    kind = evidence.get('kind')
+    if not isinstance(proof, VerifiedProof):
+        raise RegistryError('Queue lookup proof absent or not issued by a registered verifier; intent stays AMBIGUOUS')
+    kind = proof.kind
     if kind not in (QUEUE_LOOKUP_TASK, QUEUE_LOOKUP_NO_TASK):
-        raise RegistryError('Unknown queue lookup evidence kind')
-    if evidence.get('intent_token') != intent_token or evidence.get('queue_instance') != queue_instance:
-        raise RegistryError('Queue lookup evidence does not bind this intent')
-    for key in ('lookup_id', 'observed_at'):
-        if not isinstance(evidence.get(key), str) or not evidence[key].strip():
-            raise RegistryError('Queue lookup evidence is incomplete')
+        raise RegistryError('Unknown queue lookup proof kind')
+    if proof.binding('intent_token') != intent_token or proof.binding('queue_instance') != queue_instance:
+        raise RegistryError('Queue lookup proof does not bind this intent')
     if kind == QUEUE_LOOKUP_TASK:
-        if evidence.get('task_id') is None:
-            raise RegistryError('Queue lookup evidence lacks a task ID')
-        validate_opaque_task(evidence['task_id'])
-        if task_id is not None and evidence['task_id'] != task_id:
-            raise RegistryError('Queue lookup task does not match the requested task')
-    elif evidence.get('task_id') is not None:
-        raise RegistryError('No-task evidence must not carry a task ID')
+        validate_opaque_task(proof.binding('task_id'))
+    elif proof.binding('task_id') is not None:
+        raise RegistryError('No-task proof must not carry a task ID')
     return kind
