@@ -1,0 +1,1 @@
+processes with isolated CLAUDE_CONFIG_DIR: 0

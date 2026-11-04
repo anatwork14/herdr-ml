@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.318
+▝▜██████▀  Sonnet 5.5 · Claude Team
+ ▝▝   ▝▝   /…/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/closure-r2-fixture
+
+  Get to finished work sooner with Opus 5.5. Switch anytime with /model.
+
+❯ Remember this test token exactly for later: R2TOKEN_6302ef647fdd. Then reply with only the word OK.
+
+● OK
+
+✻ Cooked for 1s · done 9:44 AM
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on (shift+tab to cycle)

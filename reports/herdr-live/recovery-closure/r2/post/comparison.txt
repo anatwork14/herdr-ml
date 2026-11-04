@@ -1,0 +1,14 @@
+workspace-list.json STABLE_IDENTICAL | ephemeral_entries baseline=8 post=8
+  ephemeral changed: focused ['false', 'true', 'false', 'false'] -> ['true', 'false', 'false', 'false']
+tab-list.json STABLE_IDENTICAL | ephemeral_entries baseline=12 post=12
+  ephemeral changed: focused ['false', 'false', 'false', 'true', 'false', 'false'] -> ['true', 'false', 'false', 'false', 'false', 'false']
+agent-list.json STABLE_IDENTICAL | ephemeral_entries baseline=14 post=14
+  ephemeral changed: focused ['false', 'false'] -> ['true', 'false']
+sessions.json STABLE_IDENTICAL | ephemeral_entries baseline=0 post=0
+panes-w1.json STABLE_IDENTICAL | ephemeral_entries baseline=21 post=21
+  ephemeral changed: focused ['false', 'false', 'false'] -> ['true', 'false', 'false']
+  ephemeral changed: scroll ['{"max_offset_from_bottom": 397, "offset_from_bottom": 0, "viewport_rows": 59}', '{"max_offset_from_bottom": 0, "offset_from_bottom": 0, "viewport_rows": 59}', '{"max_offset_from_bottom": 0, "offset_from_bottom": 0, "viewport_rows": 59}'] -> ['{"max_offset_from_bottom": 405, "offset_from_bottom": 0, "viewport_rows": 59}', '{"max_offset_from_bottom": 0, "offset_from_bottom": 0, "viewport_rows": 59}', '{"max_offset_from_bottom": 0, "offset_from_bottom": 0, "viewport_rows": 59}']
+panes-w3.json STABLE_IDENTICAL | ephemeral_entries baseline=7 post=7
+  ephemeral changed: focused ['true'] -> ['false']
+panes-w5.json STABLE_IDENTICAL | ephemeral_entries baseline=14 post=14
+panes-w6.json STABLE_IDENTICAL | ephemeral_entries baseline=7 post=7

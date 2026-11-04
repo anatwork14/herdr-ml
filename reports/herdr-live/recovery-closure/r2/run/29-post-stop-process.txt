@@ -1,0 +1,2 @@
+PID_GONE_AFTER_STOP
+[('default', True), ('mlrec-close-r2', False)]

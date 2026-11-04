@@ -1,0 +1,1 @@
+Count from 1 to 40, one number per line, then print the word DETACHED-WINDOW-DONE on its own line.

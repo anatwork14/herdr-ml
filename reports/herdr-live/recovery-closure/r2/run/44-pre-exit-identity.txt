@@ -1,0 +1,4 @@
+pid=2095038
+argv=claude --resume 75971b1d-76df-47af-9603-291d3e9acb6d 
+state=S ppid=2094749 pgrp=2095038 sid=2094749 starttime=475618827
+children: 

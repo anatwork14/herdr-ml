@@ -1,0 +1,2 @@
+/mnt/ssd/genos2/.claude/settings.json: OK
+/mnt/ssd/genos2/.claude/hooks/herdr-agent-state.sh: OK

@@ -1,0 +1,1 @@
+{"session": "mlrec-close-r2", "terminal_id": "term_65f6a5b5d6bcb1", "command": ["herdr", "--session", "mlrec-close-r2", "terminal", "attach", "term_65f6a5b5d6bcb1"], "start": "2026-11-04T02:45:28.579Z", "bytes_before_detach": 8075, "detach_sent": "2026-11-04T02:45:32.638Z", "detach_observed_exit": true, "exit_code": 0, "end": "2026-11-04T02:45:32.639Z", "bytes_total": 8228}

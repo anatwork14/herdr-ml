@@ -1,0 +1,1 @@
+exited_before_stop=true elapsed=0s
