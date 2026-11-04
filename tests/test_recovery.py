@@ -16,6 +16,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / 'scripts'
@@ -471,6 +472,39 @@ class VerifiedTerminationTests(RecoveryBase):
         self.assertEqual(run_recovery.observe(real)[0], run_recovery.ALIVE)
         self.assertTrue(run_recovery.terminate_recorded([real], grace_s=1.0)['all_gone'])
 
+    def test_identity_mismatch_after_pidfd_open_is_never_signalled(self):
+        proc = subprocess.Popen([sys.executable, '-I', '-c', 'import time; time.sleep(60)', self.marker],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        self.handles.append(proc)
+        real = run_recovery.read_identity(proc.pid)
+        self.recorded.append(real)
+        opened, sent = [], []
+        real_observe, real_open = run_recovery.observe, os.pidfd_open
+
+        def pidfd_open(pid, *args):
+            opened.append(pid)
+            return real_open(pid, *args)
+
+        def observe(identity):
+            # Correct identity before pidfd_open; the PID is "reused" (start time differs) after it.
+            if opened:
+                return run_recovery.GONE, 'PID reused: start time differs from the recorded identity'
+            return real_observe(identity)
+
+        def send(fd, sig, *args):
+            sent.append(sig)
+            raise AssertionError('no signal may be sent after the identity re-check fails')
+
+        with mock.patch.object(run_recovery, 'observe', observe), \
+                mock.patch.object(run_recovery.os, 'pidfd_open', pidfd_open), \
+                mock.patch.object(run_recovery.signal, 'pidfd_send_signal', send):
+            report = run_recovery.terminate_recorded([real], grace_s=0.1)
+        self.assertEqual(opened, [proc.pid])  # the re-check after pidfd_open was reached
+        self.assertEqual(sent, [])
+        self.assertEqual(report['entries'][0]['signals'], [('SIGTERM', run_recovery.GONE)])
+        self.assertIsNone(proc.poll())
+        self.assertEqual(run_recovery.observe(real)[0], run_recovery.ALIVE)
+
     def test_unrecorded_process_is_not_signalled(self):
         case = self.new_case()
         token = self.local_run(case['folder'])
@@ -502,6 +536,177 @@ class VerifiedTerminationTests(RecoveryBase):
             run_recovery.record_descendants(case['folder'], token, [run_recovery.read_identity(os.getpid())])
         with self.assertRaises(RegistryError):
             run_recovery.record_descendants(case['folder'], token, [{'pid': os.getpid()}])
+
+
+SUBMITTER = textwrap.dedent('''
+    import sys
+    sys.path.insert(0, {scripts!r})
+    import run_registry as registry
+    intent = registry.queue_intent({folder!r}, 'run-1', {digest!r}, {queue!r}, _store_home={home!r})
+    registry.queue_bind_task({folder!r}, intent, 'task-1', _store_home={home!r})
+    print('BOUND', flush=True)
+    sys.stdin.read()  # stays a live submitter until the test closes stdin
+''')
+
+# Registers itself as a submitter. hold_s > 0: hold the queue write lock that long before committing,
+# then stay alive. hold_s == 0: try once with a short busy timeout and report whether it was locked out.
+LATE_SUBMITTER = textwrap.dedent('''
+    import sqlite3, sys, time
+    sys.path.insert(0, {scripts!r})
+    import run_registry as registry
+    db = registry._queue_connect({folder!r}, {home!r})
+    db.execute('PRAGMA busy_timeout=300')
+    try:
+        db.execute('BEGIN IMMEDIATE')
+    except sqlite3.OperationalError as exc:
+        print('LOCKED_OUT ' + str(exc), flush=True)
+        sys.exit(0)
+    registry._record_submitter(db, 'run-1', 'bind')
+    print('LOCKED', flush=True)
+    time.sleep({hold_s!r})
+    db.execute('COMMIT')
+    print('COMMITTED', flush=True)
+    sys.stdin.read()
+''')
+
+
+class LaunchQuiescenceTests(RecoveryBase):
+    """Fix 1: interrupted-launch fencing only when no submitter or worker of the run is active.
+
+    Lock: the queue store write lock (BEGIN IMMEDIATE on queue-registry.sqlite3). The
+    check and the fence/marker write run in one such transaction, and queue_intent and
+    queue_bind_task record their submitter under the same lock.
+    """
+
+    def queue_db(self, case):
+        return case['home'] / '.local' / 'state' / 'herdr-ml' / 'queue-registry.sqlite3'
+
+    def spawn(self, source, case, **extra):
+        code = source.format(scripts=str(SCRIPTS), folder=str(case['folder']), home=str(case['home']),
+                             digest=DIGEST, queue=QUEUE, **extra)
+        proc = subprocess.Popen([sys.executable, '-c', code, self.marker], stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, text=True)
+        self.handles.append(proc)
+        self.addCleanup(proc.stdout.close)
+        return proc
+
+    def stop(self, proc):
+        proc.stdin.close()
+        self.assertEqual(proc.wait(timeout=30), 0)
+
+    def bound_case(self, live):
+        case = self.new_case()
+        submitter = self.spawn(SUBMITTER, case)
+        self.assertEqual(submitter.stdout.readline().strip(), 'BOUND')
+        if not live:
+            self.stop(submitter)
+        self.assertEqual(run_registry.inspect_queue(case['folder'], _store_home=case['home'])['phase'], 'BOUND')
+        return case, submitter
+
+    def test_live_submitter_blocks_fence_and_leaves_bytes_unchanged(self):
+        case, submitter = self.bound_case(live=True)
+        before = self.queue_db(case).read_bytes()
+        listing = sorted(p.name for p in case['folder'].iterdir())
+        with self.assertRaises(run_registry.RecoveryDeferred) as raised:
+            run_registry.queue_fence_unlaunched(case['folder'], _store_home=case['home'])
+        self.assertIn('RECOVERY_DEFERRED', str(raised.exception))
+        self.assertIn('submitter', str(raised.exception))
+        report = run_recovery.recover(case['folder'], _store_home=case['home'])
+        self.assertIn('RECOVERY_DEFERRED', report['queue_deferred'])
+        self.assertEqual(report['queue_phase'], 'BOUND')
+        self.assertEqual(self.queue_db(case).read_bytes(), before)
+        self.assertEqual(sorted(p.name for p in case['folder'].iterdir()), listing)
+        self.assertFalse((case['folder'] / 'execution.claim').exists())
+        self.stop(submitter)
+
+    def test_dead_submitter_lets_fence_proceed(self):
+        case, _ = self.bound_case(live=False)
+        self.assertEqual(run_registry.queue_fence_unlaunched(case['folder'], _store_home=case['home']),
+                         'AMBIGUOUS')
+        queue = run_registry.inspect_queue(case['folder'], _store_home=case['home'])
+        self.assertEqual((queue['phase'], queue['ambiguous_from']), ('AMBIGUOUS', 'BOUND'))
+        report = run_recovery.recover(case['folder'], _store_home=case['home'])
+        self.assertIsNone(report['queue_deferred'])
+        self.assertEqual(report['queue_phase'], 'AMBIGUOUS')
+        self.assertTrue((case['folder'] / 'execution.claim').is_dir())
+
+    def test_submitter_holding_the_queue_lock_is_seen_after_it_commits(self):
+        case, _ = self.bound_case(live=False)
+        late = self.spawn(LATE_SUBMITTER, case, hold_s=0.5)
+        self.assertEqual(late.stdout.readline().strip(), 'LOCKED')
+        # The fence blocks on the queue write lock, then its check sees the committed live submitter.
+        with self.assertRaises(run_registry.RecoveryDeferred):
+            run_registry.queue_fence_unlaunched(case['folder'], _store_home=case['home'])
+        self.assertEqual(late.stdout.readline().strip(), 'COMMITTED')
+        self.assertEqual(run_registry.inspect_queue(case['folder'], _store_home=case['home'])['phase'], 'BOUND')
+        self.stop(late)
+
+    def test_submitter_cannot_appear_between_check_and_write(self):
+        case, _ = self.bound_case(live=False)
+        outcomes = []
+
+        def check_then_race(db, folder, run_id, origin, claimant):
+            reason = run_registry._launch_quiescence(db, folder, run_id, origin, claimant)
+            late = self.spawn(LATE_SUBMITTER, case, hold_s=0)
+            outcomes.append(late.stdout.readline().strip())
+            late.stdin.close()
+            late.wait(timeout=30)
+            return reason
+
+        phase, marker = run_registry.queue_fence_launch(case['folder'], _store_home=case['home'],
+                                                        _quiescence=check_then_race)
+        self.assertEqual((phase, marker), ('AMBIGUOUS', True))
+        self.assertEqual(len(outcomes), 1)
+        self.assertTrue(outcomes[0].startswith('LOCKED_OUT'), outcomes)
+        with self.assertRaises(RegistryError):
+            run_registry.queue_claim(case['folder'], 'run-1', DIGEST, QUEUE, 'task-1', 'worker-B',
+                                     _store_home=case['home'])
+
+
+class DescendantLineageTests(RecoveryBase):
+    """Fix 2: only the leader, its session or its parent chain can be recorded as descendants."""
+
+    def test_outsider_cannot_be_recorded_and_is_never_signalled(self):
+        case = self.new_case()
+        token = self.local_run(case['folder'])
+        leader = process_tree.start_tree(self.script, case['work'], self.marker)
+        self.handles.append(leader)
+        run_registry.record_child(case['folder'], token, leader.pid)
+        run_registry.advance(case['folder'], token, 'DISPATCHING', 'RUNNING')
+        identities = process_tree.published_identities(case['work'])
+        self.recorded.extend(identities)
+        outsiders = []
+        for new_session in (True, False):
+            proc = subprocess.Popen([sys.executable, '-I', '-c', 'import time; time.sleep(60)', self.marker],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    start_new_session=new_session)
+            self.handles.append(proc)
+            identity = run_recovery.read_identity(proc.pid, role='outsider')
+            self.recorded.append(identity)
+            outsiders.append((proc, identity))
+        for _, outsider in outsiders:
+            for batch in ([outsider], identities + [outsider]):
+                with self.subTest(pid=outsider['pid'], size=len(batch)):
+                    with self.assertRaises(RegistryError) as raised:
+                        run_recovery.record_descendants(case['folder'], token, batch)
+                    self.assertIn('lineage', str(raised.exception))
+        self.assertEqual(run_recovery.inspect_recovery(case['folder'])['descendants'], [])
+        run_recovery.record_descendants(case['folder'], token, identities)  # the real tree is accepted
+        self.assertEqual(leader.wait(timeout=30), 0)
+        recorded_pids = {i['pid'] for i in run_recovery.recorded_identities(case['folder'])}
+        for _, outsider in outsiders:
+            self.assertNotIn(outsider['pid'], recorded_pids)
+        # Recovery after the owner is fenced terminates the recorded tree only.
+        entry = run_registry.inspect(case['folder'])
+        run_registry.recovery_fence(case['folder'], (entry['owner_pid'], entry['owner_boot'],
+                                                     entry['owner_start']), 'test: owner treated as gone')
+        report = run_recovery.recover(case['folder'], queued=False, grace_s=0.3)
+        self.assertTrue(report['termination']['all_gone'])
+        signalled = {e['identity']['pid'] for e in report['termination']['entries']}
+        for proc, outsider in outsiders:
+            self.assertNotIn(outsider['pid'], signalled)
+            self.assertIsNone(proc.poll())
+            self.assertEqual(run_recovery.observe(outsider)[0], run_recovery.ALIVE)
 
 
 class SafetyInvariantTests(unittest.TestCase):

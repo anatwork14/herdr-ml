@@ -213,8 +213,61 @@ def _append_event(folder, kind, detail):
         db.close()
 
 
+MAX_LINEAGE_DEPTH = 64
+
+
+def _proc_lineage(pid):
+    """(state, ppid, session, start_ticks) of a PID now, from /proc/<pid>/stat."""
+    stat = Path('/proc/%d/stat' % pid).read_text(encoding='ascii')
+    end = stat.rfind(')')
+    if end < 0 or not stat.startswith('%d (' % pid):
+        raise ValueError('invalid process stat header')
+    fields = stat[end + 2:].split()
+    return fields[0], int(fields[1]), int(fields[3]), fields[19]
+
+
+def _lineage_refusal(leader, identity):
+    """None when identity is the recorded leader, or a current process whose parent chain reaches
+    the leader or whose session id equals the leader's. Otherwise the refusal reason.
+
+    The leader must still be observable (running or an unreaped zombie) with its
+    recorded start time; each presented identity must match the live process now.
+    """
+    if observe(leader)[0] not in (ALIVE, ZOMBIE):
+        return 'recorded leader is not observable, so lineage cannot be verified'
+    try:
+        _, _, leader_session, leader_start = _proc_lineage(leader['pid'])
+        if leader_start != leader['start_ticks']:
+            return 'recorded leader PID was reused'
+        if (identity['pid'], identity['start_ticks']) == (leader['pid'], leader['start_ticks']):
+            return None
+        if observe(identity)[0] not in (ALIVE, ZOMBIE):
+            return 'PID %d does not match a current process' % identity['pid']
+        _, ppid, session, start = _proc_lineage(identity['pid'])
+        if start != identity['start_ticks']:
+            return 'PID %d changed identity during verification' % identity['pid']
+        if session == leader_session:
+            return None
+        pid = ppid
+        for _ in range(MAX_LINEAGE_DEPTH):
+            if pid <= 1:
+                break
+            _, parent, _, pid_start = _proc_lineage(pid)
+            if pid == leader['pid'] and pid_start == leader['start_ticks']:
+                return None
+            pid = parent
+    except (OSError, ValueError, IndexError, UnicodeError):
+        return 'cannot read procfs safely for PID %d' % identity['pid']
+    return "PID %d is neither in the leader's session nor below it in the parent chain" % identity['pid']
+
+
 def record_descendants(folder, token, identities, *, _fault=None):
     """Record descendant identities under the current owner token (DISPATCHING or RUNNING).
+
+    Each identity must belong to the recorded leader: be the leader itself, have
+    a parent chain reaching the leader, or share the leader's session id
+    (checked against /proc now, under the registry write lock). One outsider
+    refuses the whole call and nothing is recorded, so recovery never signals it.
 
     The registry write lock is held across the recovery-store commit, so recovery
     fencing (which takes the same lock) cannot interleave: once a row is fenced,
@@ -230,6 +283,16 @@ def record_descendants(folder, token, identities, *, _fault=None):
         row = run_registry._owner_row(db, token, attempt_id, fence)
         if row['state'] not in ('DISPATCHING', 'RUNNING'):
             raise RegistryError('Descendants can be recorded only while DISPATCHING or RUNNING')
+        child = run_registry._optional_rows(db, 'SELECT pid, boot, start_ticks FROM child_identity WHERE id=1')
+        namespaces = run_registry._optional_rows(db, "SELECT pid_namespace FROM process_namespaces "
+                                                     "WHERE role='child'")
+        if not child or not namespaces:
+            raise RegistryError('Descendants require a recorded leader identity')
+        leader = dict(child[0], pid_namespace=namespaces[0]['pid_namespace'])
+        for identity in identities:
+            refusal = _lineage_refusal(leader, identity)
+            if refusal is not None:
+                raise RegistryError('Descendant lineage not verified: %s' % refusal)
         rdb = _recovery_connect(folder)
         try:
             rdb.execute('BEGIN IMMEDIATE')
@@ -393,8 +456,8 @@ def recover(folder, *, queued=True, _store_home=None, grace_s=0.5, kill_wait_s=5
     Order: fence the local row of a dead owner, terminate and verify its recorded
     descendants, evaluate (and refuse) release, then fence the queue row.
     """
-    report = {'owner': None, 'local_state': None, 'queue_phase': None, 'termination': None,
-              'release': None, 'completed': False}
+    report = {'owner': None, 'local_state': None, 'queue_phase': None, 'queue_deferred': None,
+              'termination': None, 'release': None, 'completed': False}
     entry = run_registry.inspect(folder)
     if entry is not None and entry.get('identity') == 'CURRENT' and \
             entry['state'] in run_registry.RECOVERABLE_STATES:
@@ -425,14 +488,19 @@ def recover(folder, *, queued=True, _store_home=None, grace_s=0.5, kill_wait_s=5
         report['termination'] = termination
         report['release'] = {'released': not reasons, 'reasons': reasons}
     if queued:
-        run_registry.queue_recover(folder, _store_home=_store_home)
-        report['queue_phase'] = run_registry.queue_fence_unlaunched(folder, _store_home=_store_home)
-        if report['queue_phase'] == 'AMBIGUOUS' and entry is None:
-            # Interrupted launch: also fence the run folder locally, so neither the
-            # queued nor the local claim path can ever launch this run_id.
-            try:
-                run_registry._create_claim_marker(folder)
-                _append_event(folder, 'LAUNCH_FENCED', {'queue_phase': 'AMBIGUOUS'})
-            except RegistryError:
-                pass  # marker already present: every claim is already refused
+        # Interrupted-launch recovery writes only when every submitter, claimant and
+        # local owner of the run is observed gone. Each check runs inside the queue
+        # store's write transaction that performs the fence (and creates the local
+        # execution.claim marker), so a participant cannot appear in between. A live
+        # or unobservable participant leaves every byte as it was: RECOVERY_DEFERRED.
+        try:
+            run_registry.queue_recover(folder, _store_home=_store_home, require_quiescent=True)
+            phase, marker = run_registry.queue_fence_launch(folder, fence_marker=True, _store_home=_store_home)
+            report['queue_phase'] = phase
+            if marker:
+                _append_event(folder, 'LAUNCH_FENCED', {'queue_phase': phase})
+        except run_registry.RecoveryDeferred as exc:
+            report['queue_deferred'] = str(exc)
+            queue = run_registry.inspect_queue(folder, _store_home=_store_home)
+            report['queue_phase'] = queue['phase'] if queue else None
     return report

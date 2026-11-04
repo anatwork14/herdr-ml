@@ -21,6 +21,7 @@ import sys
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_identity  # noqa: E402
 import run_ownership  # noqa: E402
 from run_ownership import RegistryError  # noqa: E402  (re-exported for callers)
 
@@ -44,6 +45,14 @@ QUEUE_TABLE = '''CREATE TABLE IF NOT EXISTS queue_binding (
 QUEUE_EVENTS = '''CREATE TABLE IF NOT EXISTS queue_events (
             seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             run_id TEXT NOT NULL, phase TEXT NOT NULL, detail TEXT)'''
+
+# Identity of each process that wrote a launch step (role 'intent' or 'bind'), recorded
+# under the queue write lock in the same transaction as that step. Recovery reads it
+# to refuse fencing an interrupted launch while its submitter may still be running.
+QUEUE_SUBMITTERS = '''CREATE TABLE IF NOT EXISTS queue_submitters (
+            run_id TEXT NOT NULL, role TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT,
+            boot TEXT, start_ticks TEXT, pid_namespace TEXT, mount_namespace TEXT,
+            PRIMARY KEY (run_id, role))'''
 
 INSPECT_FIELDS = ('run_id', 'project', 'manifest_sha256', 'state', 'owner_pid', 'owner_host',
                   'owner_boot', 'owner_start', 'queue_task_id', 'attempt_id', 'fence',
@@ -279,6 +288,7 @@ def _queue_connect(folder, store_home=None):
                 raise RegistryError('Legacy queue index schema; fail closed until migrated')
             db.execute(QUEUE_TABLE)
             db.execute(QUEUE_EVENTS)
+            db.execute(QUEUE_SUBMITTERS)
         except sqlite3.DatabaseError as exc:
             raise RegistryError('Queue index unreadable or corrupt; fail closed') from exc
         os.fsync(file_fd)
@@ -336,6 +346,19 @@ def _this_claimant():
     return '%d:%s:%s' % (os.getpid(), boot, start)
 
 
+def _record_submitter(db, run_id, role):
+    """Record this process as the run's submitter for one launch step. Call under the queue write lock.
+
+    Missing identity fields are stored as NULL; recovery then cannot decide
+    liveness and defers.
+    """
+    boot, start = _identity()
+    pid_ns, mount_ns = _namespaces(os.getpid())
+    db.execute('INSERT OR REPLACE INTO queue_submitters (run_id, role, pid, host, boot, start_ticks, '
+               'pid_namespace, mount_namespace) VALUES (?,?,?,?,?,?,?,?)',
+               (run_id, role, os.getpid(), socket.gethostname(), boot, start, pid_ns, mount_ns))
+
+
 def _mark_ambiguous(db, run_id, origin, reason):
     updated = db.execute("UPDATE queue_binding SET phase='AMBIGUOUS', ambiguous_from=? "
                          "WHERE run_id=? AND phase=?", (origin, run_id, origin)).rowcount
@@ -388,6 +411,7 @@ def queue_intent(folder, run_id, manifest_sha256, queue_instance, *, project=Non
                    "intent_token, phase, run_folder) VALUES (?,?,?,?,?,'INTENT',?)",
                    (run_id, project, queue_instance, manifest_sha256, token, _folder_key(folder)))
         _queue_event(db, run_id, 'INTENT', {'intent_token': token, 'project': project})
+        _record_submitter(db, run_id, 'intent')
         run_ownership.fault(_fault, 'queue_intent:before_commit')
         db.execute('COMMIT')
     except sqlite3.IntegrityError as exc:
@@ -420,6 +444,7 @@ def queue_bind_task(folder, intent_token, task_id, *, _store_home=None, _fault=N
         db.execute("UPDATE queue_binding SET phase='BOUND', task_id=? WHERE run_id=? AND phase='INTENT'",
                    (task_id, run_id))
         _queue_event(db, run_id, 'BOUND', {'task_id': task_id})
+        _record_submitter(db, run_id, 'bind')
         run_ownership.fault(_fault, 'queue_bind_task:before_commit')
         db.execute('COMMIT')
     except sqlite3.IntegrityError as exc:
@@ -626,10 +651,13 @@ def queue_claim_idempotent(folder, run_id, manifest_sha256, queue_instance, task
         db.close()
 
 
-def queue_recover(folder, *, _store_home=None):
+def queue_recover(folder, *, _store_home=None, require_quiescent=False):
     """Restart recovery. Fences every intent without binding, every enqueue attempt without a
     recorded outcome, and every claim without local ownership.
 
+    With require_quiescent (run_recovery.recover), a fence is written only when no
+    submitter, claimant or local owner of the run is live or undeterminable;
+    otherwise RecoveryDeferred is raised and nothing is written.
     Nothing here retries, resubmits or resumes work. Returns the resulting phase, or None.
     """
     db = _queue_connect(folder, _store_home)
@@ -641,6 +669,17 @@ def queue_recover(folder, *, _store_home=None):
             db.execute('COMMIT')
             return None
         run_id, phase, attempt_id, fence = row
+        if require_quiescent:
+            origin = None
+            if phase == 'INTENT' or (phase == 'BOUND' and _enqueue_pending(db, run_id)):
+                origin = phase
+            elif phase == 'CLAIMED' and not _local_claim_matches(folder, run_id, attempt_id, fence):
+                origin = phase
+            if origin is not None:
+                claimant = db.execute('SELECT claimant FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+                reason = _launch_quiescence(db, folder, run_id, origin, claimant)
+                if reason is not None:
+                    raise RecoveryDeferred('%s: %s' % (RECOVERY_DEFERRED, reason))
         if phase == 'INTENT':
             _mark_ambiguous(db, run_id, 'INTENT', 'restart: intent without verified binding')
         elif phase == 'BOUND' and _enqueue_pending(db, run_id):
@@ -1077,27 +1116,124 @@ def recovery_fence(folder, observed_owner, reason, *, _fault=None):
         db.close()
 
 
+RECOVERY_DEFERRED = 'RECOVERY_DEFERRED'
+
+
+class RecoveryDeferred(RegistryError):
+    """Recovery refused to fence because a launch participant is live or cannot be observed."""
+
+
+def _observation_liveness(seen):
+    if seen['observation'] == 'MATCH':
+        return 'LIVE'
+    if seen['observation'] in ('NOT_VISIBLE', 'IDENTITY_MISMATCH', 'MATCH_ZOMBIE'):
+        return 'GONE'
+    return 'UNKNOWN'
+
+
+def _claimant_liveness(claimant):
+    """Liveness of a queue claimant 'pid:boot:start' (no namespaces recorded; same-namespace host only)."""
+    try:
+        pid_text, boot, start = claimant.split(':')
+        pid = int(pid_text)
+        if pid <= 0 or not process_identity._boot_valid(boot) or not process_identity._ticks_valid(start):
+            return 'UNKNOWN'
+        if Path('/proc/sys/kernel/random/boot_id').read_text(encoding='ascii').strip() != boot:
+            return 'GONE'
+        try:
+            stat_text = Path('/proc/%d/stat' % pid).read_text(encoding='ascii')
+        except FileNotFoundError:
+            return 'GONE'
+        fields = stat_text[stat_text.rfind(')') + 2:].split()
+        if fields[19] != start or fields[0] in ('Z', 'X', 'x'):
+            return 'GONE'
+        return 'LIVE'
+    except (AttributeError, ValueError, IndexError, OSError, UnicodeError):
+        return 'UNKNOWN'
+
+
+def _launch_quiescence(db, folder, run_id, origin, claimant):
+    """Return None when no worker or submitter of this launch is active, else the reason to defer.
+
+    Must be called inside the queue store's BEGIN IMMEDIATE transaction that will
+    also perform the fence. queue_intent, queue_bind_task and queue_claim record a
+    submitter or claimant only under that same write lock, so none can appear
+    between this check and the fence's commit. Live or undeterminable means defer.
+    """
+    try:
+        entry = inspect(folder)
+    except RegistryError:
+        return 'local owner record unreadable'
+    if entry is not None and entry['state'] in RECOVERABLE_STATES:
+        owner = {'pid': entry.get('owner_pid'), 'boot': entry.get('owner_boot'),
+                 'start_ticks': entry.get('owner_start'), 'pid_namespace': entry.get('owner_pid_namespace'),
+                 'mount_namespace': entry.get('owner_mount_namespace')}
+        liveness = _observation_liveness(process_identity.observe_process(owner, entry.get('owner_host')))
+        if liveness != 'GONE':
+            return 'local owner %s' % liveness
+    if claimant is not None:
+        liveness = _claimant_liveness(claimant)
+        if liveness != 'GONE':
+            return 'queue claimant %s' % liveness
+    if origin in ('INTENT', 'BOUND'):
+        rows = _dict_rows(db, 'SELECT role, pid, host, boot, start_ticks, pid_namespace, mount_namespace '
+                              'FROM queue_submitters WHERE run_id=? ORDER BY role', (run_id,))
+        if not rows:
+            return 'no submitter identity recorded'
+        for row in rows:
+            liveness = _observation_liveness(process_identity.observe_process(row, row['host']))
+            if liveness != 'GONE':
+                return 'submitter (%s) %s' % (row['role'], liveness)
+    return None
+
+
 def queue_fence_unlaunched(folder, *, _store_home=None):
     """Recovery: fence a BOUND queue row that has no local claim AMBIGUOUS (origin BOUND).
 
-    Run only when no submitter or worker for this run is active. The bound task may
-    still be in the external queue, so the row is never re-released, re-claimed or
-    resubmitted; AMBIGUOUS from BOUND has no resolution path. Returns the phase.
+    Refused with RecoveryDeferred, writing nothing, unless every submitter, the
+    queue claimant and any local owner of the run are observed gone (see
+    _launch_quiescence; check and write share the queue store write lock). The
+    bound task may still be in the external queue, so the row is never
+    re-released, re-claimed or resubmitted; AMBIGUOUS from BOUND has no
+    resolution path. Returns the phase.
     """
+    return queue_fence_launch(folder, fence_marker=False, _store_home=_store_home)[0]
+
+
+def queue_fence_launch(folder, *, fence_marker=True, _store_home=None, _quiescence=None):
+    """queue_fence_unlaunched, plus (fence_marker) the local execution.claim marker for an
+    unlaunched AMBIGUOUS run, created under the same queue write lock after the same check.
+
+    Returns (phase, marker_created). _quiescence is a test-only replacement for the check.
+    """
+    check = _launch_quiescence if _quiescence is None else _quiescence
     db = _queue_connect(folder, _store_home)
     try:
         db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT run_id, phase FROM queue_binding WHERE run_folder=?',
+        row = db.execute('SELECT run_id, phase, ambiguous_from, claimant FROM queue_binding WHERE run_folder=?',
                          (_folder_key(folder),)).fetchone()
         if row is None:
             db.execute('COMMIT')
-            return None
-        run_id, phase = row
-        if phase == 'BOUND' and inspect(folder) is None:
+            return None, False
+        run_id, phase, origin, claimant = row
+        try:
+            unlaunched = inspect(folder) is None
+        except RegistryError as exc:
+            raise RecoveryDeferred('%s: local owner record unreadable' % RECOVERY_DEFERRED) from exc
+        fence_row = phase == 'BOUND' and unlaunched
+        make_marker = (fence_marker and unlaunched and (fence_row or phase == 'AMBIGUOUS') and
+                       not (Path(folder) / 'execution.claim').exists())
+        if fence_row or make_marker:
+            reason = check(db, folder, run_id, 'BOUND' if fence_row else origin, claimant)
+            if reason is not None:
+                raise RecoveryDeferred('%s: %s' % (RECOVERY_DEFERRED, reason))
+        if fence_row:
             _mark_ambiguous(db, run_id, 'BOUND', 'recovery: bound task without a launched child')
             phase = 'AMBIGUOUS'
+        if make_marker:
+            _create_claim_marker(folder)
         db.execute('COMMIT')
-        return phase
+        return phase, make_marker
     except sqlite3.Error as exc:
         _safe_rollback(db)
         raise _unreadable() from exc

@@ -89,7 +89,8 @@ Limits:
 ## 6. Residual risks
 
 1. The local `SUBMITTED` claim path does not read the queue index. Recovery closes this for an interrupted launch by creating the `execution.claim` marker. Otherwise, researchctl's status check (a queued run is never `SUBMITTED`) is still what separates the two paths.
-2. `queue_fence_unlaunched` fences any BOUND row with no local claim. Run recovery only when no submitter or worker for the run is active. Concurrent use would fence a launch that is legitimately pending.
+2. Quiescence is now enforced in code (was documentation only). `queue_intent` and `queue_bind_task` record the submitter's identity (pid, boot, start time, namespaces, host) in `queue_submitters`, under the queue write lock. Before `queue_fence_unlaunched`, `queue_fence_launch` (also creates the `execution.claim` marker) or `queue_recover(require_quiescent=True)` (used by `recover`) writes a fence, `_launch_quiescence` checks every recorded submitter (INTENT/BOUND origin), the queue claimant and any local owner. If any is live, or its liveness cannot be determined (including a row with no submitter record), the call raises `RecoveryDeferred` (`RECOVERY_DEFERRED`) and writes nothing; `recover` reports it in `queue_deferred`. Lock: the check and the write run in one `BEGIN IMMEDIATE` transaction on `queue-registry.sqlite3`, the same lock under which submitters and claimants are recorded. Remaining limit: the claimant string has no namespaces, so its liveness assumes the same pid namespace.
+5. Descendant lineage is verified before recording. `record_descendants` accepts an identity only if it is the recorded leader, or its current `/proc` session id equals the leader's, or its parent chain reaches the leader (pid and start time). The leader must still be observable (running or an unreaped zombie), so descendants must be recorded before the leader is reaped. One outsider refuses the whole call and nothing is recorded, so recovery never signals it.
 3. `recovery.sqlite3` and `registry.sqlite3` are separate files. Lock ordering (registry first) keeps descendant recording and fencing serial. A crash between the two commits leaves descendants recorded under a row that is still current, which is safe.
 4. Owner liveness uses `process_identity.observe_process`. An owner that cannot be observed keeps its authority, and recovery does nothing until an operator decides.
 
@@ -99,6 +100,8 @@ Command: `/mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests` (
 
 ## 8. Results
 
-- Full suite: Ran 426, OK, exit 0. That is 404 baseline tests plus 22 in `tests/test_recovery.py`.
+- Full suite: Ran 432, OK, exit 0. That is 404 baseline tests plus 28 in `tests/test_recovery.py` (6 added for quiescence, lineage and the pidfd re-check).
+- Mutation: making `_launch_quiescence` always report quiescent fails `test_live_submitter_blocks_fence_and_leaves_bytes_unchanged` and `test_submitter_holding_the_queue_lock_is_seen_after_it_commits`; restoring it passes all 28.
+- The PID-reuse re-check after `pidfd_open` is exercised directly: `observe` is patched to match before `pidfd_open` and mismatch after; no signal is sent and the process stays alive.
 - After the suite, `pgrep -af 'herdr-recovery-tes[t]-'` and `pgrep -af 'tree\.py (parent|child|grandchild)'` both exit 1 (no processes).
 - Each test's `tearDown` terminates any survivor by its recorded identity only, then asserts that `pgrep -f <marker>` is empty. The marker is unique to that test.
