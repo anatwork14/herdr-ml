@@ -1,0 +1,41 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w4-provenance && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest tests.test_execution_manifest -v
+test_builds_deterministically_and_verifies_from_clean_checkout (tests.test_execution_manifest.CanonicalManifestTests.test_builds_deterministically_and_verifies_from_clean_checkout) ... ok
+test_commit_hash_alone_is_not_accepted_as_identity (tests.test_execution_manifest.CanonicalManifestTests.test_commit_hash_alone_is_not_accepted_as_identity) ... ok
+test_digest_computed_over_a_different_serialization_is_rejected (tests.test_execution_manifest.CanonicalManifestTests.test_digest_computed_over_a_different_serialization_is_rejected) ... ok
+test_floats_and_nonfinite_values_are_rejected (tests.test_execution_manifest.CanonicalManifestTests.test_floats_and_nonfinite_values_are_rejected) ... ok
+test_non_canonical_manifest_bytes_are_rejected (tests.test_execution_manifest.CanonicalManifestTests.test_non_canonical_manifest_bytes_are_rejected) ... ok
+test_source_must_be_declared_clean (tests.test_execution_manifest.CanonicalManifestTests.test_source_must_be_declared_clean) ... ok
+test_tampered_schema_fields_fail (tests.test_execution_manifest.CanonicalManifestTests.test_tampered_schema_fields_fail) ... ok
+test_truncated_and_duplicate_key_manifests_fail_closed (tests.test_execution_manifest.CanonicalManifestTests.test_truncated_and_duplicate_key_manifests_fail_closed) ... ok
+test_client_manifest_substitution_is_rejected (tests.test_execution_manifest.InputBindingTests.test_client_manifest_substitution_is_rejected) ... ok
+test_dataset_replacement_is_rejected (tests.test_execution_manifest.InputBindingTests.test_dataset_replacement_is_rejected) ... ok
+test_fifo_input_is_rejected_without_blocking (tests.test_execution_manifest.InputBindingTests.test_fifo_input_is_rejected_without_blocking) ... ok
+test_missing_input_is_rejected (tests.test_execution_manifest.InputBindingTests.test_missing_input_is_rejected) ... ok
+test_seal_directory_must_be_private (tests.test_execution_manifest.InputBindingTests.test_seal_directory_must_be_private) ... ok
+test_sealed_copy_is_what_was_hashed (tests.test_execution_manifest.InputBindingTests.test_sealed_copy_is_what_was_hashed) ... ok
+test_split_manifest_substitution_is_rejected (tests.test_execution_manifest.InputBindingTests.test_split_manifest_substitution_is_rejected) ... ok
+test_symlink_input_is_rejected (tests.test_execution_manifest.InputBindingTests.test_symlink_input_is_rejected) ... ok
+test_truncated_corrupted_config_is_rejected (tests.test_execution_manifest.InputBindingTests.test_truncated_corrupted_config_is_rejected) ... ok
+test_dependency_version_change_between_creation_and_worker_is_rejected (tests.test_execution_manifest.InterpreterAndRuntimeTests.test_dependency_version_change_between_creation_and_worker_is_rejected) ... ok
+test_interpreter_digest_replacement_is_rejected (tests.test_execution_manifest.InterpreterAndRuntimeTests.test_interpreter_digest_replacement_is_rejected) ... ok
+test_interpreter_path_replacement_is_rejected (tests.test_execution_manifest.InterpreterAndRuntimeTests.test_interpreter_path_replacement_is_rejected) ... ok
+test_runtime_drift_in_process_is_rejected (tests.test_execution_manifest.InterpreterAndRuntimeTests.test_runtime_drift_in_process_is_rejected) ... ok
+test_builder_refuses_a_dirty_checkout (tests.test_execution_manifest.SourceBindingTests.test_builder_refuses_a_dirty_checkout) ... ok
+test_missing_source_file_is_rejected (tests.test_execution_manifest.SourceBindingTests.test_missing_source_file_is_rejected) ... ok
+test_new_commit_is_a_different_source (tests.test_execution_manifest.SourceBindingTests.test_new_commit_is_a_different_source) ... ok
+test_non_toplevel_source_root_is_unverifiable (tests.test_execution_manifest.SourceBindingTests.test_non_toplevel_source_root_is_unverifiable) ... ok
+test_source_mutation_after_manifest_creation_is_rejected (tests.test_execution_manifest.SourceBindingTests.test_source_mutation_after_manifest_creation_is_rejected) ... ok
+test_symlink_in_source_path_is_rejected (tests.test_execution_manifest.SourceBindingTests.test_symlink_in_source_path_is_rejected) ... ok
+test_untracked_file_makes_checkout_dirty (tests.test_execution_manifest.SourceBindingTests.test_untracked_file_makes_checkout_dirty) ... ok
+test_containment_evidence_must_match_attempt (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_containment_evidence_must_match_attempt) ... ok
+test_existing_or_escaping_output_destination_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_existing_or_escaping_output_destination_is_rejected) ... ok
+test_invalid_worker_identity_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_invalid_worker_identity_is_rejected) ... ok
+test_missing_result_artifact_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_missing_result_artifact_is_rejected) ... ok
+test_result_record_is_unknown_without_verified_containment (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_result_record_is_unknown_without_verified_containment) ... ok
+test_wrong_attempt_or_run_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_wrong_attempt_or_run_is_rejected) ... ok
+
+----------------------------------------------------------------------
+Ran 34 tests in 4.727s
+
+OK
+# exit code: 0
