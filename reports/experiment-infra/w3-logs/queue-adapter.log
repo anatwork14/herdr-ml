@@ -1,0 +1,28 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w3-queue && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest tests.test_queue_adapter -v
+test_bound_identity_refuses_disagreeing_stores (tests.test_queue_adapter.OfflineAdapterTests.test_bound_identity_refuses_disagreeing_stores) ... ok
+test_checksum_mismatch_is_refused (tests.test_queue_adapter.OfflineAdapterTests.test_checksum_mismatch_is_refused) ... ok
+test_claim_attempt_binds_queue_identity_to_run_and_attempt_idempotently (tests.test_queue_adapter.OfflineAdapterTests.test_claim_attempt_binds_queue_identity_to_run_and_attempt_idempotently) ... ok
+test_claim_is_idempotent_for_the_same_claimant_and_writes_nothing (tests.test_queue_adapter.OfflineAdapterTests.test_claim_is_idempotent_for_the_same_claimant_and_writes_nothing) ... ok
+test_claim_is_never_stolen_by_another_worker_or_process (tests.test_queue_adapter.OfflineAdapterTests.test_claim_is_never_stolen_by_another_worker_or_process) ... ok
+test_intent_and_ambiguous_rows_cannot_be_claimed (tests.test_queue_adapter.OfflineAdapterTests.test_intent_and_ambiguous_rows_cannot_be_claimed) ... ok
+test_missing_binary_is_refused_without_path_fallback (tests.test_queue_adapter.OfflineAdapterTests.test_missing_binary_is_refused_without_path_fallback) ... ok
+test_private_root_must_be_owner_only (tests.test_queue_adapter.OfflineAdapterTests.test_private_root_must_be_owner_only) ... ok
+test_researchctl_queued_path_stays_blocked_and_does_not_use_adapter (tests.test_queue_adapter.OfflineAdapterTests.test_researchctl_queued_path_stays_blocked_and_does_not_use_adapter) ... ok
+test_submit_accepts_only_a_private_daemon (tests.test_queue_adapter.OfflineAdapterTests.test_submit_accepts_only_a_private_daemon) ... ok
+test_end_to_end_worker_claim_binds_task_to_attempt (tests.test_queue_adapter.PrivateDaemonTests.test_end_to_end_worker_claim_binds_task_to_attempt) ... ok
+test_failing_daemon_not_running_fences_ambiguous_and_never_retries (tests.test_queue_adapter.PrivateDaemonTests.test_failing_daemon_not_running_fences_ambiguous_and_never_retries) ... ok
+test_failing_daemon_stalled_times_out_and_is_fenced (tests.test_queue_adapter.PrivateDaemonTests.test_failing_daemon_stalled_times_out_and_is_fenced) ... ok
+test_harness_script_passes_against_private_daemon (tests.test_queue_adapter.PrivateDaemonTests.test_harness_script_passes_against_private_daemon) ... ok
+test_intent_is_durable_before_submission (tests.test_queue_adapter.PrivateDaemonTests.test_intent_is_durable_before_submission) ... ok
+test_lost_response_after_daemon_accepted_is_ambiguous_and_reconcile_does_not_resubmit (tests.test_queue_adapter.PrivateDaemonTests.test_lost_response_after_daemon_accepted_is_ambiguous_and_reconcile_does_not_resubmit) ... ok
+test_private_daemon_is_isolated (tests.test_queue_adapter.PrivateDaemonTests.test_private_daemon_is_isolated) ... ok
+test_replaced_daemon_state_is_a_different_queue_instance (tests.test_queue_adapter.PrivateDaemonTests.test_replaced_daemon_state_is_a_different_queue_instance) ... ok
+test_restart_after_binding_reads_daemon_state_and_does_not_resubmit (tests.test_queue_adapter.PrivateDaemonTests.test_restart_after_binding_reads_daemon_state_and_does_not_resubmit) ... ok
+test_restart_after_claim_keeps_claim_and_binding (tests.test_queue_adapter.PrivateDaemonTests.test_restart_after_claim_keeps_claim_and_binding) ... ok
+test_restart_after_crash_before_submission_fences_intent_without_resubmitting (tests.test_queue_adapter.PrivateDaemonTests.test_restart_after_crash_before_submission_fences_intent_without_resubmitting) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 16.252s
+
+OK
+# exit: 0

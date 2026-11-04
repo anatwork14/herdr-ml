@@ -1,0 +1,31 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w2-containment && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -p test_containment_sim.py -v
+# exit code: 0
+test_breach_recorded_after_verification_blocks_completion (test_containment_sim.InMemoryBoundaryTests.test_breach_recorded_after_verification_blocks_completion)
+Mutation M4: removing the breach check from completion must fail this test. ... ok
+test_failed_cleanup_leaves_member_and_refuses_release (test_containment_sim.InMemoryBoundaryTests.test_failed_cleanup_leaves_member_and_refuses_release) ... ok
+test_fork_during_cancellation_is_terminated_and_rechecked (test_containment_sim.InMemoryBoundaryTests.test_fork_during_cancellation_is_terminated_and_rechecked) ... ok
+test_hanging_child_startup_fails_the_test_instead_of_blocking (test_containment_sim.InMemoryBoundaryTests.test_hanging_child_startup_fails_the_test_instead_of_blocking) ... ok
+test_interrupted_verification_declares_no_completion (test_containment_sim.InMemoryBoundaryTests.test_interrupted_verification_declares_no_completion) ... ok
+test_member_adopted_after_completion_blocks_release (test_containment_sim.InMemoryBoundaryTests.test_member_adopted_after_completion_blocks_release)
+Mutation M1: removing the occupancy re-check in release() must fail this test. ... ok
+test_occupancy_is_rechecked_at_completion_not_assumed_from_proof (test_containment_sim.InMemoryBoundaryTests.test_occupancy_is_rechecked_at_completion_not_assumed_from_proof) ... ok
+test_partial_line_child_fails_within_deadline_instead_of_blocking (test_containment_sim.InMemoryBoundaryTests.test_partial_line_child_fails_within_deadline_instead_of_blocking) ... ok
+test_partial_termination_refuses_completion_and_release (test_containment_sim.InMemoryBoundaryTests.test_partial_termination_refuses_completion_and_release) ... ok
+test_recovered_supervisor_cannot_release_without_fresh_verification (test_containment_sim.InMemoryBoundaryTests.test_recovered_supervisor_cannot_release_without_fresh_verification) ... ok
+test_release_refused_from_any_state_other_than_completed (test_containment_sim.InMemoryBoundaryTests.test_release_refused_from_any_state_other_than_completed)
+Mutation M6: removing the state check in release() must fail this test. ... ok
+test_self_reported_escape_is_breach_not_success (test_containment_sim.InMemoryBoundaryTests.test_self_reported_escape_is_breach_not_success) ... ok
+test_signals_never_reach_non_members (test_containment_sim.InMemoryBoundaryTests.test_signals_never_reach_non_members) ... ok
+test_sigterm_ignoring_members_escalate_to_sigkill_and_complete (test_containment_sim.InMemoryBoundaryTests.test_sigterm_ignoring_members_escalate_to_sigkill_and_complete) ... ok
+test_worker_crash_mid_run_stays_unknown_and_unreleased (test_containment_sim.InMemoryBoundaryTests.test_worker_crash_mid_run_stays_unknown_and_unreleased) ... ok
+test_fork_during_cancellation_real_children_are_reaped_and_rechecked (test_containment_sim.RealProcessBoundaryTests.test_fork_during_cancellation_real_children_are_reaped_and_rechecked) ... ok
+test_parent_exit_with_descendants_keeps_occupancy_and_refuses_release (test_containment_sim.RealProcessBoundaryTests.test_parent_exit_with_descendants_keeps_occupancy_and_refuses_release) ... ok
+test_partial_cleanup_real_refuses_then_full_cleanup_releases (test_containment_sim.RealProcessBoundaryTests.test_partial_cleanup_real_refuses_then_full_cleanup_releases) ... ok
+test_self_reported_escape_keeps_detached_member_counted (test_containment_sim.RealProcessBoundaryTests.test_self_reported_escape_keeps_detached_member_counted) ... ok
+test_sigterm_ignoring_descendants_escalate_only_to_spawned_members (test_containment_sim.RealProcessBoundaryTests.test_sigterm_ignoring_descendants_escalate_only_to_spawned_members) ... ok
+test_worker_crash_real_leaves_unknown_state (test_containment_sim.RealProcessBoundaryTests.test_worker_crash_real_leaves_unknown_state) ... ok
+
+----------------------------------------------------------------------
+Ran 21 tests in 2.559s
+
+OK

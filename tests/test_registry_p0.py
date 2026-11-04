@@ -24,7 +24,9 @@ class RegistryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.folder = Path(self.temp.name)
+        # Standard run layout: claims must match the run folder's project.
+        self.folder = Path(self.temp.name) / '.runtime' / 'project' / 'runs' / 'run'
+        self.folder.mkdir(parents=True)
 
     def claim(self):
         return registry.claim(self.folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
@@ -79,6 +81,8 @@ class RegistryTests(unittest.TestCase):
     def test_result_and_completion_are_atomic_and_terminal(self):
         token = self.claim()
         registry.advance(self.folder, token, 'CLAIMED', 'DISPATCHING')
+        import os
+        registry.record_child(self.folder, token, os.getpid())
         registry.advance(self.folder, token, 'DISPATCHING', 'RUNNING')
         result = {'state': 'UNKNOWN', 'leader_state': 'COMPLETED', 'exit_code': 0}
         registry.finish(self.folder, token, result)
@@ -97,6 +101,8 @@ def crash_at_phase(folder, phase, ready):
     if phase in ('DISPATCHING', 'RUNNING', 'UNCOMMITTED_RESULT'):
         registry.advance(Path(folder), token, 'CLAIMED', 'DISPATCHING')
     if phase in ('RUNNING', 'UNCOMMITTED_RESULT'):
+        import os
+        registry.record_child(Path(folder), token, os.getpid())
         registry.advance(Path(folder), token, 'DISPATCHING', 'RUNNING')
     if phase == 'UNCOMMITTED_RESULT':
         db = registry._connect(Path(folder))
@@ -112,9 +118,10 @@ class CrashTests(unittest.TestCase):
         import signal
         for phase in ('CLAIMED', 'DISPATCHING', 'RUNNING', 'UNCOMMITTED_RESULT'):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
-                folder = Path(tmp)
+                folder = Path(tmp) / '.runtime' / 'project' / 'runs' / 'run'
+                folder.mkdir(parents=True)
                 ready = multiprocessing.Event()
-                proc = multiprocessing.Process(target=crash_at_phase, args=(tmp, phase, ready))
+                proc = multiprocessing.Process(target=crash_at_phase, args=(str(folder), phase, ready))
                 proc.start()
                 try:
                     self.assertTrue(ready.wait(10))
@@ -155,6 +162,8 @@ class MixedVersionTests(unittest.TestCase):
     def test_legacy_and_new_workers_cannot_both_claim(self):
         for _ in range(10):
             with tempfile.TemporaryDirectory() as tmp:
+                tmp = str(Path(tmp) / '.runtime' / 'project' / 'runs' / 'run')
+                Path(tmp).mkdir(parents=True)
                 start = multiprocessing.Event()
                 results = multiprocessing.Queue()
                 processes = [multiprocessing.Process(target=fn, args=(tmp, start, results))

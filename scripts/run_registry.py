@@ -3,6 +3,12 @@
 SQLite is authoritative; JSON files written by the runner are projections.
 An active claim is never reclaimed here, even when its owner appears dead:
 without verified containment, descendants may still be running.
+
+Every mutating call presents a fencing token (v2.<attempt>.<fence>) and must
+match the current owner, attempt and fence in the same BEGIN IMMEDIATE
+transaction. Vocabulary, state names and proof shapes live in run_ownership.py.
+The cross-database protocol between the shared queue index and the run-local
+registry is described in reports/experiment-infra/RUN_OWNERSHIP.md.
 """
 import json
 import stat
@@ -11,33 +17,150 @@ from pathlib import Path
 import pwd
 import socket
 import sqlite3
+import sys
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import process_identity  # noqa: E402
+import run_ownership  # noqa: E402
+from run_ownership import RegistryError  # noqa: E402  (re-exported for callers)
 
-class RegistryError(Exception):
-    pass
-
-
-def _connect(folder):
-    db = sqlite3.connect(str(Path(folder) / 'registry.sqlite3'), timeout=30, isolation_level=None)
-    db.execute('PRAGMA synchronous=FULL')
-    db.execute('PRAGMA busy_timeout=30000')
-    db.execute('''CREATE TABLE IF NOT EXISTS run (
+RUN_TABLE = '''CREATE TABLE IF NOT EXISTS run (
         id INTEGER PRIMARY KEY CHECK (id = 1), run_id TEXT NOT NULL,
         project TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
         state TEXT NOT NULL, owner TEXT NOT NULL, owner_pid INTEGER NOT NULL,
         owner_host TEXT NOT NULL, owner_boot TEXT, owner_start TEXT,
-        queue_task_id TEXT, result_json TEXT)''')
-    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
+        queue_task_id TEXT, result_json TEXT,
+        attempt_id TEXT, fence INTEGER, worker_id TEXT,
+        identity_version INTEGER, identity_sha256 TEXT)'''
+
+QUEUE_TABLE = '''CREATE TABLE IF NOT EXISTS queue_binding (
+            run_id TEXT PRIMARY KEY, project TEXT NOT NULL, queue_instance TEXT NOT NULL,
+            manifest_sha256 TEXT NOT NULL, intent_token TEXT NOT NULL UNIQUE,
+            phase TEXT NOT NULL CHECK (phase IN ('INTENT','BOUND','CLAIMED','AMBIGUOUS','RETRYABLE')),
+            task_id TEXT, worker_id TEXT, attempt_id TEXT, fence INTEGER NOT NULL DEFAULT 0,
+            claimant TEXT, ambiguous_from TEXT, resolution TEXT, run_folder TEXT NOT NULL UNIQUE,
+            UNIQUE(queue_instance, task_id))'''
+
+QUEUE_EVENTS = '''CREATE TABLE IF NOT EXISTS queue_events (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            run_id TEXT NOT NULL, phase TEXT NOT NULL, detail TEXT)'''
+
+# Identity of each process that wrote a launch step (role 'intent' or 'bind'), recorded
+# under the queue write lock in the same transaction as that step. Recovery reads it
+# to refuse fencing an interrupted launch while its submitter may still be running.
+QUEUE_SUBMITTERS = '''CREATE TABLE IF NOT EXISTS queue_submitters (
+            run_id TEXT NOT NULL, role TEXT NOT NULL, pid INTEGER NOT NULL, host TEXT,
+            boot TEXT, start_ticks TEXT, pid_namespace TEXT, mount_namespace TEXT,
+            PRIMARY KEY (run_id, role))'''
+
+INSPECT_FIELDS = ('run_id', 'project', 'manifest_sha256', 'state', 'owner_pid', 'owner_host',
+                  'owner_boot', 'owner_start', 'queue_task_id', 'attempt_id', 'fence',
+                  'worker_id', 'identity_version', 'identity_sha256')
+
+
+REQUIRED_TABLES = ('run', 'child_identity', 'process_namespaces', 'events')
+
+
+def _schema_tables(db):
+    return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+
+def _user_tables(db):
+    return {name for name in _schema_tables(db) if not name.startswith('sqlite_')}
+
+
+def _unreadable(detail='could not be read or written'):
+    return RegistryError('REGISTRY_UNREADABLE: registry.sqlite3 %s; not reset' % detail)
+
+
+def _close_quietly(db):
+    if db is not None:
+        try:
+            db.close()
+        except sqlite3.Error:
+            pass
+
+
+def _connect(folder, create=True, *, _fault=None):
+    """Open the run-local registry for writing. Mutators pass create=False and never create a file.
+
+    A new store gets its schema in one BEGIN IMMEDIATE transaction, so an interrupted
+    creation commits nothing. DDL runs only on a file with no user tables; an existing
+    file gets no DDL, so a refused call leaves its bytes unchanged. An incomplete schema
+    is refused before any write, not repaired. Any sqlite3
+    error while opening or reading the store becomes RegistryError REGISTRY_UNREADABLE,
+    and the file is left as it was.
+    """
+    path = Path(folder) / 'registry.sqlite3'
+    if not create and not path.is_file():
+        raise RegistryError('No registry record; refusing to create one on a mutation')
+    db = None
+    try:
+        db = sqlite3.connect(str(path), timeout=30, isolation_level=None)
+        db.execute('PRAGMA busy_timeout=30000')
+        db.execute('PRAGMA synchronous=FULL')
+        if 'run' not in _schema_tables(db):
+            if not create:
+                raise RegistryError('No run record in registry; refusing to create one on a mutation')
+            if _user_tables(db):
+                # A partial store is refused before any write; DDL only ever runs on an empty file.
+                raise _unreadable('has an incomplete schema (missing run)')
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                user_tables = _user_tables(db)  # re-check under the write lock
+                if user_tables and 'run' not in user_tables:
+                    raise _unreadable('has an incomplete schema (missing run)')
+                if not user_tables:
+                    db.execute(RUN_TABLE)
+                    run_ownership.fault(_fault, 'schema:after_run_table')
+                    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
         id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
         boot TEXT, start_ticks TEXT)''')
-    db.execute('''CREATE TABLE IF NOT EXISTS process_namespaces (
+                    db.execute('''CREATE TABLE IF NOT EXISTS process_namespaces (
         role TEXT PRIMARY KEY CHECK (role IN ('owner','child')),
         pid_namespace TEXT, mount_namespace TEXT)''')
-    db.execute('''CREATE TABLE IF NOT EXISTS events (
+                    db.execute('''CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         owner TEXT, state TEXT NOT NULL, detail TEXT)''')
+                db.execute('COMMIT')
+            except BaseException:
+                _rollback(db)
+                raise
+        missing = [name for name in REQUIRED_TABLES if name not in _schema_tables(db)]
+        if missing:
+            raise _unreadable('has an incomplete schema (missing %s)' % ', '.join(missing))
+    except sqlite3.Error as exc:
+        _close_quietly(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _close_quietly(db)
+        raise
     return db
+
+
+def _open_readonly(folder):
+    """Inspection never creates tables, migrates schema or writes to the registry."""
+    path = (Path(folder) / 'registry.sqlite3').resolve()
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=30, isolation_level=None)
+    db.execute('PRAGMA busy_timeout=30000')
+    return db
+
+
+def _dict_rows(db, sql, params=()):
+    cursor = db.execute(sql, params)
+    names = [column[0] for column in cursor.description]
+    return [dict(zip(names, row)) for row in cursor.fetchall()]
+
+
+def _optional_rows(db, sql):
+    """Rows from a table that legacy schemas may lack; a missing table is simply empty."""
+    try:
+        return _dict_rows(db, sql)
+    except sqlite3.OperationalError as exc:
+        if 'no such table' in str(exc):
+            return []
+        raise
 
 
 def _identity():
@@ -59,15 +182,47 @@ def _namespaces(pid):
         return None, None
 
 
-def _queue_connect(folder):
-    """Use one owner-private index shared by every run for this user/queue."""
+def _rollback(db):
+    if db.in_transaction:
+        db.execute('ROLLBACK')
+
+
+def _safe_rollback(db):
+    try:
+        _rollback(db)
+    except sqlite3.Error:
+        pass
+
+
+def _rollback_or_unreadable(db):
+    """Roll back on an error path. A failed ROLLBACK becomes REGISTRY_UNREADABLE, never a raw sqlite3 error."""
+    try:
+        _rollback(db)
+    except sqlite3.Error as exc:
+        raise _unreadable() from exc
+
+
+def _decode_owner(token):
+    """Every mutating call starts here; malformed or replayed tokens fail closed."""
+    return run_ownership.decode_token(token)
+
+
+def _queue_connect(folder, store_home=None):
+    """Use one owner-private index shared by every run for this user/queue.
+
+    store_home is an explicit test-only parameter; production callers leave it
+    None so the index always lives under the effective account's home.
+    """
     folder = Path(folder).resolve()
     if folder.parent.name != 'runs' or folder.parents[2].name != '.runtime':
         raise RegistryError('Queue binding requires a standard run folder')
-    try:
-        account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve(strict=True)
-    except (KeyError, OSError) as exc:
-        raise RegistryError('Cannot determine canonical home for queue registry') from exc
+    if store_home is None:
+        try:
+            account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve(strict=True)
+        except (KeyError, OSError) as exc:
+            raise RegistryError('Cannot determine canonical home for queue registry') from exc
+    else:
+        account_home = Path(store_home).resolve(strict=True)
     home_info = account_home.stat()
     if (not stat.S_ISDIR(home_info.st_mode) or home_info.st_uid != os.geteuid() or
             home_info.st_mode & 0o022):
@@ -124,18 +279,18 @@ def _queue_connect(folder):
             db.close()
             db = None
             raise RegistryError('Shared queue registry path changed while opening')
-        db.execute('PRAGMA synchronous=FULL')
-        db.execute('PRAGMA busy_timeout=30000')
-        db.execute('''CREATE TABLE IF NOT EXISTS queue_binding (
-            run_id TEXT PRIMARY KEY, queue_instance TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
-            intent_token TEXT NOT NULL UNIQUE,
-            phase TEXT NOT NULL CHECK (phase IN ('INTENT','BOUND','AMBIGUOUS','CLAIMED')),
-            task_id TEXT, worker_id TEXT, fence TEXT,
-            run_folder TEXT NOT NULL UNIQUE,
-            UNIQUE(queue_instance,task_id))''')
-        db.execute('''CREATE TABLE IF NOT EXISTS queue_events (
-            seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            run_id TEXT NOT NULL, phase TEXT NOT NULL, detail TEXT)''')
+        try:
+            db.execute('PRAGMA synchronous=FULL')
+            db.execute('PRAGMA busy_timeout=30000')
+            columns = {row[1] for row in db.execute('PRAGMA table_info(queue_binding)')}
+            if columns and 'claimant' not in columns:
+                # Pre-fencing queue rows have no project or claimant. Never reinterpret them.
+                raise RegistryError('Legacy queue index schema; fail closed until migrated')
+            db.execute(QUEUE_TABLE)
+            db.execute(QUEUE_EVENTS)
+            db.execute(QUEUE_SUBMITTERS)
+        except sqlite3.DatabaseError as exc:
+            raise _unreadable('is corrupt or unreadable') from exc
         os.fsync(file_fd)
         os.fsync(dir_fd)
         os.close(file_fd)
@@ -158,156 +313,570 @@ def _valid_queue_instance(value):
             all(c in '0123456789abcdef' for c in value))
 
 
-def queue_intent(folder, run_id, manifest_sha256, queue_instance):
-    """Durably record intent before external enqueue; never reissue an intent."""
-    if (not isinstance(run_id, str) or not run_id or len(run_id) > 255 or
-            not isinstance(manifest_sha256, str) or len(manifest_sha256) != 64 or
-            any(c not in '0123456789abcdef' for c in manifest_sha256) or
-            not _valid_queue_instance(queue_instance)):
-        raise RegistryError('Invalid run identity, digest, or queue instance identity')
-    token = uuid.uuid4().hex
-    db = _queue_connect(folder)
-    try:
-        db.execute('BEGIN IMMEDIATE')
-        db.execute('INSERT INTO queue_binding VALUES (?,?,?, ?,\'INTENT\',NULL,NULL,NULL,?)',
-                   (run_id, queue_instance, manifest_sha256, token, str(Path(folder).resolve())))
-        db.execute('INSERT INTO queue_events(run_id,phase,detail) VALUES (?,?,?)',
-                   (run_id, 'INTENT', json.dumps({'intent_token': token})))
-        db.execute('COMMIT')
-        return token
-    except sqlite3.IntegrityError as exc:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
-        raise RegistryError('Queue intent or queue instance/task binding already exists; never retry enqueue automatically') from exc
-    except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
-        raise
-    finally:
-        db.close()
-
-
-def queue_bind_task(folder, intent_token, task_id):
-    """Bind the one queue response to this run; task IDs are opaque strings."""
-    if not isinstance(task_id, str) or not task_id or len(task_id) > 256 or '\x00' in task_id:
-        raise RegistryError('Invalid queue task ID')
-    db = _queue_connect(folder)
-    try:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute("SELECT run_id,phase FROM queue_binding WHERE intent_token=? AND run_folder=?",
-                         (intent_token, str(Path(folder).resolve()))).fetchone()
-        if row is None or row[1] != 'INTENT':
-            raise RegistryError('Stale intent or queue response already resolved')
-        run_id = row[0]
-        db.execute("UPDATE queue_binding SET phase='BOUND',task_id=? WHERE run_id=?", (task_id, run_id))
-        db.execute('INSERT INTO queue_events(run_id,phase,detail) VALUES (?,?,?)',
-                   (run_id, 'BOUND', json.dumps({'task_id': task_id})))
-        db.execute('COMMIT')
-    except sqlite3.IntegrityError as exc:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
-        raise RegistryError('Queue task ID is already bound to another run') from exc
-    except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
-        raise
-    finally:
-        db.close()
-
-
-def queue_mark_ambiguous(folder, intent_token, detail=''):
-    """Fence an uncertain enqueue response. This state cannot be rebound/retried."""
-    db = _queue_connect(folder)
-    try:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute("SELECT run_id FROM queue_binding WHERE intent_token=? AND run_folder=? AND phase='INTENT'",
-                         (intent_token, str(Path(folder).resolve()))).fetchone()
-        if row is None:
-            raise RegistryError('Stale intent or queue response already resolved')
-        run_id = row[0]
-        db.execute("UPDATE queue_binding SET phase='AMBIGUOUS' WHERE run_id=?", (run_id,))
-        db.execute('INSERT INTO queue_events(run_id,phase,detail) VALUES (?,?,?)',
-                   (run_id, 'AMBIGUOUS', str(detail)[:1000]))
-        db.execute('COMMIT')
-    except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
-        raise
-    finally:
-        db.close()
-
-
-def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker_id):
-    """Claim a bound task once and return its fencing token; no stale takeover."""
+def _validate_queue_args(run_id, project, manifest_sha256, queue_instance):
+    run_ownership.validate_name('run_id', run_id)
+    run_ownership.validate_name('project', project)
+    run_ownership.validate_digest(manifest_sha256)
     if not _valid_queue_instance(queue_instance):
         raise RegistryError('Invalid queue instance identity')
-    if not isinstance(worker_id, str) or not worker_id or len(worker_id) > 256 or '\x00' in worker_id:
-        raise RegistryError('Invalid worker identity')
-    db = _queue_connect(folder)
-    fence = uuid.uuid4().hex
+
+
+def _folder_key(folder):
+    return str(Path(folder).resolve())
+
+
+def _folder_project(folder):
+    """Queue scope: the project component of <root>/.runtime/<project>/runs/<run_id>."""
+    path = Path(folder).resolve()
+    if len(path.parents) < 3 or path.parent.name != 'runs' or path.parents[2].name != '.runtime':
+        raise RegistryError('Queue binding requires a standard run folder')
+    return path.parents[1].name
+
+
+def _queue_event(db, run_id, phase, detail):
+    db.execute('INSERT INTO queue_events(run_id,phase,detail) VALUES (?,?,?)',
+               (run_id, phase, json.dumps(detail, sort_keys=True)))
+
+
+def _this_claimant():
+    """Observation of this process only; used to refuse continuation by another process."""
+    boot, start = _identity()
+    if not boot or not start:
+        return None
+    pid_ns, mount_ns = _namespaces(os.getpid())
+    return '%d:%s:%s|%s|%s' % (os.getpid(), boot, start, pid_ns or '', mount_ns or '')
+
+
+def _record_submitter(db, run_id, role):
+    """Record this process as the run's submitter for one launch step. Call under the queue write lock.
+
+    Missing identity fields are stored as NULL; recovery then cannot decide
+    liveness and defers.
+    """
+    boot, start = _identity()
+    pid_ns, mount_ns = _namespaces(os.getpid())
+    db.execute('INSERT OR REPLACE INTO queue_submitters (run_id, role, pid, host, boot, start_ticks, '
+               'pid_namespace, mount_namespace) VALUES (?,?,?,?,?,?,?,?)',
+               (run_id, role, os.getpid(), socket.gethostname(), boot, start, pid_ns, mount_ns))
+
+
+def _mark_ambiguous(db, run_id, origin, reason):
+    updated = db.execute("UPDATE queue_binding SET phase='AMBIGUOUS', ambiguous_from=? "
+                         "WHERE run_id=? AND phase=?", (origin, run_id, origin)).rowcount
+    if updated != 1:
+        raise RegistryError('Queue row changed during fencing; rerun recovery')
+    _queue_event(db, run_id, 'AMBIGUOUS', {'origin': origin, 'reason': reason})
+
+
+def _local_claim_matches(folder, run_id, attempt_id, fence):
+    """Read-only check that the run-local owner record exists and is CURRENT."""
+    if not (Path(folder) / 'registry.sqlite3').is_file():
+        return False
+    try:
+        db = _open_readonly(folder)
+        try:
+            rows = _optional_rows(db, 'SELECT run_id, project, manifest_sha256, worker_id, queue_task_id, '
+                                      'attempt_id, fence, identity_version, identity_sha256 FROM run WHERE id=1')
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return False
+    if not rows:
+        return False
+    row = rows[0]
+    return (row['run_id'] == run_id and row['attempt_id'] == attempt_id and
+            row['fence'] == fence and run_ownership.classify_row(row) == 'CURRENT')
+
+
+def queue_intent(folder, run_id, manifest_sha256, queue_instance, *, project=None,
+                 _store_home=None, _fault=None):
+    """Durably record intent BEFORE any external enqueue. An intent is never reissued.
+
+    The queue scope project is the run folder's project component. An explicit
+    project must agree with it, and a run_id already bound to another project
+    is refused.
+    """
+    folder_project = _folder_project(folder)
+    if project is not None and project != folder_project:
+        raise RegistryError('Run folder belongs to a different project')
+    _validate_queue_args(run_id, folder_project, manifest_sha256, queue_instance)
+    project = folder_project
+    token = uuid.uuid4().hex
+    db = _queue_connect(folder, _store_home)
     try:
         db.execute('BEGIN IMMEDIATE')
-        updated = db.execute("UPDATE queue_binding SET phase='CLAIMED',worker_id=?,fence=? "
-                             "WHERE run_id=? AND manifest_sha256=? AND queue_instance=? AND task_id=? AND phase='BOUND' AND run_folder=?",
-                             (worker_id, fence, run_id, manifest_sha256, queue_instance, task_id,
-                              str(Path(folder).resolve()))).rowcount
-        if updated != 1:
-            raise RegistryError('Queue task/run/manifest mismatch, stale replay, or ambiguous enqueue')
-        db.execute('INSERT INTO queue_events(run_id,phase,detail) VALUES (?,?,?)',
-                   (run_id, 'CLAIMED', json.dumps({'task_id': task_id, 'worker_id': worker_id,
-                                                   'fence': fence})))
+        other = db.execute('SELECT project FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()
+        if other is not None and other[0] != project:
+            raise RegistryError('Run identity is already bound to another project')
+        db.execute("INSERT INTO queue_binding (run_id, project, queue_instance, manifest_sha256, "
+                   "intent_token, phase, run_folder) VALUES (?,?,?,?,?,'INTENT',?)",
+                   (run_id, project, queue_instance, manifest_sha256, token, _folder_key(folder)))
+        _queue_event(db, run_id, 'INTENT', {'intent_token': token, 'project': project})
+        _record_submitter(db, run_id, 'intent')
+        run_ownership.fault(_fault, 'queue_intent:before_commit')
         db.execute('COMMIT')
-        return fence
+    except sqlite3.IntegrityError as exc:
+        _rollback_or_unreadable(db)
+        raise RegistryError('Queue intent or queue instance/task binding already exists; '
+                            'never retry enqueue automatically') from exc
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+    run_ownership.fault(_fault, 'queue_intent:after_commit')
+    return token
+
+
+def queue_bind_task(folder, intent_token, task_id, *, _store_home=None, _fault=None):
+    """Bind the one queue response to this run. Task IDs are opaque and globally unique."""
+    run_ownership.validate_opaque_task(task_id)
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT run_id FROM queue_binding WHERE intent_token=? AND run_folder=? "
+                         "AND phase='INTENT'", (intent_token, _folder_key(folder))).fetchone()
+        if row is None:
+            raise RegistryError('Stale intent or queue response already resolved')
+        run_id = row[0]
+        db.execute("UPDATE queue_binding SET phase='BOUND', task_id=? WHERE run_id=? AND phase='INTENT'",
+                   (task_id, run_id))
+        _queue_event(db, run_id, 'BOUND', {'task_id': task_id})
+        _record_submitter(db, run_id, 'bind')
+        run_ownership.fault(_fault, 'queue_bind_task:before_commit')
+        db.execute('COMMIT')
+    except sqlite3.IntegrityError as exc:
+        _rollback_or_unreadable(db)
+        raise RegistryError('Queue task ID is already bound to another run') from exc
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+    run_ownership.fault(_fault, 'queue_bind_task:after_commit')
+
+
+def queue_mark_ambiguous(folder, intent_token, detail='', *, _store_home=None):
+    """Fence an uncertain enqueue response. Such an intent is never rebound or retried."""
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT run_id FROM queue_binding WHERE intent_token=? AND run_folder=? "
+                         "AND phase='INTENT'", (intent_token, _folder_key(folder))).fetchone()
+        if row is None:
+            raise RegistryError('Stale intent or queue response already resolved')
+        _mark_ambiguous(db, row[0], 'INTENT', str(detail)[:1000])
+        db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
 
 
-def inspect_queue(folder):
-    """Return queue lifecycle state even before an execution row exists."""
-    db = _queue_connect(folder)
+# ENQUEUE_REFUSED is only read from history written before non-zero exits became
+# unknown; it is no longer accepted as a new outcome.
+ENQUEUE_EVENTS = ('ENQUEUE_ATTEMPTED', 'ENQUEUED', 'ENQUEUE_REFUSED', 'ENQUEUE_UNKNOWN')
+ENQUEUE_OUTCOMES = ('ENQUEUED', 'ENQUEUE_UNKNOWN')
+
+
+def _enqueue_pending(db, run_id):
+    """True when the last enqueue event for run_id is an attempt with no recorded outcome."""
+    last = db.execute('SELECT phase FROM queue_events WHERE run_id=? AND phase IN (?,?,?,?) '
+                      'ORDER BY seq DESC LIMIT 1', (run_id, *ENQUEUE_EVENTS)).fetchone()
+    return last is not None and last[0] == 'ENQUEUE_ATTEMPTED'
+
+
+def queue_enqueue_attempted(folder, intent_token, *, _store_home=None):
+    """Durably record, BEFORE `pueue enqueue`, that a BOUND task is about to be released.
+
+    Until an outcome is recorded, restart recovery treats the row as AMBIGUOUS.
+    """
+    db = _queue_connect(folder, _store_home)
     try:
-        row = db.execute('SELECT run_id,queue_instance,manifest_sha256,intent_token,phase,task_id,worker_id,fence '
-                         'FROM queue_binding WHERE run_folder=?',
-                         (str(Path(folder).resolve()),)).fetchone()
+        db.execute('BEGIN IMMEDIATE')
+        ident = db.execute('SELECT run_id FROM queue_binding WHERE intent_token=? AND run_folder=?',
+                           (intent_token, _folder_key(folder))).fetchone()
+        if ident is not None and _legacy_fence_in_tx(db, ident[0]) is not None:
+            # A historical refusal is fenced (or already was); the fence is committed, never released.
+            db.execute('COMMIT')
+            raise RegistryError(LEGACY_REFUSED_MESSAGE)
+        row = db.execute("SELECT run_id, task_id FROM queue_binding WHERE intent_token=? AND run_folder=? "
+                         "AND phase='BOUND'", (intent_token, _folder_key(folder))).fetchone()
         if row is None:
-            return None
-        return dict(zip(('run_id','queue_instance','manifest_sha256','intent_token','phase','task_id','worker_id','fence'), row))
+            raise RegistryError('Only a BOUND task can be released to a worker')
+        if _enqueue_pending(db, row[0]):
+            raise RegistryError('An earlier enqueue has no recorded outcome; never retried')
+        _queue_event(db, row[0], 'ENQUEUE_ATTEMPTED', {'intent_token': intent_token, 'task_id': row[1]})
+        db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
     finally:
         db.close()
 
 
-def _queue_matches(folder, run_id, digest, queue_instance, task_id, worker_id, fence):
-    db = _queue_connect(folder)
+def queue_enqueue_outcome(folder, intent_token, outcome, detail='', *, _store_home=None):
+    """Record the outcome of the one enqueue call. Returns the resulting queue phase.
+
+    outcome is ENQUEUED or ENQUEUE_UNKNOWN (timeout, OS error, any non-zero exit,
+    lost response). An unknown outcome on a BOUND row fences it AMBIGUOUS through
+    the normal fencing path; it is never retried, and an AMBIGUOUS row cannot be
+    released again (queue_enqueue_attempted requires BOUND).
+    """
+    if outcome not in ENQUEUE_OUTCOMES:
+        raise RegistryError('Unknown enqueue outcome %r' % outcome)
+    db = _queue_connect(folder, _store_home)
     try:
-        return db.execute("SELECT 1 FROM queue_binding WHERE run_folder=? AND run_id=? "
-                          "AND manifest_sha256=? AND queue_instance=? AND phase='CLAIMED' AND task_id=? "
-                          "AND worker_id=? AND fence=?",
-                          (str(Path(folder).resolve()), run_id, digest, queue_instance, task_id,
-                           worker_id, fence)).fetchone() is not None
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase FROM queue_binding WHERE intent_token=? AND run_folder=?',
+                         (intent_token, _folder_key(folder))).fetchone()
+        if row is None or not _enqueue_pending(db, row[0]):
+            raise RegistryError('No pending enqueue attempt for this intent')
+        run_id, phase = row
+        _queue_event(db, run_id, outcome, {'intent_token': intent_token, 'detail': str(detail)[:1000]})
+        if outcome == 'ENQUEUE_UNKNOWN' and phase == 'BOUND':
+            _mark_ambiguous(db, run_id, 'BOUND', 'enqueue outcome unknown: %s' % str(detail)[:900])
+        phase = db.execute('SELECT phase FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+        db.execute('COMMIT')
+        return phase
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
     finally:
         db.close()
 
 
-def claim(folder, run_id, project, digest, initial_state, *,
-          queue_instance=None, queue_task_id=None, queue_worker_id=None, queue_fence=None):
-    """Atomically create a run and claim it exactly once, never stealing owners."""
-    if initial_state not in ('SUBMITTED', 'QUEUED'):
-        raise RegistryError('Run is not eligible for execution')
-    if initial_state == 'QUEUED' and not all((queue_instance, queue_task_id, queue_worker_id, queue_fence)):
-        raise RegistryError('Queued worker requires queue instance, task, worker identity, and fence')
-    if initial_state == 'SUBMITTED' and any((queue_instance, queue_task_id, queue_worker_id, queue_fence)):
-        raise RegistryError('Local execution cannot carry queue identity')
-    if initial_state == 'QUEUED':
-        if not _queue_matches(folder, run_id, digest, queue_instance, queue_task_id,
-                              queue_worker_id, queue_fence):
-            raise RegistryError('Queued run/task/worker fence mismatch')
-    # Older deployed workers claim with mkdir. Acquire the same marker first,
-    # atomically, so mixed versions cannot execute concurrently. Never delete
-    # it automatically: a crash here needs manual investigation.
+# -- historical ENQUEUE_REFUSED (P7.1) ----------------------------------------------
+# Commit e90e3b1 recorded ENQUEUE_REFUSED for a non-zero `pueue enqueue` exit and left the
+# row BOUND. The daemon may still have accepted the enqueue (a lost response reports
+# non-zero), and the old code allowed the same BOUND row to be released again: the replay
+# is shown in tests/fixtures/legacy_e90e3b1 (run-2 was enqueued and ran). A row whose queue
+# history contains ENQUEUE_REFUSED is therefore fenced AMBIGUOUS (origin BOUND) and never
+# released, claimed or retried. The fence and the LEGACY_REFUSED_FENCED marker are written
+# in the same transaction as the decision; an interrupted run commits nothing.
+# There is no flag, environment variable or parameter that lifts this fence.
+LEGACY_REFUSED = 'ENQUEUE_REFUSED'
+LEGACY_FENCE_MARKER = 'LEGACY_REFUSED_FENCED'
+LEGACY_REFUSED_MESSAGE = 'Historical enqueue refusal recorded for this run; fenced, never retried or released again'
+LEGACY_REFUSAL_REASON = ('historical ENQUEUE_REFUSED (daemon may have accepted the enqueue); '
+                         'fenced by migration')
+
+
+def _legacy_refused(db, run_id):
+    """True when the run's queue history holds ENQUEUE_REFUSED. A damaged event is unreadable."""
+    rows = db.execute('SELECT detail FROM queue_events WHERE run_id=? AND phase=?',
+                      (run_id, LEGACY_REFUSED)).fetchall()
+    for (detail,) in rows:
+        try:
+            if not isinstance(json.loads(detail), dict):
+                raise ValueError('detail is not an object')
+        except (TypeError, ValueError) as exc:
+            raise _unreadable('holds a damaged %s event' % LEGACY_REFUSED) from exc
+    return bool(rows)
+
+
+def _legacy_fence_in_tx(db, run_id):
+    """Caller holds BEGIN IMMEDIATE. Fence run_id if its history has a historical refusal.
+
+    Returns None when there is no refusal history (nothing written). Otherwise returns
+    (resulting_phase, action) with action FENCED, ALREADY_FENCED or KEPT. Only a BOUND row
+    is fenced; a CLAIMED row keeps its owner and is left unchanged; any other phase with
+    refusal history is inconsistent and stays blocked as REGISTRY_UNREADABLE.
+    """
+    if not _legacy_refused(db, run_id):
+        return None
+    row = db.execute('SELECT phase, ambiguous_from FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()
+    if row is None:
+        raise _unreadable('has refusal history without a queue binding')
+    phase, origin = row
+    marked = db.execute('SELECT 1 FROM queue_events WHERE run_id=? AND phase=? LIMIT 1',
+                        (run_id, LEGACY_FENCE_MARKER)).fetchone() is not None
+    if phase == 'BOUND':
+        _mark_ambiguous(db, run_id, 'BOUND', LEGACY_REFUSAL_REASON)
+        _queue_event(db, run_id, LEGACY_FENCE_MARKER, {'origin': 'BOUND'})
+        return 'AMBIGUOUS', 'FENCED'
+    if phase == 'AMBIGUOUS' and origin == 'BOUND':
+        if not marked:
+            _queue_event(db, run_id, LEGACY_FENCE_MARKER, {'origin': 'BOUND', 'note': 'fence already present'})
+            return 'AMBIGUOUS', 'FENCED'
+        return 'AMBIGUOUS', 'ALREADY_FENCED'
+    if phase == 'CLAIMED':
+        return 'CLAIMED', 'KEPT'
+    raise _unreadable('has refusal history on a %s row' % phase)
+
+
+def queue_migrate_legacy_refusals(folder, *, _store_home=None):
+    """Explicit reconciliation of every run in the queue store holding ENQUEUE_REFUSED history.
+
+    One transaction: either every fence and marker is committed, or none is. Idempotent: a
+    second run finds the fences in place and writes nothing. Returns a report mapping each
+    run_id to FENCED, ALREADY_FENCED or KEPT. Unreadable or inconsistent history raises
+    REGISTRY_UNREADABLE and nothing is written.
+    """
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        run_ids = sorted(r[0] for r in db.execute(
+            'SELECT DISTINCT run_id FROM queue_events WHERE phase=?', (LEGACY_REFUSED,)).fetchall())
+        report = {}
+        for run_id in run_ids:
+            outcome = _legacy_fence_in_tx(db, run_id)
+            report[run_id] = outcome[1]
+        db.execute('COMMIT')
+        return report
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker_id, *,
+                _store_home=None, _fault=None):
+    """Claim a bound task once. Issues a new attempt and a monotonic fence; never steals.
+
+    Returns the fence. The attempt is read back from the queue row by the local
+    claim, which verifies it under the queue write lock.
+    """
+    _validate_queue_args(run_id, _folder_project(folder), manifest_sha256, queue_instance)
+    run_ownership.validate_opaque_task(task_id)
+    run_ownership.validate_name('worker_id', worker_id)
+    claimant = _this_claimant()
+    if claimant is None:
+        raise RegistryError('Process identity unavailable; cannot bind queue claimant')
+    attempt_id = run_ownership.new_attempt_id()
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if _legacy_fence_in_tx(db, run_id) is not None:
+            db.execute('COMMIT')
+            raise RegistryError(LEGACY_REFUSED_MESSAGE)
+        updated = db.execute(
+            "UPDATE queue_binding SET phase='CLAIMED', worker_id=?, attempt_id=?, claimant=?, fence=fence+1 "
+            "WHERE run_id=? AND manifest_sha256=? AND queue_instance=? AND task_id=? "
+            "AND phase='BOUND' AND run_folder=?",
+            (worker_id, attempt_id, claimant, run_id, manifest_sha256, queue_instance,
+             task_id, _folder_key(folder))).rowcount
+        if updated != 1:
+            raise RegistryError('Queue task/run/manifest/project mismatch, stale replay, or ambiguous enqueue')
+        fence = db.execute('SELECT fence FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+        _queue_event(db, run_id, 'CLAIMED', {'task_id': task_id, 'worker_id': worker_id,
+                                             'attempt_id': attempt_id, 'fence': fence})
+        db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+    run_ownership.fault(_fault, 'queue_claim:after_commit')
+    return fence
+
+
+def queue_claim_idempotent(folder, run_id, manifest_sha256, queue_instance, task_id, worker_id, *,
+                           _store_home=None):
+    """Claim a bound task, or return the existing claim when this same claimant repeats it.
+
+    Returns (attempt_id, fence, replayed). A repeat by the same claimant process with
+    identical run, manifest, queue instance, task and worker reads the CLAIMED row and
+    writes nothing, so the attempt and fence never change. Any other caller, any field
+    mismatch, and every non-BOUND/non-CLAIMED phase (INTENT, AMBIGUOUS, RETRYABLE) is
+    refused. queue_claim keeps its single-shot behaviour for existing callers.
+    """
+    _validate_queue_args(run_id, _folder_project(folder), manifest_sha256, queue_instance)
+    run_ownership.validate_opaque_task(task_id)
+    run_ownership.validate_name('worker_id', worker_id)
+    claimant = _this_claimant()
+    if claimant is None:
+        raise RegistryError('Process identity unavailable; cannot bind queue claimant')
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase, manifest_sha256, queue_instance, task_id, worker_id, '
+                         'attempt_id, fence, claimant FROM queue_binding WHERE run_folder=?',
+                         (_folder_key(folder),)).fetchone()
+        if (row is None or row[0] != run_id or row[2] != manifest_sha256 or
+                row[3] != queue_instance or row[4] != task_id):
+            raise RegistryError('Queue task/run/manifest/project mismatch, stale replay, or ambiguous enqueue')
+        phase = row[1]
+        if phase == 'CLAIMED':
+            if row[5] != worker_id or row[8] != claimant:
+                raise RegistryError('Task already claimed by another worker or process; never stolen')
+            db.execute('COMMIT')
+            return row[6], row[7], True
+        if phase != 'BOUND':
+            raise RegistryError('Queue row is %s; only a BOUND task can be claimed' % phase)
+        if _legacy_fence_in_tx(db, run_id) is not None:
+            db.execute('COMMIT')
+            raise RegistryError(LEGACY_REFUSED_MESSAGE)
+        attempt_id = run_ownership.new_attempt_id()
+        updated = db.execute(
+            "UPDATE queue_binding SET phase='CLAIMED', worker_id=?, attempt_id=?, claimant=?, fence=fence+1 "
+            "WHERE run_id=? AND phase='BOUND' AND run_folder=?",
+            (worker_id, attempt_id, claimant, run_id, _folder_key(folder))).rowcount
+        if updated != 1:
+            raise RegistryError('Queue row changed during claim')
+        fence = db.execute('SELECT fence FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+        _queue_event(db, run_id, 'CLAIMED', {'task_id': task_id, 'worker_id': worker_id,
+                                             'attempt_id': attempt_id, 'fence': fence})
+        db.execute('COMMIT')
+        return attempt_id, fence, False
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+def queue_recover(folder, *, _store_home=None, require_quiescent=False):
+    """Restart recovery. Fences every intent without binding, every enqueue attempt without a
+    recorded outcome, and every claim without local ownership.
+
+    With require_quiescent (run_recovery.recover), a fence is written only when no
+    submitter, claimant or local owner of the run is live or undeterminable;
+    otherwise RecoveryDeferred is raised and nothing is written.
+    Nothing here retries, resubmits or resumes work. Returns the resulting phase, or None.
+    """
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase, attempt_id, fence FROM queue_binding WHERE run_folder=?',
+                         (_folder_key(folder),)).fetchone()
+        if row is None:
+            db.execute('COMMIT')
+            return None
+        run_id, phase, attempt_id, fence = row
+        legacy = _legacy_fence_in_tx(db, run_id)
+        if legacy is not None:
+            phase = legacy[0]
+        if require_quiescent:
+            origin = None
+            if phase == 'INTENT' or (phase == 'BOUND' and _enqueue_pending(db, run_id)):
+                origin = phase
+            elif phase == 'CLAIMED' and not _local_claim_matches(folder, run_id, attempt_id, fence):
+                origin = phase
+            if origin is not None:
+                claimant = db.execute('SELECT claimant FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+                reason = _launch_quiescence(db, folder, run_id, origin, claimant)
+                if reason is not None:
+                    raise RecoveryDeferred('%s: %s' % (RECOVERY_DEFERRED, reason))
+        if phase == 'INTENT':
+            _mark_ambiguous(db, run_id, 'INTENT', 'restart: intent without verified binding')
+        elif phase == 'BOUND' and _enqueue_pending(db, run_id):
+            _mark_ambiguous(db, run_id, 'BOUND', 'restart: enqueue attempted without recorded outcome')
+        elif phase == 'CLAIMED' and not _local_claim_matches(folder, run_id, attempt_id, fence):
+            _mark_ambiguous(db, run_id, 'CLAIMED', 'restart: claim without local ownership record')
+        phase = db.execute('SELECT phase FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+        db.execute('COMMIT')
+        return phase
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+def queue_resolve_ambiguous(folder, proof, *, _store_home=None):
+    """Move an AMBIGUOUS intent only on a VerifiedProof of queue lookup. Absence alone never qualifies."""
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT run_id, intent_token, queue_instance, ambiguous_from FROM queue_binding "
+                         "WHERE run_folder=? AND phase='AMBIGUOUS'", (_folder_key(folder),)).fetchone()
+        if row is None:
+            raise RegistryError('Only AMBIGUOUS queue rows can be resolved')
+        run_id, intent_token, queue_instance, origin = row
+        if origin != 'INTENT':
+            # CLAIMED needs containment-verified termination; BOUND (enqueue outcome unknown) has no verifier.
+            raise RegistryError('Only an INTENT ambiguity can be resolved by queue evidence; a claimed or '
+                                'released ambiguity needs containment-verified termination')
+        kind = run_ownership.require_queue_lookup(proof, intent_token=intent_token, queue_instance=queue_instance)
+        if kind == run_ownership.QUEUE_LOOKUP_NO_TASK:
+            db.execute("UPDATE queue_binding SET phase='RETRYABLE', resolution='NOT_SUBMITTED_VERIFIED' "
+                       "WHERE run_id=? AND phase='AMBIGUOUS'", (run_id,))
+            new_phase = 'RETRYABLE'
+        else:
+            task = proof.binding('task_id')
+            db.execute("UPDATE queue_binding SET phase='BOUND', task_id=?, resolution='TASK_VERIFIED' "
+                       "WHERE run_id=? AND phase='AMBIGUOUS'", (task, run_id))
+            new_phase = 'BOUND'
+        _queue_event(db, run_id, new_phase, {'resolved_from': 'AMBIGUOUS', 'kind': kind})
+        db.execute('COMMIT')
+        return new_phase
+    except sqlite3.IntegrityError as exc:
+        _rollback_or_unreadable(db)
+        raise RegistryError('Queue task ID is already bound to another run') from exc
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+def inspect_queue(folder, *, _store_home=None):
+    """Return queue lifecycle state even before an execution row exists."""
+    db = _queue_connect(folder, _store_home)
+    try:
+        rows = _dict_rows(db, 'SELECT run_id, project, queue_instance, manifest_sha256, intent_token, phase, '
+                              'task_id, worker_id, attempt_id, fence, claimant, ambiguous_from, resolution '
+                              'FROM queue_binding WHERE run_folder=?', (_folder_key(folder),))
+    except sqlite3.Error as exc:
+        raise _unreadable() from exc
+    finally:
+        db.close()
+    return rows[0] if rows else None
+
+
+def _verify_queued_claim(db, folder, run_id, digest, queue_instance, task_id, worker_id,
+                         fence, attempt_id, claimant):
+    """Return the queue-issued attempt when every presented field matches the CLAIMED row.
+
+    Project is not compared here: the queue scope is the folder's project, and
+    the local claim records its own project argument as the run identity.
+    """
+    row = db.execute('SELECT run_id, phase, manifest_sha256, queue_instance, task_id, worker_id, '
+                     'attempt_id, fence, claimant FROM queue_binding WHERE run_folder=?',
+                     (_folder_key(folder),)).fetchone()
+    if (row is None or row[1] != 'CLAIMED' or row[0] != run_id or row[2] != digest or
+            row[3] != queue_instance or row[4] != task_id or row[5] != worker_id or
+            type(fence) is not int or row[7] != fence or
+            (attempt_id is not None and row[6] != attempt_id) or row[8] != claimant):
+        raise RegistryError('Queued run/task/worker/attempt/fence mismatch, stale replay, '
+                            'ambiguous claim, or another claimant')
+    return row[6]
+
+
+def _create_claim_marker(folder):
     try:
         (Path(folder) / 'execution.claim').mkdir(mode=0o700)
     except FileExistsError as exc:
@@ -317,132 +886,542 @@ def claim(folder, run_id, project, digest, initial_state, *,
         os.fsync(directory)
     finally:
         os.close(directory)
+
+
+def _insert_local_claim(folder, identity, token, fault_hook):
     db = _connect(folder)
-    token = uuid.uuid4().hex
     try:
         db.execute('BEGIN IMMEDIATE')
-        if initial_state == 'QUEUED' and not _queue_matches(
-                folder, run_id, digest, queue_instance, queue_task_id,
-                queue_worker_id, queue_fence):
-            raise RegistryError('Queued run/task/worker fence mismatch')
         if db.execute('SELECT 1 FROM run WHERE id=1').fetchone():
             raise RegistryError('Run already claimed; do not retry without reconciliation')
         boot, start = _identity()
-        db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?,?,?,?,?)',
-                   (run_id, project, digest, 'CLAIMED', token, os.getpid(),
-                    socket.gethostname(), boot, start, queue_task_id, None))
+        digest = identity.sha256()
+        db.execute('INSERT INTO run (id, run_id, project, manifest_sha256, state, owner, owner_pid, owner_host, '
+                   'owner_boot, owner_start, queue_task_id, result_json, attempt_id, fence, worker_id, '
+                   'identity_version, identity_sha256) VALUES (1,?,?,?,?,?,?,?,?,?,?,NULL,?,?,?,?,?)',
+                   (identity.run_id, identity.project, identity.manifest_sha256, 'CLAIMED', token,
+                    os.getpid(), socket.gethostname(), boot, start, identity.task_id,
+                    identity.attempt_id, identity.fence, identity.worker_id,
+                    run_ownership.IDENTITY_VERSION, digest))
         pid_ns, mount_ns = _namespaces(os.getpid())
         db.execute("INSERT INTO process_namespaces VALUES ('owner',?,?)", (pid_ns, mount_ns))
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
-                   (token, 'CLAIMED', 'Atomic one-time owner acquisition'))
+                   (token, 'CLAIMED', json.dumps({'attempt_id': identity.attempt_id,
+                                                  'fence': identity.fence,
+                                                  'identity_sha256': digest}, sort_keys=True)))
+        run_ownership.fault(fault_hook, 'claim:before_commit')
         db.execute('COMMIT')
-        # Persist the new registry directory entry before any dispatch.
-        directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
-        return token
     except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
 
 
+def claim(folder, run_id, project, digest, initial_state, *,
+          queue_instance=None, queue_task_id=None, queue_worker_id=None,
+          queue_attempt_id=None, queue_fence=None, _store_home=None, _fault=None):
+    """Atomically create a run and claim it exactly once, never stealing owners.
+
+    A queued claim verifies the queue row under the queue write lock, adopts the
+    attempt the queue issued, and holds that lock across the local commit, so
+    recovery cannot fence the row between the two writes. Any failure after the
+    queue row was verified fences it.
+    """
+    if initial_state not in ('SUBMITTED', 'QUEUED'):
+        raise RegistryError('Run is not eligible for execution')
+    if project != _folder_project(folder):
+        raise RegistryError('Run project does not match the run folder project')
+    queue_db = None
+    try:
+        if initial_state == 'QUEUED':
+            if not all((queue_instance, queue_task_id, queue_worker_id, queue_fence)):
+                raise RegistryError('Queued worker requires queue instance, task, worker, and fence')
+            if not _valid_queue_instance(queue_instance):
+                raise RegistryError('Invalid queue instance identity')
+            claimant = _this_claimant()
+            if claimant is None:
+                raise RegistryError('Process identity unavailable; cannot verify queue claimant')
+            queue_db = _queue_connect(folder, _store_home)
+            queue_db.execute('BEGIN IMMEDIATE')
+            attempt_id = _verify_queued_claim(queue_db, folder, run_id, digest, queue_instance,
+                                              queue_task_id, queue_worker_id, queue_fence,
+                                              queue_attempt_id, claimant)
+            worker_id, fence = queue_worker_id, queue_fence
+        else:
+            if any((queue_instance, queue_task_id, queue_worker_id, queue_attempt_id, queue_fence)):
+                raise RegistryError('Local execution cannot carry queue identity')
+            worker_id, attempt_id, fence = 'local-%d' % os.getpid(), run_ownership.new_attempt_id(), 1
+        identity = run_ownership.ExecutionIdentity(run_id, project, attempt_id, digest, worker_id,
+                                                   fence, queue_task_id).validate()
+        token = run_ownership.encode_token(attempt_id, fence)
+        _create_claim_marker(folder)
+        try:
+            _insert_local_claim(folder, identity, token, _fault)
+        except BaseException:
+            if queue_db is not None:
+                queue_db.execute("UPDATE queue_binding SET phase='AMBIGUOUS', ambiguous_from='CLAIMED' "
+                                 "WHERE run_id=? AND phase='CLAIMED' AND attempt_id=? AND fence=?",
+                                 (run_id, attempt_id, fence))
+                _queue_event(queue_db, run_id, 'AMBIGUOUS',
+                             {'origin': 'CLAIMED', 'reason': 'local claim failed after queue claim'})
+                queue_db.execute('COMMIT')
+            raise
+        if queue_db is not None:
+            queue_db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        raise _unreadable() from exc
+    finally:
+        if queue_db is not None:
+            _safe_rollback(queue_db)
+            _close_quietly(queue_db)
+    run_ownership.fault(_fault, 'claim:after_commit')
+    return token
+
+
+def _owner_row(db, token, attempt_id, fence):
+    """Read the run row inside the caller's transaction and verify it before any mutation.
+
+    Owner, attempt and fence must match the presented token, and the row must
+    recompute as CURRENT. Legacy-schema rows are read with SELECT *, so every
+    refusal here is a RegistryError rather than an OperationalError on a missing column.
+    """
+    rows = _dict_rows(db, 'SELECT * FROM run WHERE id=1')
+    if (not rows or rows[0].get('owner') != token or rows[0].get('attempt_id') != attempt_id or
+            rows[0].get('fence') != fence):
+        raise RegistryError('Stale owner or illegal execution state')
+    if run_ownership.classify_row(rows[0]) != 'CURRENT':
+        raise RegistryError('Run identity fails verification; fenced')
+    return rows[0]
+
+
+def _child_recorded(db):
+    return bool(_optional_rows(db, 'SELECT 1 AS present FROM child_identity WHERE id=1'))
+
+
+CHILD_NOT_OWN_CHILD = 'CHILD_NOT_OWN_CHILD'
+
+
 def record_child(folder, token, pid):
     """Record forensic identity; this is not evidence of containment."""
+    attempt_id, fence = _decode_owner(token)
+    if type(pid) is not int or pid <= 0:
+        raise RegistryError(CHILD_NOT_OWN_CHILD + ': invalid pid')
     try:
         boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         stat = Path('/proc/%d/stat' % pid).read_text()
-        start = stat[stat.rfind(')') + 2:].split()[19]
-    except (OSError, IndexError):
-        boot, start = None, None
-    db = _connect(folder)
+        fields = stat[stat.rfind(')') + 2:].split()
+        start = fields[19]
+        parent = int(fields[1])
+    except (OSError, IndexError, ValueError):
+        raise RegistryError(CHILD_NOT_OWN_CHILD + ': pid is gone or unreadable') from None
+    # Only this process (the recorder itself) or its own not-yet-reaped child may be recorded.
+    # A reaped pid vanishes from /proc or is reused by a process that is not our child.
+    if pid != os.getpid() and parent != os.getpid():
+        raise RegistryError(CHILD_NOT_OWN_CHILD + ': pid is not a child of this process')
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
-        if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND state='DISPATCHING'", (token,)).fetchone():
+        _owner_row(db, token, attempt_id, fence)
+        if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND attempt_id=? AND fence=? "
+                          "AND state='DISPATCHING'", (token, attempt_id, fence)).fetchone():
             raise RegistryError('Stale owner or illegal child registration')
-        db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        try:
+            db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        except sqlite3.IntegrityError as exc:
+            raise RegistryError('Child identity already recorded') from exc
         pid_ns, mount_ns = _namespaces(pid)
         db.execute("INSERT INTO process_namespaces VALUES ('child',?,?)", (pid_ns, mount_ns))
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
                    (token, 'CHILD_IDENTIFIED', json.dumps({'pid': pid, 'boot': boot, 'start_ticks': start})))
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
 
 
-def advance(folder, token, expected, target):
+def advance(folder, token, expected, target, *, _fault=None):
+    """Owner-only transition. The state guard is the CAS in the UPDATE; RUNNING also needs a child identity."""
     if (expected, target) not in {('CLAIMED', 'DISPATCHING'), ('DISPATCHING', 'RUNNING')}:
         raise RegistryError('Illegal execution transition')
-    db = _connect(folder)
+    attempt_id, fence = _decode_owner(token)
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
-        updated = db.execute('UPDATE run SET state=? WHERE id=1 AND owner=? AND state=?',
-                             (target, token, expected)).rowcount
+        _owner_row(db, token, attempt_id, fence)
+        if target == 'RUNNING' and not _child_recorded(db):
+            raise RegistryError('RUNNING requires a recorded child identity')
+        updated = db.execute('UPDATE run SET state=? WHERE id=1 AND owner=? AND attempt_id=? AND fence=? AND state=?',
+                             (target, token, attempt_id, fence, expected)).rowcount
         if updated != 1:
             raise RegistryError('Stale owner or illegal execution state')
         db.execute('INSERT INTO events(owner,state) VALUES (?,?)', (token, target))
+        run_ownership.fault(_fault, 'advance:before_commit')
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
 
 
-def finish(folder, token, result):
-    state = result.get('state')
-    if state != 'UNKNOWN':
+def finish(folder, token, result, *, _fault=None):
+    """Record a leader-observed outcome as UNKNOWN. Whole-workload completion is not claimed here."""
+    if not isinstance(result, dict) or result.get('state') != 'UNKNOWN':
         raise RegistryError('Invalid terminal state')
+    attempt_id, fence = _decode_owner(token)
     data = json.dumps(result, sort_keys=True)
-    db = _connect(folder)
+    db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
-        updated = db.execute("UPDATE run SET state=?, result_json=? WHERE id=1 AND owner=? AND state IN ('RUNNING','DISPATCHING')",
-                             (state, data, token)).rowcount
+        _owner_row(db, token, attempt_id, fence)
+        updated = db.execute("UPDATE run SET state='UNKNOWN', result_json=? WHERE id=1 AND owner=? "
+                             "AND attempt_id=? AND fence=? AND state IN ('RUNNING','DISPATCHING')",
+                             (data, token, attempt_id, fence)).rowcount
         if updated != 1:
             raise RegistryError('Stale owner or illegal terminal state')
-        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, state, data))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, 'UNKNOWN', data))
+        run_ownership.fault(_fault, 'finish:before_commit')
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
-        if db.in_transaction:
-            db.execute('ROLLBACK')
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+    run_ownership.fault(_fault, 'finish:after_commit')
+
+
+def verified_finish(folder, token, proof, result):
+    """Record a leader outcome as verified only with a VerifiedProof of whole-workload termination.
+
+    No verifier is registered, so every real call is refused today.
+    """
+    if not isinstance(result, dict) or result.get('state') not in run_ownership.VERIFIED_OUTCOMES:
+        raise RegistryError('Verified completion requires a leader outcome state')
+    attempt_id, fence = _decode_owner(token)
+    data = json.dumps(result, sort_keys=True)
+    db = _connect(folder, create=False)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = _owner_row(db, token, attempt_id, fence)
+        run_ownership.require_containment_proof(proof, run_id=row['run_id'], attempt_id=attempt_id, fence=fence)
+        updated = db.execute("UPDATE run SET state=?, result_json=? WHERE id=1 AND owner=? AND attempt_id=? "
+                             "AND fence=? AND state IN ('RUNNING','DISPATCHING')",
+                             (result['state'], data, token, attempt_id, fence)).rowcount
+        if updated != 1:
+            raise RegistryError('Stale owner or illegal terminal state')
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, result['state'], data))
+        db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+def supersede(folder, token, proof):
+    """Revoke the presented authority after a VerifiedProof that its whole workload terminated.
+
+    The run moves to FENCED with fence+1 and owner set to the successor token. FENCED
+    is terminal for every mutator: each requires a state that FENCED lacks, so the
+    derivable successor token cannot act. A retry needs a new run identity.
+    """
+    attempt_id, fence = _decode_owner(token)
+    db = _connect(folder, create=False)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = _owner_row(db, token, attempt_id, fence)
+        run_ownership.require_containment_proof(proof, run_id=row['run_id'], attempt_id=attempt_id, fence=fence)
+        new_fence = fence + 1
+        new_digest = run_ownership.ExecutionIdentity(row['run_id'], row['project'], attempt_id,
+                                                     row['manifest_sha256'], row['worker_id'], new_fence,
+                                                     row['queue_task_id']).validate().sha256()
+        new_token = run_ownership.encode_token(attempt_id, new_fence)
+        updated = db.execute("UPDATE run SET state='FENCED', owner=?, fence=?, identity_sha256=? "
+                             "WHERE id=1 AND owner=? AND attempt_id=? AND fence=? "
+                             "AND state IN ('CLAIMED','DISPATCHING','RUNNING','UNKNOWN')",
+                             (new_token, new_fence, new_digest, token, attempt_id, fence)).rowcount
+        if updated != 1:
+            raise RegistryError('Only unfinished or unknown executions can be fenced')
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (new_token, 'FENCED', json.dumps({'previous_fence': fence, 'fence': new_fence},
+                                                    sort_keys=True)))
+        db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+RECOVERABLE_STATES = ('CLAIMED', 'DISPATCHING', 'RUNNING', 'UNKNOWN')
+
+
+OWNER_LIVE = 'OWNER_LIVE'
+
+
+class OwnerLive(RegistryError):
+    """recovery_fence refused: the recorded owner is live or cannot be observed."""
+    code = OWNER_LIVE
+
+
+def recovery_fence(folder, observed_owner, reason, *, _fault=None):
+    """Owner-store recovery: revoke the authority of an owner observed gone. Returns the new fence.
+
+    No token is presented: the presented owner is the one recovery observed as gone,
+    and observed_owner = (owner_pid, owner_boot, owner_start) must still equal the row
+    under the write lock (compare-and-set), so a row claimed or changed after the
+    observation is never fenced by mistake. The row moves to RECOVERY_FENCED with
+    fence+1 and a recomputed identity hash; every stale token then fails _owner_row,
+    and the successor token is inert because no mutator accepts RECOVERY_FENCED.
+
+    RECOVERY_FENCED does not claim that the workload terminated, never becomes
+    COMPLETED, and never makes the run_id claimable again.
+    """
+    if not isinstance(reason, str) or not reason:
+        raise RegistryError('Recovery fencing requires a reason')
+    db = _connect(folder, create=False)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        rows = _dict_rows(db, 'SELECT * FROM run WHERE id=1')
+        if not rows:
+            raise RegistryError('No run record to fence')
+        row = rows[0]
+        if run_ownership.classify_row(row) != 'CURRENT':
+            raise RegistryError('Run identity fails verification; already fenced as legacy')
+        if row['state'] not in RECOVERABLE_STATES:
+            raise RegistryError('Only an unfinished or unknown run can be recovery-fenced')
+        if (row.get('owner_pid'), row.get('owner_boot'), row.get('owner_start')) != tuple(observed_owner):
+            raise RegistryError('Run owner changed since it was observed; rerun recovery')
+        # Liveness is observed under the same write lock the fence is written under. A live or
+        # undeterminable owner refuses with OWNER_LIVE and nothing is written.
+        owner_ns = _optional_rows(db, "SELECT pid_namespace,mount_namespace FROM process_namespaces "
+                                      "WHERE role='owner'")
+        owner_ns = owner_ns[0] if owner_ns else {}
+        owner_identity = {'pid': row.get('owner_pid'), 'boot': row.get('owner_boot'),
+                          'start_ticks': row.get('owner_start'),
+                          'pid_namespace': owner_ns.get('pid_namespace'),
+                          'mount_namespace': owner_ns.get('mount_namespace')}
+        liveness = _observation_liveness(process_identity.observe_process(owner_identity,
+                                                                          row.get('owner_host')))
+        if liveness != 'GONE':
+            raise OwnerLive('%s: run owner is %s; refusing to fence' % (OWNER_LIVE, liveness))
+        attempt_id, fence = row['attempt_id'], row['fence']
+        new_fence = fence + 1
+        new_digest = run_ownership.ExecutionIdentity(row['run_id'], row['project'], attempt_id,
+                                                     row['manifest_sha256'], row['worker_id'], new_fence,
+                                                     row['queue_task_id']).validate().sha256()
+        new_token = run_ownership.encode_token(attempt_id, new_fence)
+        updated = db.execute("UPDATE run SET state='RECOVERY_FENCED', owner=?, fence=?, identity_sha256=? "
+                             "WHERE id=1 AND owner=? AND attempt_id=? AND fence=? AND state=?",
+                             (new_token, new_fence, new_digest, row['owner'], attempt_id, fence,
+                              row['state'])).rowcount
+        if updated != 1:
+            raise RegistryError('Run changed during recovery fencing')
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (new_token, 'RECOVERY_FENCED',
+                    json.dumps({'previous_fence': fence, 'fence': new_fence, 'previous_state': row['state'],
+                                'reason': reason[:1000]}, sort_keys=True)))
+        run_ownership.fault(_fault, 'recovery_fence:before_commit')
+        db.execute('COMMIT')
+        return new_fence
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+RECOVERY_DEFERRED = 'RECOVERY_DEFERRED'
+
+
+class RecoveryDeferred(RegistryError):
+    """Recovery refused to fence because a launch participant is live or cannot be observed."""
+
+
+def _observation_liveness(seen):
+    if seen['observation'] == 'MATCH':
+        return 'LIVE'
+    if seen['observation'] in ('NOT_VISIBLE', 'IDENTITY_MISMATCH', 'MATCH_ZOMBIE'):
+        return 'GONE'
+    return 'UNKNOWN'
+
+
+def _claimant_liveness(claimant):
+    """Liveness of a queue claimant.
+
+    Current claimants are 'pid:boot:start|pid_namespace|mount_namespace'. They are observed with
+    process_identity.observe_process, so an observer in another namespace sees UNKNOWN (recovery
+    defers) instead of a live claimant looking GONE. Legacy 'pid:boot:start' claimants carry no
+    namespaces and are only meaningful to a same-namespace observer.
+    """
+    try:
+        if '|' in claimant:
+            head, pid_ns, mount_ns = claimant.split('|')
+            pid_text, boot, start = head.split(':')
+            seen = process_identity.observe_process(
+                {'pid': int(pid_text), 'boot': boot, 'start_ticks': start,
+                 'pid_namespace': pid_ns, 'mount_namespace': mount_ns}, socket.gethostname())
+            return _observation_liveness(seen)
+        pid_text, boot, start = claimant.split(':')
+        pid = int(pid_text)
+        if pid <= 0 or not process_identity._boot_valid(boot) or not process_identity._ticks_valid(start):
+            return 'UNKNOWN'
+        if Path('/proc/sys/kernel/random/boot_id').read_text(encoding='ascii').strip() != boot:
+            return 'GONE'
+        try:
+            stat_text = Path('/proc/%d/stat' % pid).read_text(encoding='ascii')
+        except FileNotFoundError:
+            return 'GONE'
+        fields = stat_text[stat_text.rfind(')') + 2:].split()
+        if fields[19] != start or fields[0] in ('Z', 'X', 'x'):
+            return 'GONE'
+        return 'LIVE'
+    except (AttributeError, ValueError, IndexError, OSError, UnicodeError):
+        return 'UNKNOWN'
+
+
+def _launch_quiescence(db, folder, run_id, origin, claimant):
+    """Return None when no worker or submitter of this launch is active, else the reason to defer.
+
+    Must be called inside the queue store's BEGIN IMMEDIATE transaction that will
+    also perform the fence. queue_intent, queue_bind_task and queue_claim record a
+    submitter or claimant only under that same write lock, so none can appear
+    between this check and the fence's commit. Live or undeterminable means defer.
+    """
+    try:
+        entry = inspect(folder)
+    except RegistryError:
+        return 'local owner record unreadable'
+    if entry is not None and entry['state'] in RECOVERABLE_STATES:
+        owner = {'pid': entry.get('owner_pid'), 'boot': entry.get('owner_boot'),
+                 'start_ticks': entry.get('owner_start'), 'pid_namespace': entry.get('owner_pid_namespace'),
+                 'mount_namespace': entry.get('owner_mount_namespace')}
+        liveness = _observation_liveness(process_identity.observe_process(owner, entry.get('owner_host')))
+        if liveness != 'GONE':
+            return 'local owner %s' % liveness
+    if claimant is not None:
+        liveness = _claimant_liveness(claimant)
+        if liveness != 'GONE':
+            return 'queue claimant %s' % liveness
+    if origin in ('INTENT', 'BOUND'):
+        rows = _dict_rows(db, 'SELECT role, pid, host, boot, start_ticks, pid_namespace, mount_namespace '
+                              'FROM queue_submitters WHERE run_id=? ORDER BY role', (run_id,))
+        if not rows:
+            return 'no submitter identity recorded'
+        for row in rows:
+            liveness = _observation_liveness(process_identity.observe_process(row, row['host']))
+            if liveness != 'GONE':
+                return 'submitter (%s) %s' % (row['role'], liveness)
+    return None
+
+
+def queue_fence_unlaunched(folder, *, _store_home=None):
+    """Recovery: fence a BOUND queue row that has no local claim AMBIGUOUS (origin BOUND).
+
+    Refused with RecoveryDeferred, writing nothing, unless every submitter, the
+    queue claimant and any local owner of the run are observed gone (see
+    _launch_quiescence; check and write share the queue store write lock). The
+    bound task may still be in the external queue, so the row is never
+    re-released, re-claimed or resubmitted; AMBIGUOUS from BOUND has no
+    resolution path. Returns the phase.
+    """
+    return queue_fence_launch(folder, fence_marker=False, _store_home=_store_home)[0]
+
+
+def queue_fence_launch(folder, *, fence_marker=True, _store_home=None, _quiescence=None):
+    """queue_fence_unlaunched, plus (fence_marker) the local execution.claim marker for an
+    unlaunched AMBIGUOUS run, created under the same queue write lock after the same check.
+
+    Returns (phase, marker_created). _quiescence is a test-only replacement for the check.
+    """
+    check = _launch_quiescence if _quiescence is None else _quiescence
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase, ambiguous_from, claimant FROM queue_binding WHERE run_folder=?',
+                         (_folder_key(folder),)).fetchone()
+        if row is None:
+            db.execute('COMMIT')
+            return None, False
+        run_id, phase, origin, claimant = row
+        try:
+            unlaunched = inspect(folder) is None
+        except RegistryError as exc:
+            raise RecoveryDeferred('%s: local owner record unreadable' % RECOVERY_DEFERRED) from exc
+        fence_row = phase == 'BOUND' and unlaunched
+        make_marker = (fence_marker and unlaunched and (fence_row or phase == 'AMBIGUOUS') and
+                       not (Path(folder) / 'execution.claim').exists())
+        if fence_row or make_marker:
+            reason = check(db, folder, run_id, 'BOUND' if fence_row else origin, claimant)
+            if reason is not None:
+                raise RecoveryDeferred('%s: %s' % (RECOVERY_DEFERRED, reason))
+        if fence_row:
+            _mark_ambiguous(db, run_id, 'BOUND', 'recovery: bound task without a launched child')
+            phase = 'AMBIGUOUS'
+        if make_marker:
+            _create_claim_marker(folder)
+        db.execute('COMMIT')
+        return phase, make_marker
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
         raise
     finally:
         db.close()
 
 
 def inspect(folder):
-    path = Path(folder) / 'registry.sqlite3'
-    if not path.is_file():
+    """Read-only view. Rows without a recomputable v2 identity are reported UNKNOWN (LEGACY_FENCED)."""
+    if not (Path(folder) / 'registry.sqlite3').is_file():
         return None
-    db = _connect(folder)
+    db = None
     try:
-        row = db.execute('SELECT run_id,project,manifest_sha256,state,owner_pid,owner_host,owner_boot,owner_start,queue_task_id,result_json FROM run WHERE id=1').fetchone()
-        if row is None:
+        db = _open_readonly(folder)
+        rows = _optional_rows(db, 'SELECT * FROM run WHERE id=1')
+        if not rows:
             return None
-        fields = ('run_id','project','manifest_sha256','state','owner_pid','owner_host','owner_boot','owner_start','queue_task_id','result')
-        result = dict(zip(fields, row))
-        if result['result'] is not None:
-            result['result'] = json.loads(result['result'])
-        namespaces = {role: (pid_ns, mount_ns) for role, pid_ns, mount_ns in
-                      db.execute('SELECT role,pid_namespace,mount_namespace FROM process_namespaces')}
+        row = rows[0]
+        result = {key: row.get(key) for key in INSPECT_FIELDS}
+        result['result'] = json.loads(row['result_json']) if row.get('result_json') is not None else None
+        result['identity'] = run_ownership.classify_row(row)
+        if result['identity'] != 'CURRENT':
+            result['legacy_state'] = result['state']
+            result['state'] = 'UNKNOWN'
+        namespaces = {r['role']: (r['pid_namespace'], r['mount_namespace']) for r in
+                      _optional_rows(db, 'SELECT role,pid_namespace,mount_namespace FROM process_namespaces')}
         owner_ns = namespaces.get('owner', (None, None))
         result['owner_pid_namespace'], result['owner_mount_namespace'] = owner_ns
-        child = db.execute('SELECT pid,boot,start_ticks FROM child_identity WHERE id=1').fetchone()
-        result['child'] = dict(zip(('pid','boot','start_ticks'), child)) if child else None
+        child = _optional_rows(db, 'SELECT pid,boot,start_ticks FROM child_identity WHERE id=1')
+        result['child'] = child[0] if child else None
         if result['child'] is not None:
             child_ns = namespaces.get('child', (None, None))
             result['child']['pid_namespace'], result['child']['mount_namespace'] = child_ns
-        result['events'] = [dict(zip(('seq','at','state','detail'), item)) for item in db.execute('SELECT seq,at,state,detail FROM events ORDER BY seq')]
+        result['events'] = _optional_rows(db, 'SELECT seq,at,state,detail FROM events ORDER BY seq')
         return result
+    except sqlite3.Error as exc:
+        raise _unreadable() from exc
     finally:
-        db.close()
+        _close_quietly(db)

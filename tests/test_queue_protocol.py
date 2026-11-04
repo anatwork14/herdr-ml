@@ -124,7 +124,7 @@ class QueueProtocolTests(unittest.TestCase):
                                  'task-crash-window', 'worker-A')
         # A caller without the persisted fence cannot proceed or refresh it.
         with self.assertRaisesRegex(registry.RegistryError, 'mismatch'):
-            registry.claim(self.folder, RUN, 'project', DIGEST, 'QUEUED',
+            registry.claim(self.folder, RUN, 'project-a', DIGEST, 'QUEUED',
                            queue_instance=QUEUE, queue_task_id='task-crash-window',
                            queue_worker_id='worker-A', queue_fence='wrong-fence')
         self.assertEqual(registry.inspect_queue(self.folder)['fence'], fence)
@@ -166,12 +166,12 @@ class QueueProtocolTests(unittest.TestCase):
         registry.queue_bind_task(self.folder, token, 'task-42')
         fence = registry.queue_claim(self.folder, RUN, DIGEST, QUEUE, 'task-42', 'worker-A')
         with self.assertRaisesRegex(registry.RegistryError, 'requires queue instance'):
-            registry.claim(self.folder, RUN, 'project', DIGEST, 'QUEUED')
+            registry.claim(self.folder, RUN, 'project-a', DIGEST, 'QUEUED')
         with self.assertRaisesRegex(registry.RegistryError, 'mismatch'):
-            registry.claim(self.folder, RUN, 'project', DIGEST, 'QUEUED',
+            registry.claim(self.folder, RUN, 'project-a', DIGEST, 'QUEUED',
                            queue_instance=QUEUE, queue_task_id='task-42',
                            queue_worker_id='worker-B', queue_fence=fence)
-        owner = registry.claim(self.folder, RUN, 'project', DIGEST, 'QUEUED',
+        owner = registry.claim(self.folder, RUN, 'project-a', DIGEST, 'QUEUED',
                                queue_instance=QUEUE, queue_task_id='task-42',
                                queue_worker_id='worker-A', queue_fence=fence)
         self.assertTrue(owner)

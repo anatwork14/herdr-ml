@@ -1,0 +1,37 @@
+# command: uname -r && systemctl --version | head -1 && grep -w cgroup2 /proc/filesystems && cat /proc/self/cgroup && ls -ld /sys/fs/cgroup/unified/system.slice/teleport.service && ls /sys/fs/cgroup/unified/system.slice/teleport.service/cgroup.kill; ls -ld /run/user/5011/bus; /mnt/ssd/genos2/.local/bin/python3.12 scripts/containment_probe.py; echo exit=$?
+# (exit code of the final line is the probe exit code)
+5.4.0-216-generic
+systemd 245 (245.4-4ubuntu3.24)
+nodev	cgroup2
+12:blkio:/system.slice/teleport.service
+11:devices:/system.slice/teleport.service
+10:hugetlb:/
+9:memory:/system.slice/teleport.service
+8:pids:/system.slice/teleport.service
+7:rdma:/
+6:freezer:/
+5:perf_event:/
+4:cpu,cpuacct:/system.slice/teleport.service
+3:net_cls,net_prio:/
+2:cpuset:/
+1:name=systemd:/system.slice/teleport.service
+0::/system.slice/teleport.service
+drwxr-xr-x 2 root root 0 Sep 10 08:36 /sys/fs/cgroup/unified/system.slice/teleport.service
+ls: cannot access '/sys/fs/cgroup/unified/system.slice/teleport.service/cgroup.kill': No such file or directory
+ls: cannot access '/run/user/5011/bus': No such file or directory
+{
+  "current_cgroup_kill_present": false,
+  "current_cgroup_kill_writable": false,
+  "current_cgroup_procs_writable": false,
+  "current_cgroup_v2": "/sys/fs/cgroup/unified/system.slice/teleport.service",
+  "current_cgroup_writable": false,
+  "linux": true,
+  "observations": [
+    "Writability is only a hint, not evidence of delegation, isolation or safe release"
+  ],
+  "reason": "No integrated, independently verified containment backend; GPU and queue holds remain.",
+  "schema_version": 1,
+  "user_systemd_bus_reachable": false,
+  "verdict": "BLOCKED"
+}
+exit=2

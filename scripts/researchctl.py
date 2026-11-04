@@ -26,12 +26,58 @@ REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
 
 # Explicit path enables direct execution and importlib-based test loading.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_ownership
+import dispatch_guard
 import run_registry
 import process_identity
 
 
 class ResearchError(Exception):
     pass
+
+
+# Start gate. The child is a shim that blocks on an inherited pipe until the parent has recorded
+# the child's identity, then execs the real argv (same pid and start time). If the parent dies
+# or fails before releasing the gate, the pipe closes, the shim reads EOF and exits without ever
+# running the job, so an unrecorded job cannot outlive the worker.
+GATE_SRC = r'''import os, sys
+fd = int(sys.argv[1])
+go = os.read(fd, 1)
+os.close(fd)
+if go != b'1':
+    os._exit(125)
+try:
+    os.execvp(sys.argv[2], sys.argv[2:])
+except OSError as exc:
+    sys.stderr.write(str(exc) + "\n")
+    os._exit(127)
+'''
+
+
+def start_gated(argv, *, cwd, stdout, stderr, recorded):
+    """Spawn argv behind the start gate, call recorded(child), and only then release the job.
+
+    recorded must persist the child's identity. If it raises, the gate is closed without
+    release (the job never runs) and the exception propagates; the caller reaps the child.
+    This helper is used only on execution paths that are currently disabled.
+    """
+    gate_read, gate_write = os.pipe()
+    try:
+        child = subprocess.Popen([sys.executable, "-I", "-c", GATE_SRC, str(gate_read)] + list(argv),
+                                 cwd=cwd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                 shell=False, start_new_session=True, close_fds=True,
+                                 pass_fds=(gate_read,))
+    except BaseException:
+        os.close(gate_write)
+        raise
+    finally:
+        os.close(gate_read)
+    try:
+        recorded(child)
+        os.write(gate_write, b"1")
+    finally:
+        os.close(gate_write)
+    return child
 
 
 def now():
@@ -163,7 +209,7 @@ def cmd_status(args):
             submission = load_json(folder / "submission.json")
             registered = run_registry.inspect(folder)
             state = registered if registered is not None else load_json(folder / "status.json")
-        except (OSError, json.JSONDecodeError, sqlite3.Error):
+        except (OSError, json.JSONDecodeError, sqlite3.Error, run_registry.RegistryError):
             print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
             continue
         if not isinstance(submission, dict) or not isinstance(state, dict):
@@ -173,7 +219,7 @@ def cmd_status(args):
         label = state.get("state", "UNKNOWN")
         if registered is None and (folder / "execution.claim").exists():
             label = "UNKNOWN"
-        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
+        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "FENCED"):
             label = "UNKNOWN"
         print(f"{folder.name}\t{label}\t{submission.get('mode')}")
     return 0
@@ -209,6 +255,10 @@ def cmd_reconcile(args):
 
 
 def require_supported_execution(mode, queue, *, submission=False):
+    try:
+        dispatch_guard.require_disabled()
+    except dispatch_guard.DispatchEnabled:
+        raise ResearchError("Queued execution BLOCKED: production dispatch must remain disabled") from None
     if mode != "diagnostic":
         raise ResearchError("Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented")
     if (submission and queue != "local") or (not submission and queue is not None):
@@ -282,7 +332,8 @@ def cmd_init_run(args):
     return execute(args.project, run_id)
 
 
-def execute(project_id, run_id):
+def execute(project_id, run_id, *, _fault=None):
+    """Run one claimed local diagnostic. _fault is a test-only crash hook; production passes None."""
     if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
         raise ResearchError("SIGCHLD disposition is not default; cannot safely pin and reap child identity")
     _, checkout, runtime = select_project(project_id)
@@ -314,6 +365,7 @@ def execute(project_id, run_id):
         token = run_registry.claim(folder, run_id, project_id, actual, state)
     except run_registry.RegistryError as exc:
         raise ResearchError(str(exc)) from exc
+    run_ownership.fault(_fault, "execute:claimed")
     if submission.get("mode") == "official":
         gate = gate_report(checkout, submission.get("gate_manifest"))
         current_git = git_metadata(checkout)
@@ -359,13 +411,17 @@ def execute(project_id, run_id):
                 if interrupted:
                     code = 128 + interruption_signal
                 else:
-                    child = subprocess.Popen(submission["argv"], cwd=checkout,
-                                             stdin=subprocess.DEVNULL, stdout=stdout,
-                                             stderr=stderr, shell=False, start_new_session=True)
-                    group_owned = True
-                    run_registry.record_child(folder, token, child.pid)
+                    def record_spawned(spawned):
+                        nonlocal child, group_owned
+                        child = spawned
+                        group_owned = True
+                        run_registry.record_child(folder, token, spawned.pid)
+
+                    start_gated(submission["argv"], cwd=checkout, stdout=stdout, stderr=stderr,
+                                recorded=record_spawned)
                     run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
                     atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+                    run_ownership.fault(_fault, "execute:child_running")
                     if interrupted:
                         signal_group(signal.SIGTERM)
                     deadline = None
@@ -390,9 +446,10 @@ def execute(project_id, run_id):
             except BaseException:
                 stop_and_reap()
                 raise
+        run_ownership.fault(_fault, "execute:leader_exited")
         # Process groups cannot establish whether detached descendants survive.
         # Record the leader outcome without asserting whole-workload completion.
-        leader_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
+        leader_state ="INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
         end_state = "UNKNOWN"
         result = {"state": end_state, "leader_state": leader_state,
                   "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
@@ -400,6 +457,7 @@ def execute(project_id, run_id):
                   "stderr_sha256_after_leader_exit": sha_file(folder / "stderr.log"),
                   "log_hash_observed_at": now()}
         run_registry.finish(folder, token, result)
+        run_ownership.fault(_fault, "execute:before_release")
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
