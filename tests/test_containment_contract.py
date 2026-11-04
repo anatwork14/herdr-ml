@@ -6,7 +6,6 @@ reaped by ReapingTestCase.tearDown, which also asserts none remain.
 """
 import ast
 import dataclasses
-import importlib.util
 import json
 import os
 from pathlib import Path

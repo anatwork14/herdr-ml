@@ -102,7 +102,7 @@ ERROR: Invalid submission manifest project or type
 ERROR: Invalid submission command
 ERROR: Invalid submission command
 ok
-test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmphaatkplt/.runtime/demo/runs/test
+test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmp6_r2yzwt/.runtime/demo/runs/test
 ok
 test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
 test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
@@ -110,7 +110,7 @@ test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_
 test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
 test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
 test_status_reports_legacy_claim_and_corrupt_registry_unknown (test_p0_ownership.CancellationTests.test_status_reports_legacy_claim_and_corrupt_registry_unknown) ... ok
-test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp_tharifh/.runtime/demo/runs/test
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmpiial2th1/.runtime/demo/runs/test
 ok
 test_absent_pid_is_only_not_visible (test_process_identity.IdentityTests.test_absent_pid_is_only_not_visible) ... ok
 test_live_current_process_matches (test_process_identity.IdentityTests.test_live_current_process_matches) ... ok
@@ -156,11 +156,11 @@ test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registr
 test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
 test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
 test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
-test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T033814Z-bdd0850448d5 folder=/tmp/tmp_mc83ibg/research/.runtime/demo/runs/20261104T033814Z-bdd0850448d5
-UNKNOWN run=20261104T033814Z-bdd0850448d5 exit=0 logs=/tmp/tmp_mc83ibg/research/.runtime/demo/runs/20261104T033814Z-bdd0850448d5
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T033912Z-56bfe5d25634 folder=/tmp/tmpi42jqtwz/research/.runtime/demo/runs/20261104T033912Z-56bfe5d25634
+UNKNOWN run=20261104T033912Z-56bfe5d25634 exit=0 logs=/tmp/tmpi42jqtwz/research/.runtime/demo/runs/20261104T033912Z-56bfe5d25634
 ok
-test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T033815Z-70108dfc06df folder=/tmp/tmp9jkrfbeh/research/.runtime/demo/runs/20261104T033815Z-70108dfc06df
-UNKNOWN run=20261104T033815Z-70108dfc06df exit=9 logs=/tmp/tmp9jkrfbeh/research/.runtime/demo/runs/20261104T033815Z-70108dfc06df
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T033912Z-716eca8fa34f folder=/tmp/tmpzwku93_8/research/.runtime/demo/runs/20261104T033912Z-716eca8fa34f
+UNKNOWN run=20261104T033912Z-716eca8fa34f exit=9 logs=/tmp/tmpzwku93_8/research/.runtime/demo/runs/20261104T033912Z-716eca8fa34f
 ok
 test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
 test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
@@ -170,22 +170,22 @@ ok
 test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
 ok
 test_reconcile_never_accepts_unrecognized_registry_state (test_researchctl.ResearchCtlTests.test_reconcile_never_accepts_unrecognized_registry_state) ... ok
-test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T033815Z-b7a879a8e0a9 folder=/tmp/tmp0uum15zj/research/.runtime/demo/runs/20261104T033815Z-b7a879a8e0a9
-UNKNOWN run=20261104T033815Z-b7a879a8e0a9 exit=0 logs=/tmp/tmp0uum15zj/research/.runtime/demo/runs/20261104T033815Z-b7a879a8e0a9
+test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T033913Z-3695dbabbb3f folder=/tmp/tmp3a3iju05/research/.runtime/demo/runs/20261104T033913Z-3695dbabbb3f
+UNKNOWN run=20261104T033913Z-3695dbabbb3f exit=0 logs=/tmp/tmp3a3iju05/research/.runtime/demo/runs/20261104T033913Z-3695dbabbb3f
 ok
-test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T033815Z-abc033e71013 folder=/tmp/tmps03skwmp/research/.runtime/demo/runs/20261104T033815Z-abc033e71013
-UNKNOWN run=20261104T033815Z-abc033e71013 exit=0 logs=/tmp/tmps03skwmp/research/.runtime/demo/runs/20261104T033815Z-abc033e71013
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T033913Z-3c2cb4adc8a8 folder=/tmp/tmpjq_6tlhx/research/.runtime/demo/runs/20261104T033913Z-3c2cb4adc8a8
+UNKNOWN run=20261104T033913Z-3c2cb4adc8a8 exit=0 logs=/tmp/tmpjq_6tlhx/research/.runtime/demo/runs/20261104T033913Z-3c2cb4adc8a8
 ok
 test_status_reports_non_object_json_as_unknown_per_run (test_researchctl.ResearchCtlTests.test_status_reports_non_object_json_as_unknown_per_run) ... ok
 test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
-test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T033815Z-bc7960d7176c folder=/tmp/tmpxfnlupmh/research/.runtime/demo/runs/20261104T033815Z-bc7960d7176c
-UNKNOWN run=20261104T033815Z-bc7960d7176c exit=0 logs=/tmp/tmpxfnlupmh/research/.runtime/demo/runs/20261104T033815Z-bc7960d7176c
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T033913Z-14db81ce6574 folder=/tmp/tmpmw44co0_/research/.runtime/demo/runs/20261104T033913Z-14db81ce6574
+UNKNOWN run=20261104T033913Z-14db81ce6574 exit=0 logs=/tmp/tmpmw44co0_/research/.runtime/demo/runs/20261104T033913Z-14db81ce6574
 ERROR: Refusing execution: queued or repeated state=UNKNOWN
 ok
 test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIdentityTests.test_matching_and_changed_interpreter_identity) ... ok
 test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
 
 ----------------------------------------------------------------------
-Ran 163 tests in 12.945s
+Ran 163 tests in 13.112s
 
 OK

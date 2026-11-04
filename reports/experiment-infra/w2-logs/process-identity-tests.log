@@ -8,6 +8,6 @@ test_missing_or_untrusted_metadata_is_unknown (test_process_identity.IdentityTes
 test_pid_reuse_and_boot_change_are_never_a_match (test_process_identity.IdentityTests.test_pid_reuse_and_boot_change_are_never_a_match) ... ok
 
 ----------------------------------------------------------------------
-Ran 6 tests in 0.009s
+Ran 6 tests in 0.008s
 
 OK

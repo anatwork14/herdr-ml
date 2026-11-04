@@ -18,6 +18,6 @@ test_sigterm_ignoring_descendants_escalate_only_to_spawned_members (test_contain
 test_worker_crash_real_leaves_unknown_state (test_containment_sim.RealProcessBoundaryTests.test_worker_crash_real_leaves_unknown_state) ... ok
 
 ----------------------------------------------------------------------
-Ran 16 tests in 1.406s
+Ran 16 tests in 1.401s
 
 OK
