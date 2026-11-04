@@ -1,15 +1,74 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "head_at_phase0": "d3742661073ec126c84bd30c1e6ecc6bbcb94ab4",
-  "gates": {
-    "RUN_OWNERSHIP_READY": {"status": "BLOCKED", "evidence": ["reports/experiment-infra/BASELINE.md", "reports/reviews/2026-11-03-manual-core-continuation.md"]},
-    "CONTAINMENT_READY": {"status": "BLOCKED", "evidence": ["reports/experiment-infra/baseline-raw/containment-probe.json"]},
-    "QUEUE_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]},
-    "PROVENANCE_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]},
-    "APPROVAL_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]},
-    "EXPERIMENT_RECOVERY_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]}
+  "assessed_head": "69ac8ca",
+  "assessed_branch": "feat/exp-integration",
+  "status_vocabulary": {
+    "gate": ["BLOCKED"],
+    "component": ["OFFLINE_TESTED", "ISOLATED_CPU_VERIFIED", "NOT_TESTED", "BLOCKED"]
   },
-  "baseline_tests": {"interpreter": "/mnt/ssd/genos2/.local/bin/python3.12", "version": "3.12.14", "command": "python3 -m unittest discover -s tests -v", "ran": 120, "result": "OK", "exit": 0, "log": "reports/experiment-infra/baseline-raw/py312-unittest.log"},
+  "summary": "All six gates BLOCKED. No live acceptance criterion is met on this host. No Experiment Infrastructure item is PASS; simulated results are not operational status.",
+  "gates": {
+    "RUN_OWNERSHIP_READY": {
+      "status": "BLOCKED",
+      "live_acceptance_met": false,
+      "blocker": "No live acceptance criterion met on this host. Ownership protocol OFFLINE_TESTED only; no registered proof issuer, so production cannot reach a verified terminal state; CANCEL_REQUESTED not durable; researchctl does not call queue functions; in-process forgery out of threat model.",
+      "evidence": ["reports/experiment-infra/RUN_OWNERSHIP.md"]
+    },
+    "CONTAINMENT_READY": {
+      "status": "BLOCKED",
+      "live_acceptance_met": false,
+      "blocker": "No live acceptance criterion met on this host. No delegated cgroup v2 boundary, no cgroup.kill, no user systemd bus; production backend UNAVAILABLE; empty production trust-anchor set; cgroup escape not verified; no production worker containment gate in scripts/.",
+      "evidence": ["reports/experiment-infra/CONTAINMENT.md", "reports/experiment-infra/baseline-raw/containment-probe.json", "reports/experiment-infra/containment/OPERATOR_REQUIREMENTS.md"]
+    },
+    "QUEUE_READY": {
+      "status": "BLOCKED",
+      "live_acceptance_met": false,
+      "blocker": "No live acceptance criterion met on this host. Identity binding and private-daemon behaviour ISOLATED_CPU_VERIFIED only; PRODUCTION_DISPATCH_ENABLED is False; researchctl queued path refused; queue identity is a cert hash, not peer authentication; no AMBIGUOUS resolution path; legacy ENQUEUE_REFUSED rows from e90e3b1 need fencing before release.",
+      "evidence": ["reports/experiment-infra/QUEUE.md", "reports/experiment-infra/INTEGRATION.md"]
+    },
+    "PROVENANCE_READY": {
+      "status": "BLOCKED",
+      "live_acceptance_met": false,
+      "blocker": "No live acceptance criterion met on this host. Manifest and worker-side verifier OFFLINE_TESTED only and not connected to researchctl; checks are point-in-time.",
+      "evidence": ["reports/experiment-infra/PROVENANCE.md"]
+    },
+    "APPROVAL_READY": {
+      "status": "BLOCKED",
+      "live_acceptance_met": false,
+      "blocker": "No live acceptance criterion met on this host. No external trust anchor; production load fails closed with TRUST_ANCHOR_UNPROVISIONED; verifier OFFLINE_TESTED with TEST-ONLY anchors only; not called by researchctl.",
+      "evidence": ["reports/experiment-infra/APPROVAL.md", "reports/experiment-infra/E2E_OFFLINE.md"]
+    },
+    "EXPERIMENT_RECOVERY_READY": {
+      "status": "BLOCKED",
+      "live_acceptance_met": false,
+      "blocker": "No live acceptance criterion met on this host. No live containment, so release is always refused (CONTAINMENT_UNAVAILABLE); termination by recorded identity only, no cgroup or cgroup.kill.",
+      "evidence": ["reports/experiment-infra/RECOVERY.md", "reports/experiment-infra/E2E_OFFLINE.md"]
+    }
+  },
+  "phases": {
+    "P1": {"source": "feat/exp-w1-ownership@ef673ac", "components": {"ownership_fencing_crash_protocol": "OFFLINE_TESTED", "live_queue_containment_cross_host": "BLOCKED"}},
+    "P2": {"source": "feat/exp-w2-containment@ac9e2a5", "components": {"P2.1_containment_contract": "OFFLINE_TESTED", "P2.3_simulator_backend": "OFFLINE_TESTED", "containment_on_host": "BLOCKED"}},
+    "P3": {"source": "feat/exp-w3-queue@8c306d9", "merge_commit": "aaef2e2", "repairs": ["e90e3b1", "6215ef0"], "components": {"offline_adapter_matrix": "OFFLINE_TESTED", "identity_binding": "ISOLATED_CPU_VERIFIED", "private_daemon_behaviour": "ISOLATED_CPU_VERIFIED", "production_dispatch": "BLOCKED"}},
+    "P4": {"source": "feat/exp-w4-provenance@f3414a2", "components": {"execution_manifest_and_verifier": "OFFLINE_TESTED", "approval_verifier_test_only_anchor": "OFFLINE_TESTED", "approval_production_trust_anchor": "BLOCKED"}},
+    "P5": {"source": "feat/exp-phase5-recovery a362089..8552182, carried by a43502a", "merge_commit": "e3f7ae9", "components": {"recovery_logic": "OFFLINE_TESTED", "cpu_termination_of_recorded_descendants": "ISOLATED_CPU_VERIFIED", "crash_injection_6x3": "ISOLATED_CPU_VERIFIED", "cgroup_containment_escape_detection": "BLOCKED"}},
+    "P6": {"source": "feat/exp-phase6-e2e@a43502a", "merge_commit": "69ac8ca", "components": {"e2e_offline_chain": "OFFLINE_TESTED", "production_predicate_refusal_harness_worker": "OFFLINE_TESTED", "crash_injection_9x3": "ISOLATED_CPU_VERIFIED", "process_accounting": "ISOLATED_CPU_VERIFIED", "production_fail_closed_real_worker_path": "NOT_TESTED", "live_containment_anchor_dispatch": "BLOCKED"}},
+    "P7": {"review_fix_loop": "complete for each milestone; each reviewed milestone closed; LOW residuals listed in TASK_LEDGER.md"}
+  },
+  "tests": {
+    "integration": {"head": "69ac8ca", "interpreter": "/mnt/ssd/genos2/.local/bin/python3.12", "version": "3.12.14", "command": "python3.12 -m unittest discover -s tests", "ran": 455, "result": "OK", "exit": 0},
+    "baseline_phase0": {"head": "d374266", "ran": 120, "result": "OK", "exit": 0, "log": "reports/experiment-infra/baseline-raw/py312-unittest.log"}
+  },
   "python_3_10": "NOT_TESTED",
-  "python_3_11": "NOT_TESTED"
+  "python_3_11": "NOT_TESTED",
+  "known_residuals": [
+    "In-process forgery paths (proof issuer, verifier key, module globals) are out of the threat model",
+    "Queue identity is a certificate hash, not peer authentication",
+    "A non-zero enqueue exit is treated as ambiguous (AMBIGUOUS, no retry)",
+    "Legacy ENQUEUE_REFUSED rows from intermediate commit e90e3b1 need fencing by queue_recover before release",
+    "No cgroup.kill; cgroup escape not verified",
+    "No external trust anchor",
+    "No production Pueue dispatch",
+    "The production worker containment gate does not exist yet in scripts/"
+  ]
 }
