@@ -47,6 +47,7 @@ CRASH_POINTS = frozenset({
     'claim:after_commit',
     'advance:before_commit',
     'finish:before_commit',
+    'schema:after_run_table',
     'execute:claimed',
     'execute:child_running',
     'execute:leader_exited',

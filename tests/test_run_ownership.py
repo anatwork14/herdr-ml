@@ -1048,5 +1048,68 @@ class ReviewRevisionTests(OwnershipBase):
         self.assertFalse((folder / 'execution.claim').exists())
 
 
+class StoreIntegrityTests(OwnershipBase):
+    """Review R1 and R2: store errors are RegistryError, and schema creation is atomic."""
+
+    def table_names(self, folder):
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            return sorted(row[0] for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"))
+        finally:
+            db.close()
+
+    def test_corrupt_later_pages_make_mutators_registry_errors_and_leave_bytes(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        path = folder / 'registry.sqlite3'
+        data = bytearray(path.read_bytes())
+        page = int.from_bytes(data[16:18], 'big')
+        page = 65536 if page == 1 else page
+        self.assertGreater(len(data), 2 * page, 'store needs pages beyond page 1 for this test')
+        data[page:] = b'\xff' * (len(data) - page)
+        path.write_bytes(bytes(data))
+        before = path.read_bytes()
+        calls = [('advance', lambda: registry.advance(folder, token, 'DISPATCHING', 'RUNNING')),
+                 ('finish', lambda: registry.finish(folder, token, {'state': 'UNKNOWN'})),
+                 ('record_child', lambda: registry.record_child(folder, token, os.getpid())),
+                 ('verified_finish', lambda: registry.verified_finish(folder, token, None, {'state': 'COMPLETED'})),
+                 ('supersede', lambda: registry.supersede(folder, token, None))]
+        for name, call in calls:
+            with self.subTest(call=name), self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
+                call()
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_interrupted_schema_creation_commits_nothing_and_next_open_recreates_it(self):
+        folder = self.run_folder()
+        with self.assertRaises(SimulatedCrash):
+            registry._connect(folder, _fault=self.crash_at('schema:after_run_table'))
+        self.assertEqual(self.table_names(folder), [])
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        self.assertEqual(registry.inspect(folder)['state'], 'CLAIMED')
+        self.assertEqual(self.table_names(folder), ['child_identity', 'events', 'process_namespaces', 'run'])
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        registry.record_child(folder, token, os.getpid())
+
+    def test_incomplete_schema_is_refused_as_registry_unreadable(self):
+        folder = self.run_folder()
+        token = registry.claim(folder, 'run-1', 'project-a', DIGEST, 'SUBMITTED')
+        registry.advance(folder, token, 'CLAIMED', 'DISPATCHING')
+        db = sqlite3.connect(str(folder / 'registry.sqlite3'))
+        try:
+            db.execute('DROP TABLE child_identity')
+            db.commit()
+        finally:
+            db.close()
+        path = folder / 'registry.sqlite3'
+        before = path.read_bytes()
+        with self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
+            registry.record_child(folder, token, os.getpid())
+        with self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
+            registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+        self.assertEqual(path.read_bytes(), before)
+
+
 if __name__ == '__main__':
     unittest.main()

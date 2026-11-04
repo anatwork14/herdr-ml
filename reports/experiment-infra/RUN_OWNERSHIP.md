@@ -110,6 +110,7 @@ Hooks are passed explicitly by tests (`_fault=`). They are not environment varia
 | During resource release | `execute:before_release` | `test_crash_during_resource_release_records_unknown_not_completed` | UNKNOWN with leader outcome only; no `result.json`; no rerun |
 | Interrupted commit, advance | `advance:before_commit` | `test_interrupted_commit_leaves_prior_consistent_state` (in-process) | Prior state (DISPATCHING) kept |
 | Interrupted commit, finish | `finish:before_commit` | `test_interrupted_finish_commit_keeps_running_and_writes_no_result` (in-process) | RUNNING kept; no result written |
+| Interrupted schema creation, new store | `schema:after_run_table` | `test_interrupted_schema_creation_commits_nothing_and_next_open_recreates_it` | No schema committed; the next open recreates it |
 
 Test names are in `tests/test_run_ownership_faults.py` and `tests/test_run_ownership.py`.
 The in-process claim-failure branch (queued claim, exception raised at `claim:before_commit`, queue row fenced AMBIGUOUS with origin CLAIMED) is tested by `test_claim_failure_after_queue_verification_fences_the_queue_row_in_process`.
@@ -120,7 +121,9 @@ The in-process claim-failure branch (queued claim, exception raised at `claim:be
 - Tampered identity hash: `LEGACY_FENCED`. Test: `test_identity_columns_with_tampered_hash_are_legacy_fenced`.
 - Mixed legacy and new records: each classified independently. Test: `test_mixed_legacy_and_new_records_are_each_classified_correctly`.
 - Legacy queue index (no `claimant` column): open is refused. The index is not migrated automatically. Test: `test_legacy_queue_index_schema_fails_closed`.
-- Corrupt run or queue file: refused, and the bytes are unchanged. Tests: `test_corrupt_registry_fails_closed_and_is_not_reset`, `test_corrupt_queue_index_fails_closed_without_reset`.
+- Corrupt run or queue file: refused, and the bytes are unchanged.
+- Later-page corruption behind an intact page 1: each mutator raises RegistryError REGISTRY_UNREADABLE and leaves the bytes unchanged. Test: `test_corrupt_later_pages_make_mutators_registry_errors_and_leave_bytes`.
+- Incomplete run schema (a required table missing): refused with REGISTRY_UNREADABLE and not repaired. Test: `test_incomplete_schema_is_refused_as_registry_unreadable`. Tests: `test_corrupt_registry_fails_closed_and_is_not_reset`, `test_corrupt_queue_index_fails_closed_without_reset`.
 - Run-local inspection (`inspect`) opens the registry read-only, so it never creates tables or migrates. Queue inspection (`inspect_queue`) uses the write-capable open path and may create the owner-only store.
 
 ## 8. Known deviations and open items (for reviewer decision)

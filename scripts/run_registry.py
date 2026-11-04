@@ -50,13 +50,33 @@ INSPECT_FIELDS = ('run_id', 'project', 'manifest_sha256', 'state', 'owner_pid', 
                   'worker_id', 'identity_version', 'identity_sha256')
 
 
-def _connect(folder, create=True):
+REQUIRED_TABLES = ('run', 'child_identity', 'process_namespaces', 'events')
+
+
+def _schema_tables(db):
+    return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+
+
+def _unreadable(detail='could not be read or written'):
+    return RegistryError('REGISTRY_UNREADABLE: registry.sqlite3 %s; not reset' % detail)
+
+
+def _close_quietly(db):
+    if db is not None:
+        try:
+            db.close()
+        except sqlite3.Error:
+            pass
+
+
+def _connect(folder, create=True, *, _fault=None):
     """Open the run-local registry for writing. Mutators pass create=False and never create a file.
 
-    DDL runs only when the run table is absent, which is a new store. An existing
-    file, legacy or not, gets no DDL, so a refused mutator leaves its schema
-    unchanged. A sqlite3 error while opening or reading the store becomes a
-    RegistryError with code REGISTRY_UNREADABLE, and the file is left untouched.
+    A new store gets its schema in one BEGIN IMMEDIATE transaction, so an interrupted
+    creation commits nothing. An existing file gets no DDL, so a refused mutator leaves
+    its schema unchanged. An incomplete schema is refused, not repaired. Any sqlite3
+    error while opening or reading the store becomes RegistryError REGISTRY_UNREADABLE,
+    and the file is left as it was.
     """
     path = Path(folder) / 'registry.sqlite3'
     if not create and not path.is_file():
@@ -66,28 +86,36 @@ def _connect(folder, create=True):
         db = sqlite3.connect(str(path), timeout=30, isolation_level=None)
         db.execute('PRAGMA busy_timeout=30000')
         db.execute('PRAGMA synchronous=FULL')
-        present = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='run'").fetchone()
-        if not present:
+        if 'run' not in _schema_tables(db):
             if not create:
                 raise RegistryError('No run record in registry; refusing to create one on a mutation')
-            db.execute(RUN_TABLE)
-            db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
+            db.execute('BEGIN IMMEDIATE')
+            try:
+                if 'run' not in _schema_tables(db):  # re-check under the write lock
+                    db.execute(RUN_TABLE)
+                    run_ownership.fault(_fault, 'schema:after_run_table')
+                    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
         id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
         boot TEXT, start_ticks TEXT)''')
-            db.execute('''CREATE TABLE IF NOT EXISTS process_namespaces (
+                    db.execute('''CREATE TABLE IF NOT EXISTS process_namespaces (
         role TEXT PRIMARY KEY CHECK (role IN ('owner','child')),
         pid_namespace TEXT, mount_namespace TEXT)''')
-            db.execute('''CREATE TABLE IF NOT EXISTS events (
+                    db.execute('''CREATE TABLE IF NOT EXISTS events (
         seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         owner TEXT, state TEXT NOT NULL, detail TEXT)''')
-    except RegistryError:
-        if db is not None:
-            db.close()
-        raise
+                db.execute('COMMIT')
+            except BaseException:
+                _rollback(db)
+                raise
+        missing = [name for name in REQUIRED_TABLES if name not in _schema_tables(db)]
+        if missing:
+            raise _unreadable('has an incomplete schema (missing %s)' % ', '.join(missing))
     except sqlite3.Error as exc:
-        if db is not None:
-            db.close()
-        raise RegistryError('REGISTRY_UNREADABLE: registry.sqlite3 is not a valid run store; not reset') from exc
+        _close_quietly(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _close_quietly(db)
+        raise
     return db
 
 
@@ -137,6 +165,13 @@ def _namespaces(pid):
 def _rollback(db):
     if db.in_transaction:
         db.execute('ROLLBACK')
+
+
+def _safe_rollback(db):
+    try:
+        _rollback(db)
+    except sqlite3.Error:
+        pass
 
 
 def _decode_owner(token):
@@ -673,6 +708,9 @@ def record_child(folder, token, pid):
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
                    (token, 'CHILD_IDENTIFIED', json.dumps({'pid': pid, 'boot': boot, 'start_ticks': start})))
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -698,6 +736,9 @@ def advance(folder, token, expected, target, *, _fault=None):
         db.execute('INSERT INTO events(owner,state) VALUES (?,?)', (token, target))
         run_ownership.fault(_fault, 'advance:before_commit')
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -723,6 +764,9 @@ def finish(folder, token, result, *, _fault=None):
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, 'UNKNOWN', data))
         run_ownership.fault(_fault, 'finish:before_commit')
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -751,6 +795,9 @@ def verified_finish(folder, token, proof, result):
             raise RegistryError('Stale owner or illegal terminal state')
         db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, result['state'], data))
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -786,6 +833,9 @@ def supersede(folder, token, proof):
                    (new_token, 'FENCED', json.dumps({'previous_fence': fence, 'fence': new_fence},
                                                     sort_keys=True)))
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
