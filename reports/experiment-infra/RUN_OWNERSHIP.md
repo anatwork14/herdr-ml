@@ -1,6 +1,6 @@
 # RUN_OWNERSHIP: execution identity, fencing and cross-database recovery
 
-Phase 1 (P1.2), worker W1. Gate status: **OFFLINE_TESTED** for the offline protocol tests in this document only. Live queue integration, live containment and cross-host operation remain **BLOCKED**. Nothing here authorizes official execution, queue dispatch or GPU work.
+Phase 1 (P1.2), worker W1. Gate status: **OFFLINE_TESTED is withheld in this revision.** The ownership tests pass, but 9 P0 registry tests in `tests/test_registry_p0.py` fail under the M2 and L1 rules, and that conflict needs a coordinator decision (section 8, item 1). Live queue integration, live containment and cross-host operation remain **BLOCKED**. Nothing here authorizes official execution, queue dispatch or GPU work.
 
 Implementation: `scripts/run_ownership.py` (vocabulary and proof shapes), `scripts/run_registry.py` (SQLite transactions), `scripts/researchctl.py` (test-only hook at named boundaries). Tests: `tests/test_run_ownership.py`, `tests/test_run_ownership_faults.py`.
 
@@ -13,7 +13,7 @@ Implementation: `scripts/run_ownership.py` (vocabulary and proof shapes), `scrip
 | `status.json`, `result.json`, logs | Projections | Never consulted for ownership decisions. |
 | Process identity (PID, boot, start ticks) | Observation only | A match is not containment proof or authority. A mismatch or absent PID is never treated as termination or permission to reclaim. |
 
-A successful leader exit is not completion. Whole-workload termination is a **required proof input** supplied by the containment layer. No issuer is registered (`containment_backend._VERIFIED_ISSUERS` is empty), so production code cannot reach `COMPLETED`, `FAILED`, `INTERRUPTED` or `FENCED` today.
+A successful leader exit is not completion. Whole-workload termination is a **required proof input**: a `VerifiedProof` of kind `WHOLE_WORKLOAD_TERMINATED`, minted only by `issue_proof()` after the verifier registered for its issuer accepts raw evidence. `_VERIFIED_ISSUERS` in `scripts/run_ownership.py` is empty, so no production path can obtain a proof, and production code cannot reach `COMPLETED`, `FAILED`, `INTERRUPTED` or `FENCED` today. Plain dicts, hand-built objects, unregistered issuers and verifiers that return anything other than `True` are refused. This is an in-process guard against accidental or naive forgery. It is not a security boundary against code running in the same process, and this document does not claim more than that.
 
 ## 2. Execution identity
 
@@ -32,7 +32,7 @@ Canonical record (`ExecutionIdentity`, `version: 2`), serialized with sorted key
 
 Token: `v2.<attempt_id>.<fence>`. Every mutating call decodes it first. A malformed token raises `Stale owner or malformed fencing token`.
 
-Stale-token rule: `advance`, `record_child`, `finish`, `verified_finish` and `supersede` each run in one `BEGIN IMMEDIATE` transaction with `WHERE owner = token AND attempt_id = ? AND fence = ? AND state = ?`. A replayed or superseded token matches zero rows and is refused.
+Stale-token rule: `record_child`, `advance`, `finish`, `verified_finish` and `supersede` each run in one `BEGIN IMMEDIATE` transaction. The transaction reads the single `run` row, requires owner, attempt and fence to equal the token, and requires `classify_row == CURRENT` (the identity hash recomputes). Only then does it compare-and-set the state. A replayed, superseded, forged or tampered token matches no current row and is refused. Mutators never create `registry.sqlite3` or `execution.claim`: a refusal on an empty folder leaves no file.
 
 Queue calls are keyed by intent token, run folder and phase (`INTENT`, `BOUND`, `CLAIMED`). Before a claim exists there is no fence, so these calls cannot use one.
 
@@ -47,14 +47,14 @@ Project scope:
 |---|---|---|---|---|
 | (none, PREPARED) | CLAIMED | Worker process | `SUBMITTED` status; `execution.claim` marker created (`mkdir`); no run row. For queued runs also: queue row `CLAIMED` with identical identity fields and the same claimant process. | `events`: `CLAIMED` with attempt, fence and identity hash |
 | CLAIMED | DISPATCHING | Owner token | Token, attempt, fence and state match | `events` |
-| DISPATCHING | RUNNING | Owner token | Same, plus child identity recorded | `events`, `child_identity` |
+| DISPATCHING | RUNNING | Owner token | Same, plus a recorded child identity. **RUNNING without a recorded child is refused** (enforced in `advance`). | `events`, `child_identity` |
 | DISPATCHING or RUNNING | UNKNOWN | Owner token | Leader outcome observed. Whole-workload termination **not** verified. This is the ambiguous or unknown outcome. | `events`, `result_json` |
-| DISPATCHING or RUNNING | COMPLETED / FAILED / INTERRUPTED | Owner token plus containment | Proof `WHOLE_WORKLOAD_TERMINATED` bound to run, attempt and fence. Absent in this phase. | `events`, `result_json` |
-| CLAIMED, DISPATCHING, RUNNING or UNKNOWN | FENCED | Owner store plus containment | Proof as above. Fence increments and the owner token changes. A stale holder can no longer act. No new claim is possible for this `run_id`. | `events` with previous and new fence |
+| DISPATCHING or RUNNING | COMPLETED / FAILED / INTERRUPTED | Owner token plus containment | `VerifiedProof` `WHOLE_WORKLOAD_TERMINATED` bound to run, attempt and fence (section 1). No verifier is registered, so unreachable in this phase. UNKNOWN never reaches COMPLETED. | `events`, `result_json` |
+| CLAIMED, DISPATCHING, RUNNING or UNKNOWN | FENCED | Owner store plus containment | Proof as above. Fence increments and the owner token changes to `v2.<attempt>.<fence+1>`. FENCED is terminal for every mutator: that derivable successor token is inert and is tested as such. A stale holder can no longer act. No new claim is possible for this `run_id`. | `events` with previous and new fence |
 | CLAIMED, DISPATCHING, RUNNING | CANCEL_REQUESTED | Owner | **Specified, not durable in this phase.** The signal handler sets an in-memory flag only. | none yet |
 | any unfinished | RELEASED | Containment | **Specified, not implemented.** Resource release is not verified. | none yet |
 
-Legacy rows (no v2 identity, or a hash that does not recompute) load as `UNKNOWN` with `legacy_state` preserved and `identity = LEGACY_FENCED`. They are never claimable. A `claim` against an existing row is always refused.
+Legacy rows (no v2 identity, or a hash that does not recompute) are history only. They load as `UNKNOWN` with `legacy_state` preserved and `identity = LEGACY_FENCED`. Every mutator refuses them with `RegistryError`, never a raw `sqlite3` error, and `claim` against an existing row is always refused. No legacy row reaches `COMPLETED`, including one with injected owner, attempt and fence values.
 
 ## 4. Queue index state machine
 
@@ -69,7 +69,7 @@ Legacy rows (no v2 identity, or a hash that does not recompute) load as `UNKNOWN
 | AMBIGUOUS (origin INTENT) | RETRYABLE | Reconciler | `QUEUE_LOOKUP_NO_TASK` evidence bound to intent token and queue instance. `RETRYABLE` never reopens the same `run_id`; a new run identity is required. | `queue_events` with evidence |
 | AMBIGUOUS (origin CLAIMED) | none in this phase | Containment | Requires containment-verified termination of the local attempt. Queue evidence is refused. | n/a |
 
-Evidence is shape-checked only. The queue lookup that would produce it is not implemented.
+Lookup evidence must be a `VerifiedProof` (section 1). No production verifier is registered and the lookup that would produce evidence is not implemented. `QUEUE_LOOKUP_TASK` takes its task ID only from the verified proof, and a plain dict carrying a task ID is refused.
 
 ## 5. Cross-database protocol (queued runs)
 
@@ -112,6 +112,7 @@ Hooks are passed explicitly by tests (`_fault=`). They are not environment varia
 | Interrupted commit, finish | `finish:before_commit` | `test_interrupted_finish_commit_keeps_running_and_writes_no_result` (in-process) | RUNNING kept; no result written |
 
 Test names are in `tests/test_run_ownership_faults.py` and `tests/test_run_ownership.py`.
+The in-process claim-failure branch (queued claim, exception raised at `claim:before_commit`, queue row fenced AMBIGUOUS with origin CLAIMED) is tested by `test_claim_failure_after_queue_verification_fences_the_queue_row_in_process`.
 
 ## 7. Legacy, mixed and corrupt stores
 
@@ -124,7 +125,7 @@ Test names are in `tests/test_run_ownership_faults.py` and `tests/test_run_owner
 
 ## 8. Known deviations and open items (for reviewer decision)
 
-1. **Local project argument is not compared to the queue scope.** The P0 queue tests (`tests/test_queue_protocol.py`) claim a run in folder `project-a` with `project='project'`, so the local claim records its argument verbatim. Queue scope is the folder project. Reviewer should decide whether to change the P0 test expectation or require agreement.
+1. **Closed in this revision (M2).** A local claim must match the run folder project on both the SUBMITTED and queued paths. A mismatch is refused before any marker or registry file is created. P0 input change: `tests/test_queue_protocol.py` claim calls use `project='project-a'` (4 calls, lines 127, 169, 172, 175; assertions unchanged). `tests/test_registry_p0.py` was **not** changed in this revision. Its fixtures need a standard run-folder layout and a recorded child before RUNNING, and those changes go beyond the authorised input change. As a result 9 P0 registry tests currently fail, pending a coordinator decision.
 2. `CANCEL_REQUESTED` is not durable. The signal handler sets an in-memory flag only.
 3. `RELEASED` and resource-release verification are not implemented.
 4. `researchctl` still refuses queued execution (guard unchanged). `queue_*` functions are not called by `researchctl`.
@@ -148,4 +149,4 @@ Logs: `reports/experiment-infra/w1-logs/`. Each file records the exact command a
 - `ownership-unit.log`: `tests/test_run_ownership.py`.
 - `ownership-faults.log`: `tests/test_run_ownership_faults.py`.
 
-Gate: RUN_OWNERSHIP = OFFLINE_TESTED. Live integration remains BLOCKED. The gate matrix files were not edited in this phase.
+Concurrency tests: the local claim race uses 10 threads, the queued claim race uses 8 threads, and the P0 cross-process race uses 20 processes. Gate: OFFLINE_TESTED is withheld in this revision (9 failing P0 registry tests, pending a coordinator decision on `tests/test_registry_p0.py`). Live integration remains BLOCKED. The gate matrix files were not edited in this phase.
