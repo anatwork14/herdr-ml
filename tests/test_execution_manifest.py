@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
@@ -386,6 +387,100 @@ class WorkerIdentityAndOutputTests(ManifestFixture):
                                               containment=evidence)
         self.assertEqual(record['status'], 'COMPLETED')
         self.assertEqual(record['containment']['status'], 'VERIFIED')
+
+
+class ReviewRegressionTests(ManifestFixture):
+    """Regression tests for independent review findings H3, L1, L3 and the gap list."""
+
+    def test_repo_local_clean_filter_is_refused_and_never_runs(self):
+        marker = self.temp / 'filter-ran.marker'
+        repo = self.temp / 'filter-repo'
+        repo.mkdir()
+        (repo / 'a.txt').write_text('one\n')
+        git(repo, 'init', '-q')
+        git(repo, 'add', '-A')
+        git(repo, 'commit', '-q', '-m', 'base')
+        (repo / '.gitattributes').write_text('*.txt filter=marker\n')
+        git(repo, 'add', '.gitattributes')
+        git(repo, 'commit', '-q', '-m', 'attributes')
+        git(repo, 'config', 'filter.marker.clean', 'touch %s && cat' % marker)
+        (repo / 'a.txt').write_text('two\n')  # modified tracked file
+        spec = dict(self.spec, source_root=str(repo), source_files=['a.txt'])
+        self.assertCode(em.SOURCE_UNVERIFIABLE, em.build_manifest, **spec)
+        self.assertFalse(marker.exists(), 'clean filter must not run')
+
+    def test_repo_local_diff_driver_is_refused(self):
+        repo = self.temp / 'diff-repo'
+        repo.mkdir()
+        (repo / 'a.txt').write_text('one\n')
+        git(repo, 'init', '-q')
+        git(repo, 'add', '-A')
+        git(repo, 'commit', '-q', '-m', 'base')
+        git(repo, 'config', 'diff.evil.textconv', 'false')
+        spec = dict(self.spec, source_root=str(repo), source_files=['a.txt'])
+        self.assertCode(em.SOURCE_UNVERIFIABLE, em.build_manifest, **spec)
+
+    def test_ignored_file_makes_checkout_dirty(self):
+        (self.source / '.gitignore').write_text('cache.bin\n')
+        git(self.source, 'add', '.gitignore')
+        git(self.source, 'commit', '-q', '-m', 'ignore cache')
+        (self.source / 'cache.bin').write_bytes(b'not part of the declared files')
+        self.assertCode(em.SOURCE_DIRTY, self.build)
+
+    def test_input_changed_during_read_is_detected(self):
+        path = self.data / 'growing.bin'
+        path.write_bytes(b'abc')
+        real_read = os.read
+        calls = {'n': 0}
+
+        def growing_read(fd, count):
+            data = real_read(fd, count)
+            if calls['n'] == 0:
+                with open(path, 'ab') as handle:
+                    handle.write(b'def')
+            calls['n'] += 1
+            return data
+
+        with mock.patch.object(em.os, 'read', growing_read):
+            with self.assertRaises(em.VerificationError) as ctx:
+                em._consume(str(path), missing=em.INPUT_MISSING, unsafe=em.INPUT_UNSAFE_PATH)
+        self.assertEqual(ctx.exception.code, em.INPUT_CHANGED_DURING_READ)
+
+    def test_symlink_in_parent_directory_of_source_is_rejected(self):
+        real_dir = self.temp / 'real-lib'
+        real_dir.mkdir()
+        (real_dir / 'model.py').write_text('MODEL = 2\n')
+        os.symlink(real_dir, self.source / 'link-lib')
+        self.assertCode(em.SOURCE_UNVERIFIABLE, em._source_file, str(self.source), 'link-lib/model.py')
+
+    def test_symlink_in_parent_directory_of_input_is_rejected(self):
+        os.symlink(self.data, self.temp / 'link-data')
+        spec = dict(self.spec, inputs=dict(self.spec['inputs'],
+                                            dataset_content=str(self.temp / 'link-data' / 'dataset.bin')))
+        self.assertCode(em.INPUT_UNSAFE_PATH, em.build_manifest, **spec)
+
+    def test_surrogate_code_points_cannot_alias_real_characters(self):
+        self.assertEqual(em.canonical_bytes({'x': '\U0001F600'}), b'{"x":"\\ud83d\\ude00"}')
+        self.assertCode(em.MANIFEST_SCHEMA, em.canonical_bytes, {'x': '\ud83d\ude00'})
+        manifest, data = self.build()
+        manifest['inputs'][0]['path'] = manifest['inputs'][0]['path'] + '\ud83d'
+        self.assertCode(em.MANIFEST_SCHEMA, em.encode_manifest, manifest)
+        self.assertCode(em.MANIFEST_SCHEMA, em.parse_manifest, data.replace(b'"cwd":"."', b'"cwd":"\\ud83d"'))
+
+    def test_pre_existing_sealed_file_survives_a_failed_seal(self):
+        _, data = self.build()
+        seal = self.seal_dir()
+        precious = Path(seal) / 'config.sealed'
+        precious.write_bytes(b'precious')
+        self.assertCode(em.INPUT_UNSAFE_PATH, self.verify, data, seal=seal)
+        self.assertEqual(precious.read_bytes(), b'precious')
+
+    def test_failed_seal_removes_only_files_it_created(self):
+        _, data = self.build()
+        self.dataset.write_bytes(b'dataset-bytes-v2')
+        seal = self.seal_dir()
+        self.assertCode(em.DATASET_DIGEST_MISMATCH, self.verify, data, seal=seal)
+        self.assertEqual(sorted(os.listdir(seal)), [])
 
 
 if __name__ == '__main__':

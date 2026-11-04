@@ -20,6 +20,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 
 SCHEMA_VERSION = 1
 KIND = 'herdr-ml-execution-manifest'
@@ -86,10 +87,19 @@ class VerificationError(Exception):
 
 # ---------------------------------------------------------------- canonical JSON
 
+def _has_surrogate(value):
+    return any(0xD800 <= ord(ch) <= 0xDFFF for ch in value)
+
+
 def _check_plain(value, depth=0):
     if depth > 32:
         raise VerificationError(MANIFEST_SCHEMA, 'nesting too deep')
-    if value is None or isinstance(value, (bool, str)):
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        # Lone surrogates would serialize to the same ASCII as a real code point.
+        if _has_surrogate(value):
+            raise VerificationError(MANIFEST_SCHEMA, 'surrogate code point')
         return
     if type(value) is int:
         if abs(value) > MAX_INT:
@@ -101,8 +111,8 @@ def _check_plain(value, depth=0):
         return
     if isinstance(value, dict):
         for key, item in value.items():
-            if type(key) is not str:
-                raise VerificationError(MANIFEST_SCHEMA, 'non-string key')
+            if type(key) is not str or _has_surrogate(key):
+                raise VerificationError(MANIFEST_SCHEMA, 'invalid key')
             _check_plain(item, depth + 1)
         return
     raise VerificationError(MANIFEST_SCHEMA, 'non-canonical type ' + type(value).__name__)
@@ -140,20 +150,26 @@ def _reject_float(_text):
     raise VerificationError(MANIFEST_MALFORMED, 'floats are not allowed')
 
 
-def parse_canonical(data, limit, malformed, noncanonical, too_large):
-    """Parse bytes strictly and require that they are exactly the canonical form."""
+def parse_canonical(data, limit, malformed, noncanonical, too_large, schema=None):
+    """Parse bytes strictly and require that they are exactly the canonical form.
+
+    Errors from canonicalization (for example an out-of-range integer) map to
+    `schema`; JSON syntax errors map to `malformed`.
+    """
     if not isinstance(data, (bytes, bytearray)) or len(data) > limit:
         raise VerificationError(too_large, 'size limit')
     data = bytes(data)
+    schema = schema or malformed
     try:
-        text = data.decode('utf-8', 'strict')
-        value = json.loads(text, object_pairs_hook=_strict_pairs,
+        value = json.loads(data.decode('utf-8', 'strict'), object_pairs_hook=_strict_pairs,
                            parse_constant=_reject_constant, parse_float=_reject_float)
+        canonical = canonical_bytes(value)
     except VerificationError as exc:
-        raise VerificationError(malformed, exc.detail) from exc
-    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        code = schema if exc.code == MANIFEST_SCHEMA else malformed
+        raise VerificationError(code, exc.detail) from exc
+    except (UnicodeDecodeError, ValueError, TypeError, RecursionError) as exc:
         raise VerificationError(malformed, 'invalid JSON') from exc
-    if canonical_bytes(value) != data:
+    if canonical != data:
         raise VerificationError(noncanonical, 'bytes differ from canonical serialization')
     return value
 
@@ -178,11 +194,13 @@ def _write_all(fd, data):
         view = view[written:]
 
 
-def _consume(path, *, missing, unsafe, dest=None, follow=False):
+def _consume(path, *, missing, unsafe, dest=None, follow=False, created=None):
     """Read the file exactly once, hashing the bytes and optionally copying them.
 
     The digest covers the same bytes that are written to dest, so a sealed copy
-    cannot differ from what was hashed.
+    cannot differ from what was hashed. dest is removed on failure only if this
+    call created it (O_EXCL); a pre-existing file is never touched. If created
+    is a list, dest is appended to it when this call creates dest.
     """
     try:
         fd = _open_regular(path, follow=follow)
@@ -191,6 +209,8 @@ def _consume(path, *, missing, unsafe, dest=None, follow=False):
     except OSError as exc:
         raise VerificationError(unsafe, 'cannot open safely') from exc
     out = None
+    made = False
+    ok = False
     try:
         before = os.fstat(fd)
         if not stat.S_ISREG(before.st_mode):
@@ -198,6 +218,9 @@ def _consume(path, *, missing, unsafe, dest=None, follow=False):
         if dest is not None:
             out = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
                           | getattr(os, 'O_CLOEXEC', 0), 0o600)
+            made = True
+            if created is not None:
+                created.append(dest)
         digest = hashlib.sha256()
         size = 0
         while True:
@@ -212,6 +235,7 @@ def _consume(path, *, missing, unsafe, dest=None, follow=False):
                 _write_all(out, block)
         if size != before.st_size or _identity(os.fstat(fd)) != _identity(before):
             raise VerificationError(INPUT_CHANGED_DURING_READ, 'changed during read')
+        ok = True
         return digest.hexdigest(), size
     except OSError as exc:
         raise VerificationError(unsafe, 'read failed') from exc
@@ -219,6 +243,8 @@ def _consume(path, *, missing, unsafe, dest=None, follow=False):
         os.close(fd)
         if out is not None:
             os.close(out)
+        if made and not ok:
+            _discard(dest)
 
 
 def read_bounded(path, limit, *, missing, unsafe):
@@ -269,28 +295,31 @@ def _is_id(value):
 
 
 def _is_text(value):
-    return isinstance(value, str) and 0 < len(value) <= 256 and '\x00' not in value
+    return (isinstance(value, str) and 0 < len(value) <= 256 and '\x00' not in value
+            and not _has_surrogate(value))
 
 
 def _is_arg(value):
-    return (isinstance(value, str) and '\x00' not in value
-            and len(value.encode('utf-8', 'surrogatepass')) <= 4096)
+    return (isinstance(value, str) and '\x00' not in value and not _has_surrogate(value)
+            and len(value.encode('utf-8')) <= 4096)
 
 
 def _is_relpath(value, allow_dot=False):
     if allow_dot and value == '.':
         return True
-    if not isinstance(value, str) or not value or '\\' in value or '\x00' in value:
+    if (not isinstance(value, str) or not value or '\\' in value or '\x00' in value
+            or _has_surrogate(value)):
         return False
-    if len(value.encode('utf-8', 'surrogatepass')) > PATH_BYTE_LIMIT or value.startswith('/'):
+    if len(value.encode('utf-8')) > PATH_BYTE_LIMIT or value.startswith('/'):
         return False
     return all(part not in ('', '.', '..') for part in value.split('/'))
 
 
 def _is_abspath(value):
-    if not isinstance(value, str) or not value.startswith('/') or '\\' in value or '\x00' in value:
+    if (not isinstance(value, str) or not value.startswith('/') or '\\' in value
+            or '\x00' in value or _has_surrogate(value)):
         return False
-    if len(value.encode('utf-8', 'surrogatepass')) > PATH_BYTE_LIMIT:
+    if len(value.encode('utf-8')) > PATH_BYTE_LIMIT:
         return False
     return value != '/' and all(part not in ('', '.', '..') for part in value[1:].split('/'))
 
@@ -424,7 +453,7 @@ def encode_manifest(manifest):
 def parse_manifest(data):
     """Strictly parse, require canonical bytes and validate the schema."""
     manifest = parse_canonical(data, MAX_MANIFEST_BYTES, MANIFEST_MALFORMED,
-                               MANIFEST_NONCANONICAL, MANIFEST_TOO_LARGE)
+                               MANIFEST_NONCANONICAL, MANIFEST_TOO_LARGE, MANIFEST_SCHEMA)
     return validate_manifest(manifest)
 
 
@@ -473,21 +502,44 @@ def check_runtime(expected, actual):
 
 # ---------------------------------------------------------------- source tree
 
+# Isolation for every git call: no system, global or user configuration, an empty
+# HOME, attribute and hook files disabled, and fsmonitor off. Repository-local
+# filter.* and diff.* configuration is refused before any status query runs.
+GIT_ISOLATION = ('-c', 'core.fsmonitor=false', '-c', 'core.attributesFile=' + os.devnull,
+                 '-c', 'core.hooksPath=' + os.devnull, '-c', 'core.untrackedCache=false')
+
+
+def _git_env(home):
+    return {'PATH': os.environ.get('PATH', os.defpath), 'HOME': home, 'XDG_CONFIG_HOME': home,
+            'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+            'GIT_TERMINAL_PROMPT': '0', 'LC_ALL': 'C', 'LANG': 'C'}
+
+
 def _git(root, *args):
-    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
-    try:
-        result = subprocess.run(['git', '-c', 'core.fsmonitor=false', '-C', root, *args],
-                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, timeout=60, check=False, env=env)
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise VerificationError(SOURCE_UNVERIFIABLE, 'git unavailable') from exc
+    with tempfile.TemporaryDirectory(prefix='herdr-ml-git-home-') as home:
+        try:
+            result = subprocess.run(['git', *GIT_ISOLATION, '-C', root, *args],
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, timeout=60, check=False,
+                                    env=_git_env(home))
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise VerificationError(SOURCE_UNVERIFIABLE, 'git unavailable') from exc
     if result.returncode != 0:
         raise VerificationError(SOURCE_UNVERIFIABLE, 'git query failed')
     return result.stdout
 
 
+def _reject_repo_filters(root):
+    for raw in _git(root, 'config', '--list', '--name-only', '-z').split(b'\x00'):
+        name = raw.decode('utf-8', 'replace').lower()
+        if name.startswith('filter.') or name.startswith('diff.'):
+            raise VerificationError(SOURCE_UNVERIFIABLE,
+                                    'repository-local filter or diff configuration is refused')
+
+
 def _git_state(root):
     """Return (HEAD object id, tree is clean including untracked and ignored files)."""
+    _reject_repo_filters(root)
     try:
         top = _git(root, 'rev-parse', '--show-toplevel').decode('utf-8', 'strict').strip()
         head = _git(root, 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}')
@@ -535,7 +587,8 @@ _INPUT_CODES = {'dataset_content': DATASET_DIGEST_MISMATCH,
 def seal_inputs(manifest, seal_dir):
     """Copy each input to a private sealed file while hashing the same bytes.
 
-    Execution must use the sealed copies, never the original paths.
+    Execution must use the sealed copies, never the original paths. On failure this
+    call removes only the sealed files it created itself.
     """
     try:
         info = os.lstat(seal_dir)
@@ -547,19 +600,22 @@ def seal_inputs(manifest, seal_dir):
     items.extend((entry['role'], entry) for entry in manifest['inputs'])
     used = []
     sealed = {}
-    for role, entry in items:
-        dest = os.path.join(seal_dir, role + '.sealed')
-        try:
+    created_here = []
+    try:
+        for role, entry in items:
+            dest = os.path.join(seal_dir, role + '.sealed')
+            created = []
             sha, size = _consume(_input_file(entry['path']), missing=INPUT_MISSING,
-                                 unsafe=INPUT_UNSAFE_PATH, dest=dest)
-        except BaseException:
-            _discard(dest)
-            raise
-        if (sha, size) != (entry['sha256'], entry['size']):
-            _discard(dest)
-            raise VerificationError(_INPUT_CODES.get(role, INPUT_DIGEST_MISMATCH), role)
-        sealed[role] = dest
-        used.append({'role': role, 'path': entry['path'], 'sha256': sha, 'size': size})
+                                 unsafe=INPUT_UNSAFE_PATH, dest=dest, created=created)
+            created_here.extend(created)
+            if (sha, size) != (entry['sha256'], entry['size']):
+                raise VerificationError(_INPUT_CODES.get(role, INPUT_DIGEST_MISMATCH), role)
+            sealed[role] = dest
+            used.append({'role': role, 'path': entry['path'], 'sha256': sha, 'size': size})
+    except BaseException:
+        for path in created_here:
+            _discard(path)
+        raise
     return used, sealed
 
 
