@@ -1,0 +1,30 @@
+2026-11-03T12:41:56.679535Z  INFO herdr::api::server: api server listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/herdr.sock
+2026-11-03T12:41:56.679959Z  INFO herdr::persist::io: session file is missing event="persist.restore" subsystem="persist" outcome="missing" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/session.json
+2026-11-03T12:41:56.679988Z  INFO herdr::app: using pane scrollback configuration pane_scrollback_limit_bytes=10000000
+2026-11-03T12:41:56.761961Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T12:41:56.762478Z  INFO herdr::server::headless: client protocol socket listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/herdr-client.sock
+2026-11-03T12:41:56.762507Z  INFO herdr::server::headless::bootstrap: herdr server started api_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/herdr.sock client_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/herdr-client.sock
+2026-11-03T12:41:56.762544Z  INFO herdr::logging: herdr starting event="app.startup" subsystem="server" outcome="started" pid=3765096
+2026-11-03T12:42:00.682376Z  INFO herdr::logging: api request received event="api.request.start" subsystem="api" outcome="started" request_id="cli:workspace:create" method="workspace.create" changes_ui=true
+2026-11-03T12:42:00.682571Z  INFO herdr::logging: spawning pane terminal event="pane.spawn.start" subsystem="pane" outcome="started" pane_id=1 rows=40 cols=119 scrollback_limit_bytes=10000000
+2026-11-03T12:42:00.683177Z  INFO herdr::logging: pane child spawned event="pane.spawned" subsystem="pane" outcome="ok" pane_id=1 pid=3765563
+2026-11-03T12:42:00.683309Z  INFO herdr::logging: workspace created event="workspace.create" subsystem="workspace" outcome="ok" workspace_id="w1" pane_id=1
+2026-11-03T12:42:00.683314Z  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id="w1"
+2026-11-03T12:42:00.683318Z  INFO herdr::logging: tab focused event="tab.focus" subsystem="tab" outcome="ok" workspace_id="w1" tab_id="w1:t1"
+2026-11-03T12:42:00.683321Z  INFO herdr::logging: workspace renamed event="workspace.rename" subsystem="workspace" outcome="ok" workspace_id="w1"
+2026-11-03T12:42:00.683529Z  INFO herdr::logging: api request completed event="api.request.complete" subsystem="api" outcome="ok" request_id="cli:workspace:create" method="workspace.create"
+2026-11-03T12:42:03.973624Z  INFO herdr::logging: api request received event="api.request.start" subsystem="api" outcome="started" request_id="cli:agent:start" method="agent.start" changes_ui=true
+2026-11-03T12:42:03.973797Z  INFO herdr::logging: api request completed event="api.request.complete" subsystem="api" outcome="ok" request_id="cli:agent:start" method="agent.start"
+2026-11-03T12:42:04.242828Z  INFO herdr::pane: agent changed pane=1 previous_agent=None agent=Some(Claude) process=claude pgid=Some(3765958)
+2026-11-03T12:42:12.572564Z  INFO herdr::persist::writer: preserved session recovery copy event="persist.backup" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/session.json backup_path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/session-snapshots/session-000000000000000000001793709732566757211-3765096-0.json
+2026-11-03T12:42:12.572591Z  INFO herdr::logging: session saved event="persist.save" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/session.json workspaces=1
+2026-11-03T12:42:57.409911Z  INFO herdr::logging: session saved event="persist.save" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/session.json workspaces=1
+2026-11-03T13:11:56.763126Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T13:41:56.764341Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T14:11:56.765760Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T14:41:56.767527Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T15:11:56.768049Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T15:41:56.775539Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T16:11:56.770223Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T16:31:48.121883Z  INFO herdr::logging: api request received event="api.request.start" subsystem="api" outcome="started" request_id="cli:agent:prompt" method="agent.prompt" changes_ui=true
+2026-11-03T16:31:52.527646Z  INFO herdr::logging: api request completed event="api.request.complete" subsystem="api" outcome="ok" request_id="cli:agent:prompt" method="agent.prompt"

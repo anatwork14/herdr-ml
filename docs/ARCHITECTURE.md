@@ -29,7 +29,7 @@ Separately managed persistent services:
 | 09 Research | papers, hypotheses, novelty and ablations |
 | 10 Operations | service status, backups, health and incident response |
 
-Tabs are **real Herdr terminal tabs** but high-level descriptions are design guidance, not fully implemented graphical panels. A bootstrap creates tabs and starts only safe watchers.
+Tabs are **real Herdr terminal tabs** but high-level descriptions are design guidance, not fully implemented graphical panels. Automatic bootstrap is currently blocked; a mock-tested reconciliation core does not create tabs or watchers on a real server.
 
 ## Agent topology
 
@@ -41,7 +41,7 @@ Worktrees are Herdr-managed or standard Git worktrees. A distinct review agent m
 
 DATA_READY -> BASELINE_READY -> GPU_READY -> official run -> REVIEW_READY -> release/publication claim. Missing prerequisites -> BLOCKED. Diagnostic runs bypass research claims, not safety or user approval.
 
-A run: validate input -> write immutable submission manifest -> [optional queue] -> execute command under a process -> capture logs/result/checksums -> update state -> independent human/scientific review. Queue and run ledger never replace model-specific checkpointing.
+The intended run path is: validate input -> record a submission -> claim ownership -> execute under verified containment -> capture logs and result -> independent human/scientific review. Today only local diagnostic execution is available; its containment is unverified and reported UNKNOWN. The submission checksum is not authentication or immutability. Queue and run ledger never replace model-specific checkpointing.
 
 ## Failure modes
 

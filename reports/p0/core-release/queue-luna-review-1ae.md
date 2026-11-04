@@ -1,0 +1,5 @@
+# GPT-6 Luna fallback review: queue protocol
+
+A reviewer independent of the worker reviewed immutable `1ae7347eda89db50dee318abd2a7605b7ffb59c8` in a detached worktree. No confirmed HIGH/CRITICAL was found. Twenty-nine focused Python 3.10 tests passed, including private database creation, symlink refusal and fsync failure checks. The isolated Pueue 4.0.4 CPU harness also completed and shut down its own daemon. The harness omits HOME and uses private XDG paths.
+
+The shared index commits CLAIMED before the run-local execution claim; a crash between them strands a fenced task and there is no automatic recovery. SQLite subsequently reopens the private database by pathname, so a same-UID actor with access to the private directory can race the pathname; the implementation is not a multi-tenant security boundary. Run ID is a global primary key, so duplicate IDs in different folders/queue instances collide. The queue-instance fingerprint remains supplied by the caller and unverified against a production daemon. `researchctl` dispatch remains unwired; no containment or GPU slot safety was proven. These are not Opus findings or release approval.

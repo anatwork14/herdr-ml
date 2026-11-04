@@ -1,0 +1,13 @@
+# Containment prerequisites and no-sudo deployment
+
+The runner does not have an integrated containment supervisor. A process group cannot contain a child which calls `setsid`; `tests/test_containment_probe.py` demonstrates this with isolated CPU subprocesses and cleans up using a pidfd. `UNKNOWN` is not evidence of resource release. GPU, queued, and official runs remain blocked.
+
+Run `python3 scripts/containment_probe.py` as the actual worker identity. It reads procfs and queries the user systemd bus without printing its environment. It reports `BLOCKED` even if capability hints look positive, since a writable cgroup or reachable user bus does not prove safe delegation, worker placement, crash recovery, or release. `os.access` is a hint, not an authorization proof. To print the concrete administrator handoff, run `bash scripts/containment-provision-plan.sh`; it performs no privileged operations and changes no host configuration.
+
+On the inspected host, Linux 5.4.0 / systemd 245 uses a hybrid layout. The current v2 membership is root-owned, not writable by the research user, and has no `cgroup.kill`; no user-owned subtree was found. The user is not registered as logged in or lingering and the user bus at `/run/user/5011/bus` is absent. This observation is specific to that session and must be rechecked inside the proposed worker service. A different delegated unit might have different capabilities.
+
+Ask an administrator for a user manager and a properly delegated cgroup v2 service/scope, or a site-supported manager with equivalent recursively verifiable containment. A current Linux `cgroup.kill` handles concurrent forks and migration while killing a cgroup subtree, and `cgroup.events` exposes recursive population. These features must be observed on the actual delegated kernel and validated end-to-end; the current host's missing file must not be replaced by a PID or process-group fallback. Systemd delegation applies to services/scopes, not slice units. Do not manually modify arbitrary systemd-owned cgroups.
+
+A working cgroup or user bus is necessary, not sufficient. Before releasing a slot, an independent reviewer must verify ownership fencing, placement before execution, detached descendants, bounded cancellation, supervisor SIGKILL and restart, process identity, and that the owned subtree is recursively empty. Out-of-band CUDA jobs remain outside cooperative scheduling. This repository provides neither a privileged installer nor a GPU-safe containment backend.
+
+References: [systemd control-group delegation](https://systemd.io/CGROUP_DELEGATION/) and [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html).

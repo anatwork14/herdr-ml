@@ -11,7 +11,7 @@
 Exit: bootstrap can be run twice without adding duplicate workspaces; terminal panes and agent starts proven on target host.
 
 ## P1 — ML execution
-- [x] Cooperative one-GPU queue bootstrap and runner submit support
+- [ ] Cooperative one-GPU queue bootstrap and runner submit support (queue setup has an isolated CPU test; submission remains blocked pending containment and integration)
 - [x] Run IDs, metadata, persistent stdout/stderr, basic gate enforcement
 - [ ] Validate real Pueue queue lifecycle and reboot behavior
 - [ ] GPU smoke test on approved hardware
@@ -22,7 +22,7 @@ Exit: bootstrap can be run twice without adding duplicate workspaces; terminal p
 Exit: two projects submit sequential heavy GPU runs to same queue, capture complete evidence and resume after deliberate interruption.
 
 ## P2 — Scientific governance
-- [x] Stage-gate schema example and fail-closed official mode
+- [ ] Stage-gate schema and verified official mode (official execution remains blocked; signed-envelope verification is offline only)
 - [ ] Independent reviewer identity and approval audit
 - [ ] DVC/immutable dataset catalog and leakage audit adapter
 - [ ] FL-specific DATA_READY certification

@@ -1,0 +1,676 @@
+Independent final milestone review of commit ea7395c8f8305800bd5f553f8cfc4e4ce13818a2; static Git-exported source follows. Look for concrete HIGH/CRITICAL in artifact tree, process observations, containment preflight and Herdr mock core. No tools, no live claims; holds remain.
+
+--- scripts/artifact_tree.py ---
+#!/usr/bin/env python3
+"""Point-in-time diagnostic artifact tree digests, not execution authorization.
+
+This tool never makes source or data immutable, authenticates a manifest, or
+proves that a job actually reads these bytes. Concurrent writers and changes
+between verification and use require a separate immutable execution boundary.
+"""
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+import stat
+
+
+MAX_MANIFEST_BYTES = 16 * 1024 * 1024
+MAX_PATH_BYTES = 4096
+MAX_ENUMERATED_NAME_BYTES = 16 * 1024 * 1024
+MAX_DEPTH = 128
+
+
+class ArtifactError(Exception):
+    pass
+
+
+def _identity(info):
+    return (info.st_dev, info.st_ino, info.st_mode, info.st_size,
+            info.st_mtime_ns, info.st_ctime_ns)
+
+
+def snapshot(root, max_entries=100000):
+    """Hash a directory without following child symlinks or opening devices."""
+    if not isinstance(max_entries, int) or isinstance(max_entries, bool) or max_entries < 1:
+        raise ArtifactError('invalid entry limit')
+    records = []
+    estimated_manifest_bytes = 512
+    def append_record(record):
+        nonlocal estimated_manifest_bytes
+        # Account for JSON escapes and conservative outer indentation/comma.
+        estimated_manifest_bytes += len(json.dumps(record, ensure_ascii=True, sort_keys=True, indent=2).encode('ascii')) + 32
+        if estimated_manifest_bytes > MAX_MANIFEST_BYTES:
+            raise ArtifactError('manifest size limit exceeded')
+        records.append(record)
+    enumerated = 0
+    name_bytes = 0
+    def walk(fd, prefix, depth=0):
+        nonlocal enumerated, name_bytes
+        if depth > MAX_DEPTH:
+            raise ArtifactError('directory depth limit exceeded')
+        before = os.fstat(fd)
+        names = []
+        with os.scandir(fd) as entries:
+            for entry in entries:
+                enumerated += 1
+                name_bytes += len(os.fsencode(entry.name))
+                if enumerated > max_entries or name_bytes > MAX_ENUMERATED_NAME_BYTES:
+                    raise ArtifactError('entry limit exceeded')
+                names.append(entry.name)
+        for name in sorted(names):
+            if len(records) >= max_entries:
+                raise ArtifactError('entry limit exceeded')
+            rel = prefix + name
+            if len(os.fsencode(rel)) > MAX_PATH_BYTES:
+                raise ArtifactError('path length limit exceeded')
+            info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    if (info.st_dev, info.st_ino) != (os.fstat(child).st_dev, os.fstat(child).st_ino):
+                        raise ArtifactError('directory changed during scan')
+                    append_record({'path': rel, 'type': 'directory'})
+                    walk(child, rel + '/', depth + 1)
+                finally:
+                    os.close(child)
+            elif stat.S_ISREG(info.st_mode):
+                # O_PATH pins the inode without opening a swapped device/FIFO.
+                # Reopen the pinned regular inode via procfs, then verify identity.
+                if not hasattr(os, 'O_PATH'):
+                    raise ArtifactError('Linux O_PATH support required')
+                handle = os.open(name, os.O_PATH | os.O_NOFOLLOW, dir_fd=fd)
+                try:
+                    pinned = os.fstat(handle)
+                    if not stat.S_ISREG(pinned.st_mode) or _identity(info) != _identity(pinned):
+                        raise ArtifactError('file changed before read')
+                    child = os.open('/proc/self/fd/%d' % handle, os.O_RDONLY | os.O_NONBLOCK)
+                    try:
+                        opened = os.fstat(child)
+                        if _identity(pinned) != _identity(opened):
+                            raise ArtifactError('file changed before read')
+                        digest = hashlib.sha256()
+                        while True:
+                            chunk = os.read(child, 1024 * 1024)
+                            if not chunk:
+                                break
+                            digest.update(chunk)
+                        if _identity(opened) != _identity(os.fstat(child)):
+                            raise ArtifactError('file changed during read')
+                        append_record({'path': rel, 'type': 'file', 'size': opened.st_size,
+                                        'sha256': digest.hexdigest()})
+                    finally:
+                        os.close(child)
+                finally:
+                    os.close(handle)
+            else:
+                raise ArtifactError('symlink or non-regular artifact is not allowed')
+        if _identity(before) != _identity(os.fstat(fd)):
+            raise ArtifactError('directory changed during scan')
+    fd = None
+    try:
+        fd = os.open(Path(root), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        walk(fd, '')
+        return {'schema_version': 1, 'entries': records}
+    except OSError as exc:
+        raise ArtifactError('cannot safely scan artifact tree') from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def validate_manifest(manifest):
+    if not isinstance(manifest, dict) or set(manifest) != {'schema_version', 'entries'}:
+        raise ArtifactError('invalid manifest schema')
+    if type(manifest['schema_version']) is not int or manifest['schema_version'] != 1 or not isinstance(manifest['entries'], list) or len(manifest['entries']) > 100000:
+        raise ArtifactError('invalid manifest schema')
+    for entry in manifest['entries']:
+        if not isinstance(entry, dict) or not isinstance(entry.get('path'), str) or not entry['path']:
+            raise ArtifactError('invalid entry')
+        if entry.get('type') == 'directory':
+            if set(entry) != {'path', 'type'}:
+                raise ArtifactError('invalid directory entry')
+        elif entry.get('type') == 'file':
+            if (set(entry) != {'path', 'type', 'size', 'sha256'} or type(entry['size']) is not int
+                    or entry['size'] < 0 or not isinstance(entry['sha256'], str)
+                    or not re.fullmatch('[0-9a-f]{64}', entry['sha256'])):
+                raise ArtifactError('invalid file entry')
+        else:
+            raise ArtifactError('invalid entry type')
+
+
+def verify(root, manifest):
+    """Compare actual files to a trusted supplied manifest; does not verify trust."""
+    validate_manifest(manifest)
+    return snapshot(root) == manifest
+
+
+def _unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ArtifactError('duplicate manifest key')
+        result[key] = value
+    return result
+
+
+def read_manifest(path):
+    """Read a bounded regular file without following a final symlink."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ArtifactError('manifest must be a regular file')
+        if before.st_size > MAX_MANIFEST_BYTES:
+            raise ArtifactError('manifest too large')
+        with os.fdopen(fd, 'rb') as source:
+            fd = None
+            raw = source.read(MAX_MANIFEST_BYTES + 1)
+            after = os.fstat(source.fileno())
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ArtifactError('manifest too large')
+        if _identity(before) != _identity(after):
+            raise ArtifactError('manifest changed during read')
+        return json.loads(raw.decode('utf-8'), object_pairs_hook=_unique_object)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def main():
+    import argparse
+    import json
+    import sys
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('root')
+    parser.add_argument('--verify', type=Path, help='Compare against a previously saved JSON manifest')
+    args = parser.parse_args()
+    try:
+        actual = snapshot(args.root)
+        if args.verify:
+            expected = read_manifest(args.verify)
+            validate_manifest(expected)
+            if actual != expected:
+                print('Artifact tree differs', file=sys.stderr)
+                return 1
+        print(json.dumps(actual, ensure_ascii=True, sort_keys=True, indent=2))
+        return 0
+    except (ArtifactError, OSError, ValueError, RecursionError) as exc:
+        print('BLOCKED: %s' % exc, file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
+
+--- scripts/process_identity.py ---
+"""Best-effort, read-only process identity observations on local Linux procfs.
+
+A match describes only the observed PID at the moment of inspection. A missing
+PID is merely not visible; neither observation proves descendant containment,
+workload termination, resource release, or authority to retry a run.
+"""
+import socket
+from pathlib import Path
+
+
+def observe_process(identity, expected_host, *, proc_root=Path('/proc'), current_host=None):
+    """Compare a recorded PID/start-time/boot identity without sending signals."""
+    result = {'observation': 'UNKNOWN', 'reason': 'Incomplete process identity'}
+    if not isinstance(identity, dict):
+        return result
+    pid, boot, start = identity.get('pid'), identity.get('boot'), identity.get('start_ticks')
+    if (type(pid) is not int or pid <= 0 or not isinstance(boot, str) or not boot
+            or not isinstance(start, str) or not start.isascii() or not start.isdigit()):
+        return result
+    if not isinstance(expected_host, str) or not expected_host:
+        return result
+    if current_host is None:
+        current_host = socket.gethostname()
+    if current_host != expected_host:
+        return {'observation': 'UNKNOWN', 'reason': 'Recorded host differs from local host'}
+    proc_root = Path(proc_root)
+    try:
+        current_boot = (proc_root / 'sys/kernel/random/boot_id').read_text(encoding='ascii').strip()
+        if not current_boot:
+            return {'observation': 'UNKNOWN', 'reason': 'Local boot identity unavailable'}
+        if current_boot != boot:
+            return {'observation': 'IDENTITY_MISMATCH', 'reason': 'Boot identity differs'}
+        try:
+            stat = (proc_root / str(pid) / 'stat').read_text(encoding='ascii')
+        except FileNotFoundError:
+            return {'observation': 'NOT_VISIBLE', 'reason': 'PID not visible in local procfs'}
+        end = stat.rfind(')')
+        if end < 0:
+            raise ValueError('missing comm delimiter')
+        fields = stat[end + 2:].split()
+        state, current_start = fields[0], fields[19]
+        if not current_start.isascii() or not current_start.isdigit() or len(state) != 1:
+            raise ValueError('invalid process stat')
+        # Avoid a mistaken match if the procfs mount changed during inspection.
+        if (proc_root / 'sys/kernel/random/boot_id').read_text(encoding='ascii').strip() != current_boot:
+            return {'observation': 'UNKNOWN', 'reason': 'Local boot identity changed during inspection'}
+        if current_start != start:
+            return {'observation': 'IDENTITY_MISMATCH', 'reason': 'PID start time differs'}
+        observation = 'MATCH_ZOMBIE' if state in ('Z', 'X') else 'MATCH'
+        return {'observation': observation, 'reason': 'Recorded PID and start time match current procfs',
+                'process_state': state}
+    except (OSError, UnicodeError, ValueError, IndexError):
+        return {'observation': 'UNKNOWN', 'reason': 'Cannot safely inspect local procfs'}
+
+--- scripts/containment_probe.py ---
+#!/usr/bin/env python3
+"""Read-only containment preflight. A capability hint never enables GPU work."""
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import shutil
+import subprocess
+import sys
+
+
+def _unescape(value):
+    return re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), value)
+
+
+def discover_v2(cgroup_text, mountinfo_text):
+    """Find current v2 cgroup in a visible cgroup2 mount, never traverse above it."""
+    membership = next((line[3:] for line in cgroup_text.splitlines() if line.startswith('0::/')), None)
+    if membership is None:
+        return None
+    member = PurePosixPath(membership)
+    if '..' in member.parts:
+        return None
+    matches = []
+    for line in mountinfo_text.splitlines():
+        left, sep, right = line.partition(' - ')
+        if not sep or not right.startswith('cgroup2 '):
+            continue
+        fields = left.split()
+        if len(fields) < 6:
+            continue
+        root = PurePosixPath(_unescape(fields[3]))
+        mount = PurePosixPath(_unescape(fields[4]))
+        try:
+            suffix = member.relative_to(root)
+        except ValueError:
+            continue
+        if not root.is_absolute() or not mount.is_absolute() or '..' in root.parts or '..' in mount.parts:
+            continue
+        matches.append((len(root.parts), str(mount / suffix)))
+    return max(matches)[1] if matches else None
+
+
+def probe():
+    report = {'schema_version': 1, 'verdict': 'BLOCKED',
+              'reason': 'No integrated, independently verified containment backend; GPU and queue holds remain.',
+              'linux': sys.platform.startswith('linux'), 'current_cgroup_v2': None,
+              'current_cgroup_writable': False, 'current_cgroup_procs_writable': False,
+              'current_cgroup_kill_present': False, 'current_cgroup_kill_writable': False,
+              'user_systemd_bus_reachable': False, 'observations': []}
+    if not report['linux']:
+        report['observations'].append('Linux cgroup inspection unavailable on this platform')
+        return report
+    try:
+        cgroup = discover_v2(Path('/proc/self/cgroup').read_text(), Path('/proc/self/mountinfo').read_text())
+        if cgroup:
+            path = Path(cgroup)
+            report['current_cgroup_v2'] = str(path)
+            report['current_cgroup_writable'] = os.access(path, os.W_OK)
+            report['current_cgroup_procs_writable'] = os.access(path / 'cgroup.procs', os.W_OK)
+            report['current_cgroup_kill_present'] = (path / 'cgroup.kill').exists()
+            report['current_cgroup_kill_writable'] = os.access(path / 'cgroup.kill', os.W_OK)
+        else:
+            report['observations'].append('Current cgroup v2 path is not visible')
+    except (OSError, ValueError) as exc:
+        report['observations'].append('Cannot inspect cgroup: ' + type(exc).__name__)
+    systemctl = shutil.which('systemctl')
+    if systemctl:
+        try:
+            # Discard output: the user manager may expose private environment values.
+            result = subprocess.run([systemctl, '--user', 'show-environment'], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=5, check=False)
+            report['user_systemd_bus_reachable'] = result.returncode == 0
+        except (OSError, subprocess.SubprocessError) as exc:
+            report['observations'].append('Cannot query user systemd: ' + type(exc).__name__)
+    else:
+        report['observations'].append('systemctl unavailable')
+    report['observations'].append('Writability is only a hint, not evidence of delegation, isolation or safe release')
+    return report
+
+
+def main():
+    print(json.dumps(probe(), indent=2, sort_keys=True))
+    return 2  # A preflight cannot certify process-tree containment.
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+
+--- scripts/herdr_reconcile.py ---
+"""Crash-aware Herdr layout reconciliation core.
+
+This module deliberately has no live Herdr adapter or command-line entry point.
+The bootstrap safety hold remains in place until the actual server identity and
+CLI data contracts are established and integration-tested in an authorized pane.
+
+Adapter contract (a future adapter MUST obtain these values from the same server):
+  identity() -> nonempty stable server/session incarnation identifier
+  coordination_verified() -> True only when server and all clients share this
+      OS user's passwd home, lock filesystem, mount namespace and protocol
+  creation_cwd_verified() -> True only when adapter can establish immutable,
+      server-provided creation-bound cwd for all workspaces and tabs; live pane
+      cwd, caller assertions and unverifiable inferred paths are insufficient
+  atomic_parent_guard_verified() -> True only when all parent replacement and
+      tab mutations are excluded across inventory AND local durable adoption,
+      including server/session replacement and lease loss; no timeout-only lock
+  parent_guard(server, workspace_id, workspace_label, cwd) -> context manager
+      that enforces the above until after local adoption is fsynced
+  workspaces() -> iterable of {id, label, cwd}
+  tabs(workspace_id) -> iterable of {id, label, cwd}
+  create_workspace(label, cwd) -> None
+  create_tab(workspace_id, label, cwd) -> None
+
+A create may have taken effect even when it throws. The durable intent carries a
+unique marker, allowing only a single verifiable match to be adopted. If an
+uncertain create has no observable match, automatic retry is forbidden.
+"""
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+import pwd
+import stat
+import re
+from pathlib import Path
+import tempfile
+import uuid
+
+
+class ReconcileBlocked(Exception):
+    """The next mutation cannot be made safely without operator investigation."""
+
+
+def marker(prefix, token, name):
+    return f"{name} [herdr-ml:{prefix}:{token}]"
+
+
+def _canonical(path):
+    return str(Path(path).expanduser().resolve(strict=True))
+
+
+def _write(path, state):
+    """Persist record and directory entry before issuing an external mutation."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile('w', dir=path.parent, prefix='.state-',
+                                         encoding='utf-8', delete=False) as temp:
+            temp_path = temp.name
+            os.fchmod(temp.fileno(), 0o600)
+            json.dump(state, temp, sort_keys=True, indent=2)
+            temp.write('\n')
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if temp_path is not None:
+            os.unlink(temp_path)
+
+
+def _coordination_lock_path():
+    # This fixed location has no config or environment override. All callers
+    # under the same OS account use the same global lock, even across projects,
+    # checkout aliases, differing state paths and server IDs. The adapter must
+    # verify that the server and all clients share the filesystem namespace.
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+    if home.stat().st_uid != os.getuid():
+        raise ReconcileBlocked('Coordination home is not owned by current user')
+    root = home / '.herdr-ml-reconciliation-locks'
+    try:
+        root.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+        raise ReconcileBlocked('Unsafe coordination lock directory')
+    return root / 'global'
+
+
+@contextlib.contextmanager
+def _locked(path):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.with_suffix(path.suffix + '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _one(objects, label, cwd):
+    matches = [obj for obj in objects if obj.get('label') == label]
+    if len(matches) > 1:
+        raise ReconcileBlocked('Multiple objects have the same ownership marker')
+    if not matches:
+        return None
+    obj = matches[0]
+    if not isinstance(obj.get('id'), str) or not obj['id']:
+        raise ReconcileBlocked('Object has no stable ID')
+    try:
+        actual = _canonical(obj['cwd'])
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise ReconcileBlocked('Object has no verifiable checkout') from exc
+    if actual != cwd:
+        raise ReconcileBlocked('Object marker exists at a different checkout')
+    return obj['id']
+
+
+def _check_identity(adapter, record):
+    if adapter.identity() != record["server"]:
+        raise ReconcileBlocked("Server/session identity changed during reconciliation")
+
+
+def _reject_untracked_workspace(objects, label, checkout):
+    # State may be lost while the corresponding live workspace survives. Never
+    # create a new marker until the authoritative inventory proves there is no
+    # workspace, including a legacy unmarked one, for this checkout, or a
+    # managed workspace for this label. Conservative blocking also
+    # covers an unavailable cwd, since ownership cannot then be disproved.
+    pattern = re.compile(r'^(.*) \[herdr-ml:workspace:[0-9a-f]{32}\]$')
+    for obj in objects:
+        object_label = obj.get('label')
+        match = pattern.fullmatch(object_label) if isinstance(object_label, str) else None
+        try:
+            existing_checkout = _canonical(obj['cwd'])
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise ReconcileBlocked(
+                f"Workspace id={obj.get('id')!r} label={object_label!r} "
+                'has unverifiable checkout; operator reconciliation required'
+            ) from exc
+        if existing_checkout == checkout or (match and match.group(1) == label):
+            raise ReconcileBlocked('Workspace exists but local ownership state is missing')
+
+
+def _verify_parent_workspace(adapter, record):
+    """Do not adopt or create tabs under a missing or replaced parent."""
+    _check_identity(adapter, record)
+    objects = list(adapter.workspaces())
+    _check_identity(adapter, record)
+    expected = marker('workspace', record['token'], record['label'])
+    observed = _one(objects, expected, record['checkout'])
+    if not record.get('workspace_id') or observed != record['workspace_id']:
+        raise ReconcileBlocked('Workspace missing, moved, or ID reused')
+
+
+@contextlib.contextmanager
+def _parent_guard(adapter, record):
+    """Adapter must provide a server-enforced guard, not a local assertion."""
+    try:
+        guard = adapter.parent_guard(record['server'], record['workspace_id'],
+                                     marker('workspace', record['token'], record['label']),
+                                     record['checkout'])
+    except (AttributeError, NotImplementedError) as exc:
+        raise ReconcileBlocked('Atomic parent guard unavailable') from exc
+    suppressed = None
+    with guard:
+        try:
+            _check_identity(adapter, record)
+            _verify_parent_workspace(adapter, record)
+            yield
+        except BaseException as exc:
+            # A buggy context manager may suppress errors in __exit__; never
+            # allow that to turn an uncertain recovery into apparent success.
+            suppressed = exc
+            raise
+    if suppressed is not None:
+        raise suppressed
+
+
+def _complete_intent(adapter, record, state_path):
+    """Resolve a persisted intent without ever blindly repeating a mutation."""
+    _check_identity(adapter, record)
+    pending = record['pending']
+    if pending['kind'] == 'workspace':
+        objects = list(adapter.workspaces())
+    elif pending['kind'] == 'tab':
+        _verify_parent_workspace(adapter, record)
+        objects = list(adapter.tabs(record['workspace_id']))
+    else:
+        raise ReconcileBlocked('Unknown pending operation')
+    _check_identity(adapter, record)
+    if pending['kind'] == 'tab':
+        _verify_parent_workspace(adapter, record)
+    found = _one(objects, pending['label'], record['checkout'])
+    if found is None:
+        raise ReconcileBlocked('Ambiguous operation: no matching object; do not retry automatically')
+    if pending['kind'] == 'workspace':
+        record['workspace_id'] = found
+    else:
+        record['tabs'][pending['key']] = found
+    record['pending'] = None
+    _write(state_path, record)
+
+
+def _intent_then_create(adapter, record, path, kind, label, key=None):
+    _check_identity(adapter, record)
+    record['pending'] = {'kind': kind, 'label': label, 'key': key}
+    _write(path, record)
+    # Exceptions, timeouts, process death, and malformed responses all leave the
+    # durable intent intact. A later invocation must discover the outcome.
+    _check_identity(adapter, record)
+    if kind == 'workspace':
+        adapter.create_workspace(label, record['checkout'])
+    else:
+        _verify_parent_workspace(adapter, record)
+        adapter.create_tab(record['workspace_id'], label, record['checkout'])
+    _complete_intent(adapter, record, path)
+
+
+def reconcile(adapter, state_path, project_id, label, checkout, tabs):
+    """Reconcile one project. Caller supplies only authenticated adapter data.
+
+    A failed identity, changed checkout, duplicate marker, or unknown mutation
+    outcome is BLOCKED; this routine never deletes, renames, or focuses anything.
+    """
+    path = Path(state_path)
+    if not isinstance(project_id, str) or not project_id or not isinstance(label, str) or not label:
+        raise ValueError('Project identity and label are required')
+    if not isinstance(tabs, (list, tuple)) or not tabs or any(not isinstance(t, str) or not t for t in tabs) or len(set(tabs)) != len(tabs):
+        raise ValueError('Tabs must be a nonempty list of unique names')
+    checkout = _canonical(checkout)
+    if not (Path(checkout) / '.git').exists():
+        raise ReconcileBlocked('Checkout is not a Git worktree')
+    try:
+        coordination_verified = adapter.coordination_verified()
+    except (AttributeError, NotImplementedError) as exc:
+        raise ReconcileBlocked('Shared coordination capability unavailable') from exc
+    if coordination_verified is not True:
+        raise ReconcileBlocked('Shared coordination capability unverified')
+    coordination_path = _coordination_lock_path()
+    if path.resolve().is_relative_to(coordination_path.parent.resolve()):
+        raise ReconcileBlocked('State path must not overlap global coordination directory')
+    with _locked(coordination_path), _locked(path):
+        try:
+            cwd_verified = adapter.creation_cwd_verified()
+        except (AttributeError, NotImplementedError) as exc:
+            raise ReconcileBlocked('Creation-bound cwd capability unavailable') from exc
+        if cwd_verified is not True:
+            raise ReconcileBlocked('Creation-bound cwd capability unverified')
+        try:
+            atomic_verified = adapter.atomic_parent_guard_verified()
+        except (AttributeError, NotImplementedError) as exc:
+            raise ReconcileBlocked('Atomic parent guard capability unavailable') from exc
+        if atomic_verified is not True:
+            raise ReconcileBlocked('Atomic parent guard capability unverified')
+        if not callable(getattr(adapter, 'parent_guard', None)):
+            raise ReconcileBlocked('Atomic parent guard unavailable')
+        identity = adapter.identity()
+        if not isinstance(identity, str) or not identity:
+            raise ReconcileBlocked('Server/session incarnation identity is unavailable')
+        if path.exists():
+            try:
+                record = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as exc:
+                raise ReconcileBlocked('State cannot be read') from exc
+            if not isinstance(record, dict) or record.get('version') != 1:
+                raise ReconcileBlocked('Unknown state format')
+            if (record.get('server') != identity or record.get('project') != project_id or
+                    record.get('checkout') != checkout or record.get('label') != label):
+                raise ReconcileBlocked('Stored project, checkout, label, or server identity changed')
+        else:
+            existing_workspaces = list(adapter.workspaces())
+            if adapter.identity() != identity:
+                raise ReconcileBlocked('Server/session identity changed during discovery')
+            _reject_untracked_workspace(existing_workspaces, label, checkout)
+            token = uuid.uuid4().hex
+            record = {'version': 1, 'server': identity, 'project': project_id,
+                      'label': label, 'checkout': checkout, 'token': token,
+                      'workspace_id': None, 'tabs': {}, 'pending': None}
+            _write(path, record)
+        if record.get('pending'):
+            if record['pending'].get('kind') == 'tab':
+                with _parent_guard(adapter, record):
+                    _complete_intent(adapter, record, path)
+            else:
+                _complete_intent(adapter, record, path)
+        _check_identity(adapter, record)
+        workspace_label = marker('workspace', record['token'], label)
+        current_workspaces = list(adapter.workspaces())
+        _check_identity(adapter, record)
+        observed = _one(current_workspaces, workspace_label, checkout)
+        if record['workspace_id'] is None:
+            _reject_untracked_workspace(current_workspaces, label, checkout)
+            if observed:
+                raise ReconcileBlocked('Unrecorded workspace without matching intent')
+            _intent_then_create(adapter, record, path, 'workspace', workspace_label)
+        elif observed != record['workspace_id']:
+            raise ReconcileBlocked('Workspace missing, moved, or ID reused')
+        with _parent_guard(adapter, record):
+            for tab_name in tabs:
+                _check_identity(adapter, record)
+                # Marker uses a digest rather than raw arbitrary input for stable uniqueness.
+                tab_token = hashlib.sha256(tab_name.encode('utf-8')).hexdigest()[:16]
+                tab_label = marker('tab', record['token'] + '-' + tab_token, tab_name)
+                current_tabs = list(adapter.tabs(record['workspace_id']))
+                _check_identity(adapter, record)
+                observed = _one(current_tabs, tab_label, checkout)
+                old = record['tabs'].get(tab_name)
+                if old is not None and any(obj.get('id') == old and obj.get('label') != tab_label for obj in current_tabs):
+                    raise ReconcileBlocked('Tab ID reused for an unrelated object')
+                if observed:
+                    if old is None or old != observed:
+                        raise ReconcileBlocked('Unrecorded or replaced tab marker')
+                else:
+                    _intent_then_create(adapter, record, path, 'tab', tab_label, tab_name)
+        _check_identity(adapter, record)
+        return {'workspace_id': record['workspace_id'], 'tabs': dict(record['tabs'])}

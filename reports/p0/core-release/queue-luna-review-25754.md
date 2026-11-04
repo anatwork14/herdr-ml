@@ -1,0 +1,5 @@
+# GPT-6 Luna preliminary queue review
+
+Reviewed immutable `25754e92e823d6e2f3d72b99f43b0ac108cfe957` in a detached worktree. No confirmed CRITICAL/HIGH was found in the standalone, unwired protocol. The reviewer reproduced a MEDIUM privacy issue: SQLite created the shared index before chmod, so permissive umask and traversable directories could expose the database briefly. A repair is in progress.
+
+The global run-ID primary key rejects equal run IDs in different directories even across queue instances; this is an availability limitation. A crash between the shared CLAIMED record and the run-local claim leaves a permanently fenced record, with no automatic recovery; it fails closed. Queue-instance identity remains caller-supplied and unverified. The 26 focused Python 3.10 queue/registry/ownership tests passed. An isolated Pueue 4.0.4 CPU harness completed with a task ID and worker index in separate fields and a clean isolated daemon shutdown; that harness version overrode HOME and is being replaced before integration. This is preliminary GPT-6 Luna review, not Opus approval or production queue readiness.

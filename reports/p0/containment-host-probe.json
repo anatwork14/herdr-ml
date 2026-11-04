@@ -1,0 +1,15 @@
+{
+  "current_cgroup_kill_present": false,
+  "current_cgroup_kill_writable": false,
+  "current_cgroup_procs_writable": false,
+  "current_cgroup_v2": "/sys/fs/cgroup/unified/system.slice/teleport.service",
+  "current_cgroup_writable": false,
+  "linux": true,
+  "observations": [
+    "Writability is only a hint, not evidence of delegation, isolation or safe release"
+  ],
+  "reason": "No integrated, independently verified containment backend; GPU and queue holds remain.",
+  "schema_version": 1,
+  "user_systemd_bus_reachable": false,
+  "verdict": "BLOCKED"
+}

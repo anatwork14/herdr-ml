@@ -1,0 +1,25 @@
+2026-11-04T02:45:07.847Z	terminal.frame	1	True	7934	False	0
+2026-11-04T02:45:14.507Z	terminal.frame	2	False	133	False	0
+2026-11-04T02:45:21.544Z	terminal.frame	3	False	296	True	1
+2026-11-04T02:45:21.898Z	terminal.frame	4	False	840	True	1
+2026-11-04T02:45:21.917Z	terminal.frame	5	False	155	False	0
+2026-11-04T02:45:22.016Z	terminal.frame	6	False	90	False	0
+2026-11-04T02:45:22.129Z	terminal.frame	7	False	155	False	0
+2026-11-04T02:45:22.355Z	terminal.frame	8	False	155	False	0
+2026-11-04T02:45:22.468Z	terminal.frame	9	False	123	False	0
+2026-11-04T02:45:22.690Z	terminal.frame	10	False	154	False	0
+2026-11-04T02:45:22.902Z	terminal.frame	11	False	154	False	0
+2026-11-04T02:45:23.015Z	terminal.frame	12	False	90	False	0
+2026-11-04T02:45:23.129Z	terminal.frame	13	False	217	False	0
+2026-11-04T02:45:23.151Z	terminal.frame	14	False	313	False	0
+2026-11-04T02:45:23.930Z	terminal.frame	15	False	1225	True	1
+2026-11-04T02:45:23.967Z	terminal.frame	16	False	649	True	1
+2026-11-04T02:45:24.382Z	terminal.frame	17	False	401	True	1
+2026-11-04T02:45:24.399Z	terminal.frame	18	False	630	True	1
+2026-11-04T02:45:24.416Z	terminal.frame	19	False	764	True	1
+2026-11-04T02:45:24.433Z	terminal.frame	20	False	1110	True	1
+2026-11-04T02:45:24.450Z	terminal.frame	21	False	2143	True	1
+2026-11-04T02:45:24.466Z	terminal.frame	22	False	2196	True	1
+2026-11-04T02:45:24.600Z	terminal.frame	23	False	1035	True	1
+2026-11-04T02:45:24.618Z	terminal.frame	24	False	106	False	0
+frames 24

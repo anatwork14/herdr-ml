@@ -1,0 +1,12 @@
+2026-11-03T16:32:20.328165Z  INFO herdr::logging: herdr exiting event="app.shutdown" subsystem="server" outcome="completed" pid=3765096
+2026-11-03T16:32:28.686769Z  INFO herdr::api::server: api server listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/herdr.sock
+2026-11-03T16:32:28.687339Z  INFO herdr::logging: session restore evaluated event="persist.restore" subsystem="persist" outcome="ok" workspaces=1
+2026-11-03T16:32:28.687355Z  INFO herdr::app: using pane scrollback configuration pane_scrollback_limit_bytes=10000000
+2026-11-03T16:32:28.764229Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T16:32:28.764639Z  INFO herdr::server::headless: client protocol socket listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/herdr-client.sock
+2026-11-03T16:32:28.764697Z  INFO herdr::server::headless::bootstrap: herdr server started api_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/herdr.sock client_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-
+2026-11-03T16:32:28.764772Z  INFO herdr::logging: herdr starting event="app.startup" subsystem="server" outcome="started" pid=267424
+2026-11-03T16:32:29.532563Z  INFO herdr::logging: spawning pane terminal event="pane.spawn.start" subsystem="pane" outcome="started" pane_id=1 rows=40 cols=120 scrollback_limit_bytes=10000000
+2026-11-03T16:32:29.533203Z  INFO herdr::logging: pane child spawned event="pane.spawned" subsystem="pane" outcome="ok" pane_id=1 pid=267507
+2026-11-03T16:32:30.086067Z  INFO herdr::pane: agent changed pane=1 previous_agent=None agent=Some(Claude) process=claude pgid=Some(267781)
+2026-11-03T16:32:34.548419Z  INFO herdr::logging: session saved event="persist.save" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-p3/session.json workspaces=1

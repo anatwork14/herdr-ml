@@ -12,15 +12,22 @@ from pathlib import Path
 import platform
 import shutil
 import shlex
+import sqlite3
 import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 
 BASE = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = BASE / "config" / "projects.json"
 REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
+
+# Explicit path enables direct execution and importlib-based test loading.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_registry
+import process_identity
 
 
 class ResearchError(Exception):
@@ -154,12 +161,58 @@ def cmd_status(args):
             continue
         try:
             submission = load_json(folder / "submission.json")
-            state = load_json(folder / "status.json")
-        except (OSError, json.JSONDecodeError):
-            print(f"{folder.name}\tINVALID\tmissing/corrupt record")
+            registered = run_registry.inspect(folder)
+            state = registered if registered is not None else load_json(folder / "status.json")
+        except (OSError, json.JSONDecodeError, sqlite3.Error):
+            print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
             continue
-        print(f"{folder.name}\t{state.get('state', 'UNKNOWN')}\t{submission.get('mode')}")
+        if not isinstance(submission, dict) or not isinstance(state, dict):
+            print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
+            continue
+        # Historical terminal JSON/registry records did not verify containment.
+        label = state.get("state", "UNKNOWN")
+        if registered is None and (folder / "execution.claim").exists():
+            label = "UNKNOWN"
+        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
+            label = "UNKNOWN"
+        print(f"{folder.name}\t{label}\t{submission.get('mode')}")
     return 0
+
+
+def cmd_reconcile(args):
+    _, _, runtime = select_project(args.project)
+    if not args.run_id or Path(args.run_id).name != args.run_id or args.run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / args.run_id
+    if not folder.is_dir():
+        raise ResearchError("Unknown run")
+    entry = run_registry.inspect(folder)
+    if entry is None:
+        result = {"state": "UNKNOWN", "reason": "No registry record; legacy or pre-claim run needs investigation"}
+    else:
+        # No registry state currently proves containment. Unknown, future,
+        # legacy and corrupt values must never become a successful outcome.
+        result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
+    if entry is not None:
+        host = entry.get("owner_host")
+        owner = {"pid": entry.get("owner_pid"), "boot": entry.get("owner_boot"),
+                 "start_ticks": entry.get("owner_start"),
+                 "pid_namespace": entry.get("owner_pid_namespace"),
+                 "mount_namespace": entry.get("owner_mount_namespace")}
+        result["identity_observations"] = {
+            "owner": process_identity.observe_process(owner, host),
+            "child": process_identity.observe_process(entry.get("child"), host),
+            "limitation": "Snapshots only; no observation proves descendants stopped or permits reclaim",
+        }
+    print(json.dumps(result, indent=2))
+    return 2 if result["state"] == "UNKNOWN" else 0
+
+
+def require_supported_execution(mode, queue, *, submission=False):
+    if mode != "diagnostic":
+        raise ResearchError("Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented")
+    if (submission and queue != "local") or (not submission and queue is not None):
+        raise ResearchError("Queued execution BLOCKED: process containment and daemon interpreter validation not implemented")
 
 
 def cmd_init_run(args):
@@ -181,6 +234,7 @@ def cmd_init_run(args):
         raise ResearchError("Queue must match project GPU group (shared across all projects)")
     if args.queue and not args.approve_cost:
         raise ResearchError("Queued execution requires --approve-cost")
+    require_supported_execution(args.mode, args.queue)
     git = git_metadata(checkout)
     if args.mode == "official" and (not git["sha"] or git["dirty"] is not False):
         raise ResearchError("Official runs require a clean, pinned Git checkout")
@@ -229,17 +283,37 @@ def cmd_init_run(args):
 
 
 def execute(project_id, run_id):
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise ResearchError("SIGCHLD disposition is not default; cannot safely pin and reap child identity")
     _, checkout, runtime = select_project(project_id)
+    if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
     folder = runtime / "runs" / run_id
-    submission = load_json(folder / "submission.json")
+    # Hash and parse exactly the same bytes, even if the path changes later.
+    manifest_bytes = (folder / "submission.json").read_bytes()
     expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
-    actual = sha_file(folder / "submission.json")
-    if expected != actual or submission.get("project") != project_id:
+    actual = hashlib.sha256(manifest_bytes).hexdigest()
+    if expected != actual:
         raise ResearchError("Submission manifest integrity mismatch")
+    try:
+        submission = json.loads(manifest_bytes)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ResearchError("Invalid submission manifest JSON") from exc
+    if not isinstance(submission, dict) or submission.get("project") != project_id:
+        raise ResearchError("Invalid submission manifest project or type")
+    argv = submission.get("argv")
+    if not isinstance(argv, list) or not argv or any(not isinstance(v, str) or "\x00" in v for v in argv) or not argv[0]:
+        raise ResearchError("Invalid submission command")
+    require_supported_execution(submission.get("mode"), submission.get("queue"), submission=True)
     status_file = folder / "status.json"
     state = load_json(status_file).get("state")
-    if state not in ("QUEUED", "SUBMITTED"):
-        raise ResearchError(f"Refusing repeated execution: state={state}")
+    # Queued records, including legacy records called "local", remain held.
+    if state != "SUBMITTED":
+        raise ResearchError(f"Refusing execution: queued or repeated state={state}")
+    try:
+        token = run_registry.claim(folder, run_id, project_id, actual, state)
+    except run_registry.RegistryError as exc:
+        raise ResearchError(str(exc)) from exc
     if submission.get("mode") == "official":
         gate = gate_report(checkout, submission.get("gate_manifest"))
         current_git = git_metadata(checkout)
@@ -247,37 +321,94 @@ def execute(project_id, run_id):
             atomic_json(status_file, {"state": "BLOCKED", "updated_at": now(),
                                       "error": "Gate invalid or source checkout changed since submission"})
             raise ResearchError("Official job BLOCKED: gates or pinned Git source changed")
-    atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+    run_registry.advance(folder, token, "CLAIMED", "DISPATCHING")
+    atomic_json(status_file, {"state": "DISPATCHING", "updated_at": now()})
     child = None
     interrupted = False
+    interruption_signal = None
+    group_owned = False
 
-    def terminate(_signum, _frame):
-        nonlocal interrupted
+    def signal_group(sig):
+        # The unreaped leader pins its PID/PGID. Never signal after reaping.
+        if group_owned:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def terminate(signum, _frame):
+        nonlocal interrupted, interruption_signal
         interrupted = True
-        if child and child.poll() is None:
-            child.terminate()
+        interruption_signal = interruption_signal or signum
+        signal_group(signal.SIGTERM)
 
-    old_handler = signal.signal(signal.SIGTERM, terminate)
+    def stop_and_reap():
+        nonlocal group_owned
+        if group_owned:
+            signal_group(signal.SIGKILL)
+            # No process-group signal is sent after wait() reaps the leader.
+            group_owned = False
+            return child.wait()
+        return None
+
+    old_handlers = {sig: signal.signal(sig, terminate)
+                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)}
     try:
         with (folder / "stdout.log").open("wb") as stdout, (folder / "stderr.log").open("wb") as stderr:
             try:
-                child = subprocess.Popen(submission["argv"], cwd=checkout,
-                                         stdin=subprocess.DEVNULL, stdout=stdout,
-                                         stderr=stderr, shell=False)
-                code = child.wait()
+                if interrupted:
+                    code = 128 + interruption_signal
+                else:
+                    child = subprocess.Popen(submission["argv"], cwd=checkout,
+                                             stdin=subprocess.DEVNULL, stdout=stdout,
+                                             stderr=stderr, shell=False, start_new_session=True)
+                    group_owned = True
+                    run_registry.record_child(folder, token, child.pid)
+                    run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
+                    atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+                    if interrupted:
+                        signal_group(signal.SIGTERM)
+                    deadline = None
+                    while True:
+                        # WNOWAIT keeps the exited leader as a zombie, preventing
+                        # its PID and process group ID from being reused.
+                        result = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if result is not None:
+                            break
+                        if interrupted and deadline is None:
+                            deadline = time.monotonic() + 3
+                        if deadline is not None and time.monotonic() >= deadline:
+                            signal_group(signal.SIGKILL)
+                        time.sleep(0.05)
+                    code = stop_and_reap()
             except OSError as exc:
+                if child is not None:
+                    stop_and_reap()
+                    raise
                 stderr.write((str(exc) + "\n").encode("utf-8", errors="replace"))
                 code = 127
-        end_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
-        result = {"state": end_state, "exit_code": code, "completed_at": now(),
-                  "stdout_sha256": sha_file(folder / "stdout.log"),
-                  "stderr_sha256": sha_file(folder / "stderr.log")}
+            except BaseException:
+                stop_and_reap()
+                raise
+        # Process groups cannot establish whether detached descendants survive.
+        # Record the leader outcome without asserting whole-workload completion.
+        leader_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
+        end_state = "UNKNOWN"
+        result = {"state": end_state, "leader_state": leader_state,
+                  "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
+                  "stdout_sha256_after_leader_exit": sha_file(folder / "stdout.log"),
+                  "stderr_sha256_after_leader_exit": sha_file(folder / "stderr.log"),
+                  "log_hash_observed_at": now()}
+        run_registry.finish(folder, token, result)
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
-        return code if code >= 0 else 128 + abs(code)
+        return 128 + interruption_signal if interrupted else (2 if code == 0 else (code if code >= 0 else 128 + abs(code)))
     finally:
-        signal.signal(signal.SIGTERM, old_handler)
+        stop_and_reap()
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
+
 
 
 def main(argv=None):
@@ -286,6 +417,9 @@ def main(argv=None):
     sub.add_parser("doctor")
     status = sub.add_parser("status")
     status.add_argument("--project", required=True)
+    reconcile = sub.add_parser("reconcile", help="Inspect a run without reclaiming ownership")
+    reconcile.add_argument("--project", required=True)
+    reconcile.add_argument("--run-id", required=True)
     gates = sub.add_parser("gate-status")
     gates.add_argument("--project", required=True)
     gates.add_argument("--gates")
@@ -309,15 +443,20 @@ def main(argv=None):
             return cmd_doctor(args)
         if args.action == "status":
             return cmd_status(args)
+        if args.action == "reconcile":
+            return cmd_reconcile(args)
         if args.action == "gate-status":
             return cmd_gate_status(args)
         if args.action == "init-run":
             return cmd_init_run(args)
         return execute(args.project, args.run_id)
-    except (ResearchError, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+    except (ResearchError, run_registry.RegistryError, sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
 
 if __name__ == "__main__":
+    if sys.version_info < (3, 10):
+        print("ERROR: Python 3.10 or later is required", file=sys.stderr)
+        sys.exit(2)
     sys.exit(main())

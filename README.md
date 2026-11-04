@@ -2,15 +2,15 @@
 
 A **server-only**, SSH-first research workspace layer built around **Herdr TUI**. One research project = one Herdr workspace; each workspace has agents, data, experiments, runs, logs, GPU, reviews, Git, research, and operations tabs.
 
-> **Status:** implementation starter / integration pending. This repository **does not** claim that Herdr, a GPU, agent CLIs, MLflow, or Pueue are installed or running on your machine. No remote server was accessed.
+> **Status:** P0 remediation in progress: official runs, queued runs, and automatic workspace bootstrap are BLOCKED until their safety contracts are implemented and independently verified. Local diagnostic CPU runs remain available. Implementation starter / integration pending. This repository **does not** claim that Herdr, a GPU, agent CLIs, MLflow, or Pueue are installed or running on your machine. No remote server was accessed.
 
 ## Architecture
 
 - **Herdr TUI** — persistent terminal workspaces, tabs, panes and interactive agent management.
 - **Codex / Claude Code / Hermes** — independently configurable agent runtimes; model nicknames are **roles**, not Herdr kinds.
-- **Global Pueue queue** — serialized single-GPU heavy jobs; CPU tasks can run in parallel.
+- **Global Pueue queue** — planned cooperative GPU serialization; queued execution is currently blocked.
 - **MLflow** (optional) — model metrics, parameters, artifacts and experiment comparison.
-- **Python stdlib run ledger** — immutable run IDs, metadata, stdout/stderr logs, exit status and gate enforcement.
+- **Python stdlib run ledger** — run IDs, transactional claims, metadata and logs; official runs remain blocked pending authenticated provenance and approval.
 - **Git worktrees + independent reviews** — isolated worker branches and evidence-based scientific gates.
 - **Optional future integration** — DVC, Grafana/Prometheus, Discord notification bridge, self-hosted plugins.
 
@@ -41,12 +41,12 @@ python3 scripts/researchctl.py init-run --project fl-iot --mode diagnostic \
   -- python3 -c 'print("diagnostic only")'
 ~~~
 
-The diagnostic command **creates and executes** a local CPU process unless you supply --queue; do not substitute training commands without approval. Run files are stored outside Git at RESEARCH_ROOT/.runtime/<project>/runs/.
+The diagnostic command **creates and executes** the supplied local command as the current user; it does not enforce CPU-only execution. Use only harmless CPU commands. Queued execution is blocked. Without verified containment, the run is recorded as UNKNOWN even if its direct child exits successfully. Run files are stored outside Git at RESEARCH_ROOT/.runtime/<project>/runs/.
 
 ## Official runs vs diagnostic runs
 
 - Diagnostic runs are explicitly unvalidated and allowed for pipeline debugging.
-- Official runs require DATA_READY, BASELINE_READY and GPU_READY evidence in the project gate manifest. The runner fails closed if any required gate is missing or invalid.
+- Official runs require DATA_READY, BASELINE_READY and GPU_READY evidence in the project gate manifest. Official execution is currently blocked even when gates appear valid; authenticated approval and immutable provenance are not yet implemented.
 - An automatically produced technical record is **not** independent scientific certification.
 
 Useful commands:

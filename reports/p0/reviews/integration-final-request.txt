@@ -1,0 +1,1061 @@
+Independent final-scope adversarial review of exact Git commit 29b32a46ac333c72fdfc9afa8db4b7357772c822. All source below is generated locally from Git blobs via git show. Identify CRITICAL/HIGH bugs, root causes, reproducible scenarios, and any remaining prerequisite gaps; distinguish standalone components from live integrated execution. No tools and no test execution: say so. Do not certify scientific validity or operational readiness.
+
+--- scripts/researchctl.py ---
+#!/usr/bin/env python3
+"""Local research run ledger + optional Pueue queue; Python stdlib only.
+
+Not an agent sandbox, isolation boundary, or independent scientific certifier.
+"""
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import shlex
+import sqlite3
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+BASE = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = BASE / "config" / "projects.json"
+REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
+
+# Explicit path enables direct execution and importlib-based test loading.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_registry
+
+
+class ResearchError(Exception):
+    pass
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def sha_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_json(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def atomic_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     prefix=".pending-", delete=False) as temp:
+        json.dump(payload, temp, indent=2, sort_keys=True)
+        temp.write("\n")
+        staged = Path(temp.name)
+    os.replace(staged, path)
+
+
+def settings():
+    cfg = load_json(Path(os.getenv("HERDR_ML_CONFIG", str(DEFAULT_CONFIG))).expanduser())
+    if cfg.get("version") != 1 or not isinstance(cfg.get("projects"), list):
+        raise ResearchError("Invalid projects manifest")
+    return cfg
+
+
+def select_project(project_id):
+    selected = next((p for p in settings()["projects"] if p.get("id") == project_id), None)
+    if selected is None:
+        raise ResearchError(f"Unknown project: {project_id}")
+    directory = selected.get("directory", "")
+    if not directory or Path(directory).name != directory or directory in (".", ".."):
+        raise ResearchError("Unsafe project directory in config")
+    if not project_id.replace("-", "").replace("_", "").isalnum():
+        raise ResearchError("Unsafe project ID")
+    root = Path(os.getenv("RESEARCH_ROOT", str(Path.home() / "research"))).expanduser().resolve()
+    return selected, root / directory, root / ".runtime" / project_id
+
+
+def git_metadata(checkout):
+    if not (checkout / ".git").exists():
+        return {"sha": None, "dirty": None}
+    def git(*args):
+        result = subprocess.run(["git", "-C", str(checkout), *args],
+                                capture_output=True, text=True, check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+    sha = git("rev-parse", "HEAD")
+    changed = git("status", "--porcelain")
+    return {"sha": sha, "dirty": None if changed is None else bool(changed)}
+
+
+def gate_report(checkout, gate_file=None):
+    path = Path(gate_file).expanduser() if gate_file else checkout / ".research" / "gates.json"
+    if not path.is_file():
+        return {"valid": False, "path": str(path), "problems": ["Missing gate file"]}
+    try:
+        data = load_json(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"valid": False, "path": str(path), "problems": [f"Unreadable gate JSON: {exc}"]}
+    entries = data.get("gates", {})
+    errors = []
+    if data.get("schema_version") != 1 or not isinstance(entries, dict):
+        errors.append("Invalid gate schema")
+        entries = {}
+    for gate in REQUIRED:
+        entry = entries.get(gate, {})
+        if not isinstance(entry, dict) or entry.get("status") != "PASS":
+            errors.append(f"{gate}: missing PASS verdict")
+            continue
+        if not entry.get("reviewer") or not entry.get("reviewed_at"):
+            errors.append(f"{gate}: missing reviewer/date")
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{gate}: missing evidence")
+        else:
+            for item in evidence:
+                if not isinstance(item, str) or not item.strip():
+                    errors.append(f"{gate}: invalid evidence item")
+                    continue
+                source = (checkout / item).resolve()
+                if not source.is_relative_to(checkout.resolve()) or not source.is_file():
+                    errors.append(f"{gate}: evidence missing/outside checkout: {item}")
+    return {"valid": not errors, "path": str(path), "problems": errors}
+
+
+def cmd_doctor(_args):
+    print("Herdr ML diagnostics (no installs or GPU allocation):")
+    for binary in ("python3", "git", "jq", "herdr", "pueue", "pueued", "uv",
+                   "mlflow", "nvidia-smi", "nvtop", "btop", "docker"):
+        print(f"  {binary:12} {shutil.which(binary) or 'not found (optional)'}")
+    if shutil.which("herdr"):
+        r = subprocess.run(["herdr", "status", "server"], capture_output=True, text=True)
+        print(f"  herdr server: {'reachable' if r.returncode == 0 else 'not reachable'}")
+    if shutil.which("pueue"):
+        r = subprocess.run(["pueue", "status"], capture_output=True, text=True)
+        print(f"  pueue daemon: {'reachable' if r.returncode == 0 else 'not reachable'}")
+    print(f"  RESEARCH_ROOT: {os.getenv('RESEARCH_ROOT', str(Path.home() / 'research'))}")
+    return 0
+
+
+def cmd_gate_status(args):
+    _, checkout, _ = select_project(args.project)
+    result = gate_report(checkout, args.gates)
+    print(json.dumps(result, indent=2))
+    return 0 if result["valid"] else 2
+
+
+def cmd_status(args):
+    _, _, runtime = select_project(args.project)
+    runs = runtime / "runs"
+    if not runs.is_dir():
+        print("No runs found")
+        return 0
+    for folder in sorted(runs.iterdir()):
+        if not folder.is_dir():
+            continue
+        try:
+            submission = load_json(folder / "submission.json")
+            registered = run_registry.inspect(folder)
+            state = registered if registered is not None else load_json(folder / "status.json")
+        except (OSError, json.JSONDecodeError):
+            print(f"{folder.name}\tINVALID\tmissing/corrupt record")
+            continue
+        # Historical terminal JSON/registry records did not verify containment.
+        label = state.get("state", "UNKNOWN")
+        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
+            label = "UNKNOWN"
+        print(f"{folder.name}\t{label}\t{submission.get('mode')}")
+    return 0
+
+
+def cmd_reconcile(args):
+    _, _, runtime = select_project(args.project)
+    if not args.run_id or Path(args.run_id).name != args.run_id or args.run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / args.run_id
+    if not folder.is_dir():
+        raise ResearchError("Unknown run")
+    entry = run_registry.inspect(folder)
+    if entry is None:
+        result = {"state": "UNKNOWN", "reason": "No registry record; legacy or pre-claim run needs investigation"}
+    elif entry["state"] in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "UNKNOWN"):
+        result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
+    else:
+        result = {"state": entry["state"], "registry": entry}
+    print(json.dumps(result, indent=2))
+    return 2 if result["state"] == "UNKNOWN" else 0
+
+
+def require_supported_execution(mode, queue, *, submission=False):
+    if mode != "diagnostic":
+        raise ResearchError("Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented")
+    if (submission and queue != "local") or (not submission and queue is not None):
+        raise ResearchError("Queued execution BLOCKED: process containment and daemon interpreter validation not implemented")
+
+
+def cmd_init_run(args):
+    project, checkout, runtime = select_project(args.project)
+    argv = list(args.command)
+    if argv and argv[0] == "--":
+        argv.pop(0)
+    if not argv:
+        raise ResearchError("Supply executable and argv after --")
+    if not (checkout / ".git").exists():
+        raise ResearchError(f"Checkout missing: {checkout}; clone before running")
+    if args.mode == "official":
+        gate = gate_report(checkout, args.gates)
+        if not gate["valid"]:
+            raise ResearchError("Official run BLOCKED: " + "; ".join(gate["problems"]))
+        if not args.approve_official:
+            raise ResearchError("Official run requires --approve-official")
+    if args.queue and args.queue != project.get("gpu_group", "gpu0"):
+        raise ResearchError("Queue must match project GPU group (shared across all projects)")
+    if args.queue and not args.approve_cost:
+        raise ResearchError("Queued execution requires --approve-cost")
+    require_supported_execution(args.mode, args.queue)
+    git = git_metadata(checkout)
+    if args.mode == "official" and (not git["sha"] or git["dirty"] is not False):
+        raise ResearchError("Official runs require a clean, pinned Git checkout")
+
+    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
+    folder = runtime / "runs" / run_id
+    folder.mkdir(parents=True, exist_ok=False)
+    submission = {
+        "schema_version": 1, "run_id": run_id, "project": args.project,
+        "mode": args.mode, "submitted_at": now(), "argv": argv,
+        "working_directory": str(checkout), "git": git,
+        "dataset_version": args.dataset_version, "split_hash": args.split_hash,
+        "seed": args.seed, "queue": args.queue or "local",
+        "python": sys.version.split()[0], "platform": platform.platform(),
+        "gate_manifest": (str(Path(args.gates).resolve()) if args.gates else
+                          str(checkout / ".research" / "gates.json")),
+    }
+    manifest = folder / "submission.json"
+    atomic_json(manifest, submission)
+    digest = sha_file(manifest)
+    (folder / "submission.sha256").write_text(digest + "\n", encoding="utf-8")
+    atomic_json(folder / "status.json", {"state": "QUEUED" if args.queue else "SUBMITTED",
+                                         "updated_at": now()})
+    cmd = [sys.executable, str(Path(__file__).resolve()), "_execute",
+           "--project", args.project, "--run-id", run_id]
+    if args.queue:
+        if not shutil.which("pueue"):
+            atomic_json(folder / "status.json", {"state": "SUBMISSION_FAILED",
+                                                 "updated_at": now(), "error": "pueue missing"})
+            raise ResearchError(f"Run {run_id}: Pueue not installed")
+        # Pueue workers may not inherit the submitter's custom project root/config.
+        cmd = ["env", "RESEARCH_ROOT=" + str(runtime.parent.parent),
+               "HERDR_ML_CONFIG=" + str(Path(os.getenv("HERDR_ML_CONFIG",
+                                                     str(DEFAULT_CONFIG))).expanduser().resolve()), *cmd]
+        launch = subprocess.run(["pueue", "add", "-g", args.queue, "--", shlex.join(cmd)],
+                                capture_output=True, text=True, check=False)
+        if launch.returncode:
+            atomic_json(folder / "status.json", {"state": "SUBMISSION_FAILED",
+                         "updated_at": now(), "error": launch.stderr.strip()[:2000]})
+            raise ResearchError(f"Run {run_id}: queue failed: {launch.stderr.strip()[:300]}")
+        print(f"QUEUED run={run_id} folder={folder}")
+        print(launch.stdout.strip())
+        return 0
+    print(f"STARTING run={run_id} folder={folder}", flush=True)
+    return execute(args.project, run_id)
+
+
+def execute(project_id, run_id):
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise ResearchError("SIGCHLD disposition is not default; cannot safely pin and reap child identity")
+    _, checkout, runtime = select_project(project_id)
+    if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / run_id
+    submission = load_json(folder / "submission.json")
+    expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
+    actual = sha_file(folder / "submission.json")
+    require_supported_execution(submission.get("mode"), submission.get("queue"), submission=True)
+    if expected != actual or submission.get("project") != project_id:
+        raise ResearchError("Submission manifest integrity mismatch")
+    status_file = folder / "status.json"
+    state = load_json(status_file).get("state")
+    # Queued records, including legacy records called "local", remain held.
+    if state != "SUBMITTED":
+        raise ResearchError(f"Refusing execution: queued or repeated state={state}")
+    try:
+        token = run_registry.claim(folder, run_id, project_id, actual, state)
+    except run_registry.RegistryError as exc:
+        raise ResearchError(str(exc)) from exc
+    if submission.get("mode") == "official":
+        gate = gate_report(checkout, submission.get("gate_manifest"))
+        current_git = git_metadata(checkout)
+        if not gate["valid"] or current_git != submission.get("git") or current_git.get("dirty") is not False:
+            atomic_json(status_file, {"state": "BLOCKED", "updated_at": now(),
+                                      "error": "Gate invalid or source checkout changed since submission"})
+            raise ResearchError("Official job BLOCKED: gates or pinned Git source changed")
+    run_registry.advance(folder, token, "CLAIMED", "DISPATCHING")
+    atomic_json(status_file, {"state": "DISPATCHING", "updated_at": now()})
+    child = None
+    interrupted = False
+    interruption_signal = None
+    group_owned = False
+
+    def signal_group(sig):
+        # The unreaped leader pins its PID/PGID. Never signal after reaping.
+        if group_owned:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def terminate(signum, _frame):
+        nonlocal interrupted, interruption_signal
+        interrupted = True
+        interruption_signal = interruption_signal or signum
+        signal_group(signal.SIGTERM)
+
+    def stop_and_reap():
+        nonlocal group_owned
+        if group_owned:
+            signal_group(signal.SIGKILL)
+            # No process-group signal is sent after wait() reaps the leader.
+            group_owned = False
+            return child.wait()
+        return None
+
+    old_handlers = {sig: signal.signal(sig, terminate)
+                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)}
+    try:
+        with (folder / "stdout.log").open("wb") as stdout, (folder / "stderr.log").open("wb") as stderr:
+            try:
+                if interrupted:
+                    code = 128 + interruption_signal
+                else:
+                    child = subprocess.Popen(submission["argv"], cwd=checkout,
+                                             stdin=subprocess.DEVNULL, stdout=stdout,
+                                             stderr=stderr, shell=False, start_new_session=True)
+                    group_owned = True
+                    run_registry.record_child(folder, token, child.pid)
+                    run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
+                    atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+                    if interrupted:
+                        signal_group(signal.SIGTERM)
+                    deadline = None
+                    while True:
+                        # WNOWAIT keeps the exited leader as a zombie, preventing
+                        # its PID and process group ID from being reused.
+                        result = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if result is not None:
+                            break
+                        if interrupted and deadline is None:
+                            deadline = time.monotonic() + 3
+                        if deadline is not None and time.monotonic() >= deadline:
+                            signal_group(signal.SIGKILL)
+                        time.sleep(0.05)
+                    code = stop_and_reap()
+            except OSError as exc:
+                if child is not None:
+                    stop_and_reap()
+                    raise
+                stderr.write((str(exc) + "\n").encode("utf-8", errors="replace"))
+                code = 127
+            except BaseException:
+                stop_and_reap()
+                raise
+        # Process groups cannot establish whether detached descendants survive.
+        # Record the leader outcome without asserting whole-workload completion.
+        leader_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
+        end_state = "UNKNOWN"
+        result = {"state": end_state, "leader_state": leader_state,
+                  "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
+                  "stdout_sha256": sha_file(folder / "stdout.log"),
+                  "stderr_sha256": sha_file(folder / "stderr.log")}
+        run_registry.finish(folder, token, result)
+        atomic_json(folder / "result.json", result)
+        atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
+        print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
+        return 128 + interruption_signal if interrupted else (2 if code == 0 else (code if code >= 0 else 128 + abs(code)))
+    finally:
+        stop_and_reap()
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
+
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("doctor")
+    status = sub.add_parser("status")
+    status.add_argument("--project", required=True)
+    reconcile = sub.add_parser("reconcile", help="Inspect a run without reclaiming ownership")
+    reconcile.add_argument("--project", required=True)
+    reconcile.add_argument("--run-id", required=True)
+    gates = sub.add_parser("gate-status")
+    gates.add_argument("--project", required=True)
+    gates.add_argument("--gates")
+    run = sub.add_parser("init-run")
+    run.add_argument("--project", required=True)
+    run.add_argument("--mode", choices=("diagnostic", "official"), required=True)
+    run.add_argument("--dataset-version", required=True)
+    run.add_argument("--split-hash", required=True)
+    run.add_argument("--seed", type=int, required=True)
+    run.add_argument("--gates")
+    run.add_argument("--queue")
+    run.add_argument("--approve-cost", action="store_true")
+    run.add_argument("--approve-official", action="store_true")
+    run.add_argument("command", nargs=argparse.REMAINDER)
+    worker = sub.add_parser("_execute", help=argparse.SUPPRESS)
+    worker.add_argument("--project", required=True)
+    worker.add_argument("--run-id", required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.action == "doctor":
+            return cmd_doctor(args)
+        if args.action == "status":
+            return cmd_status(args)
+        if args.action == "reconcile":
+            return cmd_reconcile(args)
+        if args.action == "gate-status":
+            return cmd_gate_status(args)
+        if args.action == "init-run":
+            return cmd_init_run(args)
+        return execute(args.project, args.run_id)
+    except (ResearchError, run_registry.RegistryError, sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    if sys.version_info < (3, 10):
+        print("ERROR: Python 3.10 or later is required", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main())
+
+--- scripts/run_registry.py ---
+"""Transactional per-run ownership for a single trusted Linux host.
+
+SQLite is authoritative; JSON files written by the runner are projections.
+An active claim is never reclaimed here, even when its owner appears dead:
+without verified containment, descendants may still be running.
+"""
+import json
+import os
+from pathlib import Path
+import socket
+import sqlite3
+import uuid
+
+
+class RegistryError(Exception):
+    pass
+
+
+def _connect(folder):
+    db = sqlite3.connect(str(Path(folder) / 'registry.sqlite3'), timeout=30, isolation_level=None)
+    db.execute('PRAGMA synchronous=FULL')
+    db.execute('PRAGMA busy_timeout=30000')
+    db.execute('''CREATE TABLE IF NOT EXISTS run (
+        id INTEGER PRIMARY KEY CHECK (id = 1), run_id TEXT NOT NULL,
+        project TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL, owner TEXT NOT NULL, owner_pid INTEGER NOT NULL,
+        owner_host TEXT NOT NULL, owner_boot TEXT, owner_start TEXT,
+        queue_task_id TEXT, result_json TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
+        id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
+        boot TEXT, start_ticks TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        owner TEXT, state TEXT NOT NULL, detail TEXT)''')
+    return db
+
+
+def _identity():
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        stat = Path('/proc/self/stat').read_text()
+        start = stat[stat.rfind(')') + 2:].split()[19]
+    except (OSError, IndexError):
+        boot, start = None, None
+    return boot, start
+
+
+def claim(folder, run_id, project, digest, initial_state):
+    """Atomically create a run and claim it exactly once, never stealing owners."""
+    if initial_state not in ('SUBMITTED', 'QUEUED'):
+        raise RegistryError('Run is not eligible for execution')
+    # Older deployed workers claim with mkdir. Acquire the same marker first,
+    # atomically, so mixed versions cannot execute concurrently. Never delete
+    # it automatically: a crash here needs manual investigation.
+    try:
+        (Path(folder) / 'execution.claim').mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise RegistryError('Execution already claimed; reconcile before retry') from exc
+    directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    db = _connect(folder)
+    token = uuid.uuid4().hex
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if db.execute('SELECT 1 FROM run WHERE id=1').fetchone():
+            raise RegistryError('Run already claimed; do not retry without reconciliation')
+        boot, start = _identity()
+        db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?,?,?,?,?)',
+                   (run_id, project, digest, 'CLAIMED', token, os.getpid(),
+                    socket.gethostname(), boot, start, None, None))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (token, 'CLAIMED', 'Atomic one-time owner acquisition'))
+        db.execute('COMMIT')
+        # Persist the new registry directory entry before any dispatch.
+        directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return token
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def record_child(folder, token, pid):
+    """Record forensic identity; this is not evidence of containment."""
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        stat = Path('/proc/%d/stat' % pid).read_text()
+        start = stat[stat.rfind(')') + 2:].split()[19]
+    except (OSError, IndexError):
+        boot, start = None, None
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND state='DISPATCHING'", (token,)).fetchone():
+            raise RegistryError('Stale owner or illegal child registration')
+        db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (token, 'CHILD_IDENTIFIED', json.dumps({'pid': pid, 'boot': boot, 'start_ticks': start})))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def advance(folder, token, expected, target):
+    if (expected, target) not in {('CLAIMED', 'DISPATCHING'), ('DISPATCHING', 'RUNNING')}:
+        raise RegistryError('Illegal execution transition')
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        updated = db.execute('UPDATE run SET state=? WHERE id=1 AND owner=? AND state=?',
+                             (target, token, expected)).rowcount
+        if updated != 1:
+            raise RegistryError('Stale owner or illegal execution state')
+        db.execute('INSERT INTO events(owner,state) VALUES (?,?)', (token, target))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def finish(folder, token, result):
+    state = result.get('state')
+    if state != 'UNKNOWN':
+        raise RegistryError('Invalid terminal state')
+    data = json.dumps(result, sort_keys=True)
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        updated = db.execute("UPDATE run SET state=?, result_json=? WHERE id=1 AND owner=? AND state IN ('RUNNING','DISPATCHING')",
+                             (state, data, token)).rowcount
+        if updated != 1:
+            raise RegistryError('Stale owner or illegal terminal state')
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, state, data))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def inspect(folder):
+    path = Path(folder) / 'registry.sqlite3'
+    if not path.is_file():
+        return None
+    db = _connect(folder)
+    try:
+        row = db.execute('SELECT run_id,project,manifest_sha256,state,owner_pid,owner_host,owner_boot,owner_start,queue_task_id,result_json FROM run WHERE id=1').fetchone()
+        if row is None:
+            return None
+        fields = ('run_id','project','manifest_sha256','state','owner_pid','owner_host','owner_boot','owner_start','queue_task_id','result')
+        result = dict(zip(fields, row))
+        if result['result'] is not None:
+            result['result'] = json.loads(result['result'])
+        child = db.execute('SELECT pid,boot,start_ticks FROM child_identity WHERE id=1').fetchone()
+        result['child'] = dict(zip(('pid','boot','start_ticks'), child)) if child else None
+        result['events'] = [dict(zip(('seq','at','state','detail'), item)) for item in db.execute('SELECT seq,at,state,detail FROM events ORDER BY seq')]
+        return result
+    finally:
+        db.close()
+
+--- scripts/bootstrap-herdr.sh ---
+#!/usr/bin/env bash
+# Creates workspace/tabs for existing Git checkouts only. No cloning/training.
+set -euo pipefail
+
+# Fail closed until server-scoped identity and crash reconciliation exist.
+echo "BLOCKED: Herdr bootstrap reconciliation is not implemented; do not create or reuse workspaces with this script" >&2
+exit 2
+
+for bin in herdr jq python3; do
+  command -v "$bin" >/dev/null || { echo "Missing command: $bin" >&2; exit 2; }
+done
+herdr status server >/dev/null || { echo "Start Herdr first, then detach." >&2; exit 2; }
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG="${HERDR_ML_CONFIG:-$SCRIPT_DIR/../config/projects.json}"
+ROOT="${RESEARCH_ROOT:-$HOME/research}"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr-ml"
+STATE="$STATE_DIR/workspaces.tsv"
+mkdir -p "$ROOT" "$STATE_DIR"
+touch "$STATE"
+if command -v flock >/dev/null; then
+  exec 9>"$STATE.lock"
+  flock -n 9 || { echo "Another bootstrap is running" >&2; exit 2; }
+fi
+
+while IFS= read -r project; do
+  id="$(jq -er '.id' <<< "$project")"
+  label="$(jq -er '.label' <<< "$project")"
+  directory="$(jq -er '.directory' <<< "$project")"
+  if [[ ! "$id" =~ ^[a-z0-9][a-z0-9_-]*$ || ! "$directory" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]; then
+    echo "Unsafe project id/directory: $id / $directory" >&2
+    exit 2
+  fi
+  checkout="$ROOT/$directory"
+  if [[ ! -d "$checkout/.git" && ! -f "$checkout/.git" ]]; then
+    echo "SKIP $id: not a Git checkout: $checkout"
+    continue
+  fi
+  runtime="$ROOT/.runtime/$id"
+  mkdir -p "$runtime/logs" "$runtime/runs" "$runtime/reports"
+  touch "$runtime/logs/system.log"
+
+  existing="$(awk -F '\t' -v p="$id" '$1==p { print $2; exit }' "$STATE")"
+  if [[ -n "$existing" ]] && herdr workspace get "$existing" >/dev/null 2>&1; then
+    echo "OK $id: existing workspace $existing"
+    continue
+  fi
+
+  created="$(herdr workspace create --cwd "$checkout" --label "$label" --no-focus)"
+  workspace="$(jq -er '.result.workspace.workspace_id' <<< "$created")"
+  first_tab="$(jq -er '.result.tab.tab_id' <<< "$created")"
+  herdr tab rename "$first_tab" "$(jq -er '.tabs[0]' <<< "$project")" >/dev/null
+
+  while IFS= read -r tab_name; do
+    response="$(herdr tab create --workspace "$workspace" --cwd "$checkout" --label "$tab_name" --no-focus)"
+    pane="$(jq -er '.result.root_pane.pane_id' <<< "$response")"
+    case "$tab_name" in
+      "04 Runs")
+        if command -v pueue >/dev/null && pueue status >/dev/null 2>&1; then
+          herdr pane run "$pane" "watch -n 4 pueue status" >/dev/null
+        fi
+        ;;
+      "05 Logs")
+        printf -v cmd 'tail -n 50 -F %q' "$runtime/logs/system.log"
+        herdr pane run "$pane" "$cmd" >/dev/null
+        ;;
+      "06 GPU")
+        if command -v nvidia-smi >/dev/null 2>&1; then
+          herdr pane run "$pane" "watch -n 3 nvidia-smi" >/dev/null
+        fi
+        ;;
+    esac
+  done < <(jq -r '.tabs[1:][]' <<< "$project")
+
+  awk -F '\t' -v p="$id" '$1!=p' "$STATE" > "$STATE.new"
+  printf '%s\t%s\t%s\n' "$id" "$workspace" "$checkout" >> "$STATE.new"
+  mv "$STATE.new" "$STATE"
+  echo "CREATED $id -> $workspace"
+done < <(jq -c '.projects[]' "$CONFIG")
+echo "Done. Attach to Herdr to view workspaces."
+
+--- scripts/provenance.py ---
+#!/usr/bin/env python3
+"""Verify a signed provenance envelope; this is not an execution authorizer.
+
+The caller must supply an independently administered allowed-signers file and
+principal. Verification does not lock artifacts or prove scientific validity.
+Official execution remains disabled until a trusted execution boundary binds
+verified immutable artifacts to the actual process and environment.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import stat
+import subprocess
+
+NAMESPACE = 'herdr-ml-official-v1'
+REQUIRED_ARTIFACTS = frozenset(('source', 'environment', 'dataset_manifest',
+    'dataset_content', 'train_split', 'validation_split', 'test_split',
+    'config', 'protocol', 'baseline', 'review_evidence'))
+
+
+class ProvenanceError(Exception):
+    pass
+
+
+def _object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProvenanceError('duplicate JSON key')
+        result[key] = value
+    return result
+
+
+def _reject_constant(_value):
+    raise ProvenanceError('nonstandard JSON constant')
+
+
+def _hash_relative(root, name):
+    if not isinstance(name, str) or not name or '\\' in name or '\x00' in name:
+        raise ProvenanceError('invalid artifact path')
+    path = PurePosixPath(name)
+    if path.is_absolute() or any(part in ('', '.', '..') for part in name.split('/')):
+        raise ProvenanceError('artifact path must be relative and normalized')
+    directory = None
+    file_fd = None
+    try:
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for component in path.parts[:-1]:
+            next_dir = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = next_dir
+        file_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ProvenanceError('artifact must be a regular file')
+        digest = hashlib.sha256()
+        with os.fdopen(file_fd, 'rb') as stream:
+            file_fd = None
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+            after = os.fstat(stream.fileno())
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise ProvenanceError('artifact changed during verification')
+        return digest.hexdigest()
+    except OSError as exc:
+        raise ProvenanceError('cannot safely read artifact') from exc
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        if directory is not None:
+            os.close(directory)
+
+
+def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
+    """Verify signed bytes and all named artifact bytes, returning parsed metadata.
+
+    This is point-in-time checking, not a filesystem isolation or authorization
+    boundary. Never use this as the sole precondition for launching a run.
+    """
+    if not isinstance(principal, str) or not principal or principal.startswith('-') or '\n' in principal:
+        raise ProvenanceError('invalid trusted principal')
+    try:
+        manifest_path = Path(manifest_path)
+        with os.fdopen(os.open(manifest_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ProvenanceError('manifest must be a regular file')
+            data = handle.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            raise ProvenanceError('manifest too large')
+        verified = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(allowed_signers),
+            '-I', principal, '-n', NAMESPACE, '-s', str(signature_path)], input=data,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
+        if verified.returncode:
+            raise ProvenanceError('signature verification failed')
+        manifest = json.loads(data.decode('utf-8', errors='strict'),
+                              object_pairs_hook=_object, parse_constant=_reject_constant)
+    except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProvenanceError('unable to verify signed manifest') from exc
+    if not isinstance(manifest, dict) or type(manifest.get('schema_version')) is not int or manifest['schema_version'] != 1:
+        raise ProvenanceError('invalid manifest schema')
+    if set(manifest) != {'schema_version', 'project', 'source_git_sha', 'argv', 'seed', 'artifacts'}:
+        raise ProvenanceError('unknown or missing manifest fields')
+    if not isinstance(manifest.get('project'), str) or not manifest['project'].strip():
+        raise ProvenanceError('missing project')
+    if not isinstance(manifest.get('source_git_sha'), str) or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', manifest['source_git_sha']):
+        raise ProvenanceError('invalid Git object ID')
+    argv = manifest.get('argv')
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and '\x00' not in arg for arg in argv) or not argv[0]:
+        raise ProvenanceError('invalid command argv')
+    if type(manifest.get('seed')) is not int:
+        raise ProvenanceError('invalid seed')
+    artifacts = manifest.get('artifacts')
+    if not isinstance(artifacts, dict) or set(artifacts) != REQUIRED_ARTIFACTS:
+        raise ProvenanceError('missing or unsupported artifact roles')
+    paths = set()
+    for role, entry in artifacts.items():
+        if not isinstance(entry, dict) or set(entry) != {'path', 'sha256'}:
+            raise ProvenanceError('invalid artifact record: ' + role)
+        name, expected = entry['path'], entry['sha256']
+        if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
+            raise ProvenanceError('invalid artifact hash: ' + role)
+        if not isinstance(name, str) or name in paths:
+            raise ProvenanceError('duplicate or invalid artifact path')
+        paths.add(name)
+        if _hash_relative(manifest_path.parent, name) != expected:
+            raise ProvenanceError('artifact digest mismatch: ' + role)
+    split_hashes = [artifacts[role]['sha256'] for role in ('train_split', 'validation_split', 'test_split')]
+    if len(set(split_hashes)) != len(split_hashes):
+        raise ProvenanceError('split artifacts have identical content')
+    return manifest
+
+--- scripts/herdr_reconcile.py ---
+"""Crash-aware Herdr layout reconciliation core.
+
+This module deliberately has no live Herdr adapter or command-line entry point.
+The bootstrap safety hold remains in place until the actual server identity and
+CLI data contracts are established and integration-tested in an authorized pane.
+
+Adapter contract (a future adapter MUST obtain these values from the same server):
+  identity() -> nonempty stable server/session incarnation identifier
+  workspaces() -> iterable of {id, label, cwd}
+  tabs(workspace_id) -> iterable of {id, label, cwd}
+  create_workspace(label, cwd) -> None
+  create_tab(workspace_id, label, cwd) -> None
+
+A create may have taken effect even when it throws. The durable intent carries a
+unique marker, allowing only a single verifiable match to be adopted. If an
+uncertain create has no observable match, automatic retry is forbidden.
+"""
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+import tempfile
+import uuid
+
+
+class ReconcileBlocked(Exception):
+    """The next mutation cannot be made safely without operator investigation."""
+
+
+def marker(prefix, token, name):
+    return f"{name} [herdr-ml:{prefix}:{token}]"
+
+
+def _canonical(path):
+    return str(Path(path).expanduser().resolve(strict=True))
+
+
+def _write(path, state):
+    """Persist record and directory entry before issuing an external mutation."""
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile('w', dir=path.parent, prefix='.state-',
+                                         encoding='utf-8', delete=False) as temp:
+            temp_path = temp.name
+            os.fchmod(temp.fileno(), 0o600)
+            json.dump(state, temp, sort_keys=True, indent=2)
+            temp.write('\n')
+            temp.flush()
+            os.fsync(temp.fileno())
+        os.replace(temp_path, path)
+        temp_path = None
+        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    finally:
+        if temp_path is not None:
+            os.unlink(temp_path)
+
+
+@contextlib.contextmanager
+def _locked(path):
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.with_suffix(path.suffix + '.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
+def _one(objects, label, cwd):
+    matches = [obj for obj in objects if obj.get('label') == label]
+    if len(matches) > 1:
+        raise ReconcileBlocked('Multiple objects have the same ownership marker')
+    if not matches:
+        return None
+    obj = matches[0]
+    if not isinstance(obj.get('id'), str) or not obj['id']:
+        raise ReconcileBlocked('Object has no stable ID')
+    try:
+        actual = _canonical(obj['cwd'])
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        raise ReconcileBlocked('Object has no verifiable checkout') from exc
+    if actual != cwd:
+        raise ReconcileBlocked('Object marker exists at a different checkout')
+    return obj['id']
+
+
+def _check_identity(adapter, record):
+    if adapter.identity() != record["server"]:
+        raise ReconcileBlocked("Server/session identity changed during reconciliation")
+
+
+def _reject_untracked_workspace(objects, label, checkout):
+    # State may be lost while the corresponding live workspace survives. Never
+    # create a new marker until the authoritative inventory proves there is no
+    # managed workspace for this label OR checkout. Conservative blocking also
+    # covers an unavailable cwd, since ownership cannot then be disproved.
+    pattern = re.compile(r'^(.*) \[herdr-ml:workspace:[0-9a-f]{32}\]$')
+    for obj in objects:
+        object_label = obj.get('label')
+        match = pattern.fullmatch(object_label) if isinstance(object_label, str) else None
+        if not match:
+            continue
+        try:
+            existing_checkout = _canonical(obj['cwd'])
+        except (KeyError, OSError, TypeError, ValueError) as exc:
+            raise ReconcileBlocked(
+                f"Managed workspace id={obj.get('id')!r} label={object_label!r} "
+                'has unverifiable checkout; operator reconciliation required'
+            ) from exc
+        if match.group(1) == label or existing_checkout == checkout:
+            raise ReconcileBlocked('Managed workspace exists but local ownership state is missing')
+
+
+def _complete_intent(adapter, record, state_path):
+    """Resolve a persisted intent without ever blindly repeating a mutation."""
+    _check_identity(adapter, record)
+    pending = record['pending']
+    if pending['kind'] == 'workspace':
+        objects = adapter.workspaces()
+    elif pending['kind'] == 'tab':
+        objects = adapter.tabs(record['workspace_id'])
+    else:
+        raise ReconcileBlocked('Unknown pending operation')
+    _check_identity(adapter, record)
+    found = _one(objects, pending['label'], record['checkout'])
+    if found is None:
+        raise ReconcileBlocked('Ambiguous operation: no matching object; do not retry automatically')
+    if pending['kind'] == 'workspace':
+        record['workspace_id'] = found
+    else:
+        record['tabs'][pending['key']] = found
+    record['pending'] = None
+    _write(state_path, record)
+
+
+def _intent_then_create(adapter, record, path, kind, label, key=None):
+    _check_identity(adapter, record)
+    record['pending'] = {'kind': kind, 'label': label, 'key': key}
+    _write(path, record)
+    # Exceptions, timeouts, process death, and malformed responses all leave the
+    # durable intent intact. A later invocation must discover the outcome.
+    _check_identity(adapter, record)
+    if kind == 'workspace':
+        adapter.create_workspace(label, record['checkout'])
+    else:
+        adapter.create_tab(record['workspace_id'], label, record['checkout'])
+    _complete_intent(adapter, record, path)
+
+
+def reconcile(adapter, state_path, project_id, label, checkout, tabs):
+    """Reconcile one project. Caller supplies only authenticated adapter data.
+
+    A failed identity, changed checkout, duplicate marker, or unknown mutation
+    outcome is BLOCKED; this routine never deletes, renames, or focuses anything.
+    """
+    path = Path(state_path)
+    if not isinstance(project_id, str) or not project_id or not isinstance(label, str) or not label:
+        raise ValueError('Project identity and label are required')
+    if not isinstance(tabs, (list, tuple)) or not tabs or any(not isinstance(t, str) or not t for t in tabs) or len(set(tabs)) != len(tabs):
+        raise ValueError('Tabs must be a nonempty list of unique names')
+    checkout = _canonical(checkout)
+    if not (Path(checkout) / '.git').exists():
+        raise ReconcileBlocked('Checkout is not a Git worktree')
+    with _locked(path):
+        identity = adapter.identity()
+        if not isinstance(identity, str) or not identity:
+            raise ReconcileBlocked('Server/session incarnation identity is unavailable')
+        if path.exists():
+            try:
+                record = json.loads(path.read_text(encoding='utf-8'))
+            except (OSError, ValueError) as exc:
+                raise ReconcileBlocked('State cannot be read') from exc
+            if not isinstance(record, dict) or record.get('version') != 1:
+                raise ReconcileBlocked('Unknown state format')
+            if (record.get('server') != identity or record.get('project') != project_id or
+                    record.get('checkout') != checkout or record.get('label') != label):
+                raise ReconcileBlocked('Stored project, checkout, label, or server identity changed')
+        else:
+            existing_workspaces = list(adapter.workspaces())
+            if adapter.identity() != identity:
+                raise ReconcileBlocked('Server/session identity changed during discovery')
+            _reject_untracked_workspace(existing_workspaces, label, checkout)
+            token = uuid.uuid4().hex
+            record = {'version': 1, 'server': identity, 'project': project_id,
+                      'label': label, 'checkout': checkout, 'token': token,
+                      'workspace_id': None, 'tabs': {}, 'pending': None}
+            _write(path, record)
+        if record.get('pending'):
+            _complete_intent(adapter, record, path)
+        _check_identity(adapter, record)
+        workspace_label = marker('workspace', record['token'], label)
+        observed = _one(adapter.workspaces(), workspace_label, checkout)
+        if record['workspace_id'] is None:
+            _reject_untracked_workspace(adapter.workspaces(), label, checkout)
+            _check_identity(adapter, record)
+            if observed:
+                raise ReconcileBlocked('Unrecorded workspace without matching intent')
+            _intent_then_create(adapter, record, path, 'workspace', workspace_label)
+        elif observed != record['workspace_id']:
+            raise ReconcileBlocked('Workspace missing, moved, or ID reused')
+        for tab_name in tabs:
+            _check_identity(adapter, record)
+            # Marker uses a digest rather than raw arbitrary input for stable uniqueness.
+            tab_token = hashlib.sha256(tab_name.encode('utf-8')).hexdigest()[:16]
+            tab_label = marker('tab', record['token'] + '-' + tab_token, tab_name)
+            current_tabs = list(adapter.tabs(record['workspace_id']))
+            _check_identity(adapter, record)
+            observed = _one(current_tabs, tab_label, checkout)
+            old = record['tabs'].get(tab_name)
+            if old is not None and any(obj.get('id') == old and obj.get('label') != tab_label for obj in current_tabs):
+                raise ReconcileBlocked('Tab ID reused for an unrelated object')
+            if observed:
+                if old is None or old != observed:
+                    raise ReconcileBlocked('Unrecorded or replaced tab marker')
+            else:
+                _intent_then_create(adapter, record, path, 'tab', tab_label, tab_name)
+        _check_identity(adapter, record)
+        return {'workspace_id': record['workspace_id'], 'tabs': dict(record['tabs'])}

@@ -1,0 +1,27 @@
+== attach1: 7 JSON objects
+  obj0: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": true, "height": 40, "seq": 1, "type": "terminal.frame", "width": 120} decoded_bytes=5196 ticks=['1']..['8'] count=8
+  obj1: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 2, "type": "terminal.frame", "width": 120} decoded_bytes=119 ticks=[]..[] count=0
+  obj2: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 3, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  obj3: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 4, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  obj4: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 5, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  obj5: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 6, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  obj6: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 7, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  total TICK occurrences decoded: 8; unique: 8
+== attach2: 7 JSON objects
+  obj0: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": true, "height": 40, "seq": 1, "type": "terminal.frame", "width": 120} decoded_bytes=5196 ticks=['1']..['18'] count=18
+  obj1: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 2, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  obj2: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 3, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  obj3: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 4, "type": "terminal.frame", "width": 120} decoded_bytes=120 ticks=[]..[] count=0
+  obj4: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 5, "type": "terminal.frame", "width": 120} decoded_bytes=1362 ticks=[]..[] count=0
+  obj5: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 6, "type": "terminal.frame", "width": 120} decoded_bytes=1243 ticks=[]..[] count=0
+  obj6: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 7, "type": "terminal.frame", "width": 120} decoded_bytes=1099 ticks=[]..[] count=0
+  total TICK occurrences decoded: 18; unique: 18
+== attach3: 7 JSON objects
+  obj0: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": true, "height": 40, "seq": 1, "type": "terminal.frame", "width": 120} decoded_bytes=5144 ticks=['3']..['28'] count=26
+  obj1: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 2, "type": "terminal.frame", "width": 120} decoded_bytes=758 ticks=[]..[] count=0
+  obj2: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 3, "type": "terminal.frame", "width": 120} decoded_bytes=758 ticks=[]..[] count=0
+  obj3: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 4, "type": "terminal.frame", "width": 120} decoded_bytes=759 ticks=[]..[] count=0
+  obj4: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 5, "type": "terminal.frame", "width": 120} decoded_bytes=759 ticks=[]..[] count=0
+  obj5: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 6, "type": "terminal.frame", "width": 120} decoded_bytes=759 ticks=[]..[] count=0
+  obj6: keys=['bytes', 'encoding', 'full', 'height', 'seq', 'type', 'width'] meta={"encoding": "ansi", "full": false, "height": 40, "seq": 7, "type": "terminal.frame", "width": 120} decoded_bytes=760 ticks=[]..[] count=0
+  total TICK occurrences decoded: 26; unique: 26

@@ -1,0 +1,7 @@
+# Preliminary independent GPT artifact-tree re-review
+
+Reviewed immutable commit `c1c3d897eadd26ad0cc7374e17090b0c3fdcdc28` in a fresh detached worktree. This is an independent fallback review, not Opus approval. Scope: `scripts/artifact_tree.py` and its tests. No HIGH/CRITICAL finding identified in this standalone diagnostic scope.
+
+The earlier output-budget, FIFO and duplicate-key issues are addressed. I independently repeated the prior temporary-directory reproduction (14 levels of 245-character components and 4,900 files): the scanner refused with `manifest size limit exceeded`. A FIFO returned 2 immediately, a symlink to an otherwise-valid regular manifest returned 2, a duplicate-key manifest returned 2, and a normal valid manifest returned 0. A `NaN` JSON constant returned 2 with `nonstandard JSON constant`. The current tests additionally exercise these paths.
+
+Focused CPU suite `python3.10 -m unittest discover -s tests -p test_artifact_tree.py -v`: 12/12 passed. Same command with Python 3.12: 12/12 passed. The global entry/name/depth/path limits and serialized-size estimate bound the normal CLI's accumulated manifest; this is not a formal worst-case RSS proof for every library caller or filesystem. Scan and read checks do not provide an atomic immutable snapshot, authenticate a manifest, bind actual job data access, or establish model or scientific correctness. Root ancestor paths remain trusted. Queue and official holds remain necessary.

@@ -1,0 +1,899 @@
+Independent re-review of commit 04cf77be37dd52fb3b8bf97fc66763e57554f53c. Check whether the prior integration review findings are addressed, and look for new HIGH/CRITICAL defects. Bootstrap and official/queued holds remain in place. Source below is Git-exported, no tools or tests available.
+# Adversarial review of commit `29b32a4`: researchctl, run registry, provenance, Herdr reconcile
+
+**Method:** I used no tools and ran no tests. This is static reading of the source you pasted. I did not check that the paste matches the Git blobs, and I did not confirm any runtime behaviour. Every scenario below comes from reading the code and is not reproduced. Nothing here certifies scientific validity or operational readiness.
+
+## Scope: what is live and what is standalone
+
+| Component | Status at this commit |
+|---|---|
+| `researchctl.py init-run --mode diagnostic` (local) → `execute` | **Live, reachable.** This is the only path that executes anything. |
+| `researchctl.py` official mode, queued mode, Pueue dispatch | Blocked by `require_supported_execution`. The code after the block is dead. |
+| `researchctl.py status / reconcile / gate-status / doctor` | Live, read-only in intent. |
+| `run_registry.py` | Live, used by the diagnostic path. |
+| `bootstrap-herdr.sh` | Blocked by an unconditional `exit 2`. Everything after it is dead. |
+| `provenance.py` | **Standalone.** Nothing imports it, so no execution decision depends on it. |
+| `herdr_reconcile.py` | **Standalone.** It has no adapter and no CLI. Its findings are latent until it is integrated. |
+
+## Verdict
+
+- **CRITICAL:** none found.
+- **HIGH on the live path:** none confirmed. The invariants the code claims appear to hold on Linux:
+  - exactly-once claim, via `mkdir` plus a SQLite `BEGIN IMMEDIATE`;
+  - no process-group signal after the leader is reaped, because `WNOWAIT` keeps the leader as a zombie so its PID/PGID cannot be reused;
+  - fail-closed blocks on official and queued execution;
+  - `UNKNOWN` as the only terminal state.
+- **HIGH if integrated:** two findings in `herdr_reconcile.py` (L1, L2 below).
+- Several MEDIUM/LOW defects listed below.
+
+---
+
+## Live path findings (`researchctl.py`, `run_registry.py`)
+
+### M1: Parsed argv is not bound to the hashed bytes (TOCTOU) — MEDIUM
+**Root cause:** `execute` reads `submission.json` twice. `load_json()` parses one read, and `sha_file()` hashes a second read. The registry stores the digest of the second read, but `Popen` runs the argv from the first.
+**Scenario:** Between the two reads, `submission.json` is replaced with a version whose hash matches `submission.sha256`. The run then executes argv A while the registry records the digest of manifest B.
+**Context:** The `.sha256` file sits in the same writable directory, so this is a corruption check, not authentication. Anyone who can write the folder can already rewrite both files.
+**Fix:** Read the bytes once, hash them, then parse those same bytes.
+
+### M2: Log hashes are recorded while escaped descendants may still be writing — MEDIUM
+**Root cause:** After the leader is reaped, `stdout_sha256` and `stderr_sha256` are computed immediately. A descendant that called `setsid()` survives the group `SIGKILL`, keeps the inherited log fds, and keeps appending.
+**Scenario:** The workload spawns a detached logger and exits 0. `result.json` records hashes that no longer match the log files. The code marks `containment: UNKNOWN`, but the hashes still look final. Label them as a snapshot or omit them.
+
+### M3: No platform guard; on non-Linux, a run is launched, killed, and wedged — MEDIUM (outside the declared platform)
+**Root cause:** `os.waitid` does not exist on macOS. The `AttributeError` is raised after `Popen` and after the registry reaches `RUNNING`.
+**Scenario:** On macOS, the claim succeeds and the workload starts. `except BaseException` then calls `stop_and_reap()` and SIGKILLs it. The registry stays `RUNNING` permanently, and `main` does not catch `AttributeError`, so the user sees a traceback.
+**Fix:** Refuse at the start of `execute` unless running on Linux with `os.waitid` available.
+
+### M4: Claims can be stranded with no operator resolution path — MEDIUM (gap)
+Several points leave a run permanently claimed with no tooling to resolve it:
+- A crash after `mkdir execution.claim`.
+- A commit followed by a failed directory fsync. The claim is committed but no token is returned.
+- A SIGINT before the handlers are installed. Handlers are installed after `advance(DISPATCHING)`, so the default handler raises `KeyboardInterrupt`, which `main` does not catch.
+
+In all cases the registry is left at CLAIMED/DISPATCHING. `reconcile` only reports `UNKNOWN`. Failing closed is correct here, but the documented manual investigation procedure is missing.
+
+### L1: `status` contradicts the claim marker — LOW
+If a crash happens after `mkdir execution.claim` but before the registry row is committed, `inspect()` returns `None`. `cmd_status` then falls back to `status.json` and prints `SUBMITTED`, while `reconcile` reports `UNKNOWN`. `status` should treat an existing `execution.claim` as `UNKNOWN`.
+
+### L2: One bad registry hides every run in `status` — LOW
+The per-folder `except` in `cmd_status` catches `OSError` and `JSONDecodeError`, but not `sqlite3.Error`. A single corrupt registry, or one locked for more than 30 s, aborts the whole listing through `main`. Separately, `inspect()` goes through `_connect`, which issues DDL and pragmas, so it is not strictly read-only.
+
+### L3: Unhandled `AttributeError` on non-object JSON — LOW
+These all raise an uncaught `AttributeError` and a traceback. They fail closed, but noisily:
+- a gates file that is a JSON list (`data.get`);
+- a config file that is a list;
+- non-dict project entries.
+
+### L4: Durability is asymmetric — LOW
+SQLite is durable (`synchronous=FULL`). The JSON projections are not:
+- `atomic_json` never fsyncs the file or its directory.
+- `submission.sha256` is written with a non-atomic `write_text`.
+- The run folder's entry in `runs/` is never fsynced.
+
+After a power loss, the forensic manifest can be empty, or the whole run folder can be missing, even though a workload was launched.
+
+### L5: Exit code 2 is ambiguous — LOW
+A successful leader returns 2 by design, since containment is unknown. But 2 is also the exit code for refusals, claim conflicts, and argparse errors. Automation cannot tell "ran, outcome unknown" apart from "never ran".
+
+### L6: Diagnostic provenance is weak — LOW (documented limitation)
+- Git state is captured at submission only, and `dirty` is a boolean.
+- Nothing is re-captured at execution time.
+- A `SUBMITTED` run that was never executed stays executable through `_execute` indefinitely, for example after `execute` refused on the SIGCHLD check. It would then run against whatever the checkout contains at that later time.
+
+### Paths I checked that look correct
+- **Signal races:** a signal before, during, or just after `Popen`; the `group_owned` toggle inside `stop_and_reap`.
+- **Reap ordering:** `waitid(WNOWAIT)` keeps the zombie, the group is SIGKILLed, then `wait()` reaps.
+- **Leader PGID:** `start_new_session` makes the leader a session leader, which cannot call `setpgid`, so its PGID stays pinned.
+- **Child start-time parsing:** the `/proc/<pid>/stat` field index (starttime is index 19 after `)`).
+- **Exactly-once:** `mkdir` together with the `id=1` row check.
+- **Registry transitions:** the transition whitelist, and the `finish` guard on `RUNNING`/`DISPATCHING`.
+
+---
+
+## Standalone components
+
+### `provenance.py` (not wired into anything)
+- **P1 — MEDIUM:** The manifest and artifacts are not bound to the same directory instance. The manifest is opened by path, then each artifact re-opens `manifest_path.parent` by name. If the parent directory, or one of its ancestors (only the final component uses `O_NOFOLLOW`), is renamed or swapped between signature verification and hashing, artifacts are hashed from a different tree. **Fix:** open the parent directory fd once, `openat` the manifest relative to it, and reuse that fd for the artifacts.
+- **P2 — LOW:** `os.open` runs before the `S_ISREG` check. With `O_NONBLOCK` this avoids hanging on a FIFO, but a device node inside the tree is still opened, which can have side effects. Check with `fstatat(AT_SYMLINK_NOFOLLOW)` first.
+- **P3 — LOW:** Some failures on a validly signed manifest escape as non-`ProvenanceError` exceptions. Very large integer literals exceed `int_max_str_digits` and raise a plain `ValueError`, and deep nesting raises `RecursionError`. Exploiting this requires a signer.
+- **Integration gap:** none of these is cross-checked against anything:
+  - `project`;
+  - `source_git_sha` against the `source` artifact;
+  - `argv` against what actually runs.
+
+  As the docstring says, verification is point-in-time and does not authorize execution.
+
+### `herdr_reconcile.py` (no adapter)
+- **L1 — HIGH if integrated: legacy workspaces are duplicated.**
+  - **Root cause:** `_reject_untracked_workspace` only recognises labels carrying the `[herdr-ml:workspace:<32hex>]` marker. The old bootstrap created workspaces with plain labels and recorded them in `workspaces.tsv`. This module never reads that file.
+  - **Scenario:** A user who ran the old bootstrap runs the new reconciler. It creates a second workspace for the same checkout.
+  - **Fix:** Add a migration or adoption path, or block when any workspace's cwd equals the checkout.
+- **L2 — HIGH if integrated: the meaning of `cwd` is unspecified.**
+  - **Root cause:** If the adapter reports a pane's live cwd rather than the cwd it was created with, the checks break as soon as a user runs `cd`:
+    - `_one` blocks with "different checkout".
+    - `_reject_untracked_workspace` can wrongly attribute another project's checkout to this workspace and block that project.
+  - **Fix:** The adapter contract must state which cwd it returns.
+- **L3 — MEDIUM: missing tabs and missing workspaces are handled inconsistently.**
+  - A missing workspace is BLOCKED. A recorded tab that is missing is silently recreated with the same deterministic label.
+  - **Scenario:** `tabs()` returns a transient partial listing. A duplicate tab is created, and every later run blocks with "Multiple objects".
+- **L4 — MEDIUM: a server restart has no recovery path.** Any change of identity blocks permanently. Deleting the state file does not help if Herdr restores the old workspaces, because `_reject_untracked_workspace` then blocks again. Routine reboots therefore need an adoption procedure that does not exist yet.
+- **L5 — LOW: the identity check does not protect lazy listings.** The contract allows any iterable. In `_complete_intent`, `adapter.workspaces()` is followed by `_check_identity`; if it returns a generator, the real fetch happens during `_one`, after the second identity check, so the identity "sandwich" protects nothing. Materialise with `list()` before the post-check.
+- **L6 — LOW:** A malformed state file (non-dict `tabs`, missing `token`) raises `AttributeError` or `KeyError` instead of `ReconcileBlocked`.
+
+### `bootstrap-herdr.sh`
+The hold is effective: `exit 2` runs before any side effect. The dead code below it still has the old unsafe pattern: no marker, a non-atomic TSV, and no intent journal. Delete it rather than relying on the hold staying in place.
+
+---
+
+## Remaining prerequisite gaps (not bugs at this commit, since they are blocked or documented)
+1. **No real containment.** There is no cgroup, systemd scope, or other kill-all primitive, so descendants that call `setsid` can outlive the run while holding the GPU and log fds. There is also no wall-clock timeout.
+2. **No authenticated approval or trusted execution boundary for official runs.** `provenance.py` is not bound to the process that actually executes.
+3. **No safe queued execution.** The daemon's interpreter and environment are not validated, and there is no containment.
+4. **No operator procedure** for resolving stranded claims or `UNKNOWN` runs.
+5. **No live Herdr adapter.** Server identity, the cwd semantics, and migration from legacy workspaces are all undefined.
+6. **Gate files are self-attested.** Evidence is checked for existence only, not content.
+
+--- scripts/researchctl.py ---
+#!/usr/bin/env python3
+"""Local research run ledger + optional Pueue queue; Python stdlib only.
+
+Not an agent sandbox, isolation boundary, or independent scientific certifier.
+"""
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import shlex
+import sqlite3
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+BASE = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = BASE / "config" / "projects.json"
+REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
+
+# Explicit path enables direct execution and importlib-based test loading.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_registry
+
+
+class ResearchError(Exception):
+    pass
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def sha_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_json(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def atomic_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     prefix=".pending-", delete=False) as temp:
+        json.dump(payload, temp, indent=2, sort_keys=True)
+        temp.write("\n")
+        staged = Path(temp.name)
+    os.replace(staged, path)
+
+
+def settings():
+    cfg = load_json(Path(os.getenv("HERDR_ML_CONFIG", str(DEFAULT_CONFIG))).expanduser())
+    if cfg.get("version") != 1 or not isinstance(cfg.get("projects"), list):
+        raise ResearchError("Invalid projects manifest")
+    return cfg
+
+
+def select_project(project_id):
+    selected = next((p for p in settings()["projects"] if p.get("id") == project_id), None)
+    if selected is None:
+        raise ResearchError(f"Unknown project: {project_id}")
+    directory = selected.get("directory", "")
+    if not directory or Path(directory).name != directory or directory in (".", ".."):
+        raise ResearchError("Unsafe project directory in config")
+    if not project_id.replace("-", "").replace("_", "").isalnum():
+        raise ResearchError("Unsafe project ID")
+    root = Path(os.getenv("RESEARCH_ROOT", str(Path.home() / "research"))).expanduser().resolve()
+    return selected, root / directory, root / ".runtime" / project_id
+
+
+def git_metadata(checkout):
+    if not (checkout / ".git").exists():
+        return {"sha": None, "dirty": None}
+    def git(*args):
+        result = subprocess.run(["git", "-C", str(checkout), *args],
+                                capture_output=True, text=True, check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+    sha = git("rev-parse", "HEAD")
+    changed = git("status", "--porcelain")
+    return {"sha": sha, "dirty": None if changed is None else bool(changed)}
+
+
+def gate_report(checkout, gate_file=None):
+    path = Path(gate_file).expanduser() if gate_file else checkout / ".research" / "gates.json"
+    if not path.is_file():
+        return {"valid": False, "path": str(path), "problems": ["Missing gate file"]}
+    try:
+        data = load_json(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"valid": False, "path": str(path), "problems": [f"Unreadable gate JSON: {exc}"]}
+    entries = data.get("gates", {})
+    errors = []
+    if data.get("schema_version") != 1 or not isinstance(entries, dict):
+        errors.append("Invalid gate schema")
+        entries = {}
+    for gate in REQUIRED:
+        entry = entries.get(gate, {})
+        if not isinstance(entry, dict) or entry.get("status") != "PASS":
+            errors.append(f"{gate}: missing PASS verdict")
+            continue
+        if not entry.get("reviewer") or not entry.get("reviewed_at"):
+            errors.append(f"{gate}: missing reviewer/date")
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{gate}: missing evidence")
+        else:
+            for item in evidence:
+                if not isinstance(item, str) or not item.strip():
+                    errors.append(f"{gate}: invalid evidence item")
+                    continue
+                source = (checkout / item).resolve()
+                if not source.is_relative_to(checkout.resolve()) or not source.is_file():
+                    errors.append(f"{gate}: evidence missing/outside checkout: {item}")
+    return {"valid": not errors, "path": str(path), "problems": errors}
+
+
+def cmd_doctor(_args):
+    print("Herdr ML diagnostics (no installs or GPU allocation):")
+    for binary in ("python3", "git", "jq", "herdr", "pueue", "pueued", "uv",
+                   "mlflow", "nvidia-smi", "nvtop", "btop", "docker"):
+        print(f"  {binary:12} {shutil.which(binary) or 'not found (optional)'}")
+    if shutil.which("herdr"):
+        r = subprocess.run(["herdr", "status", "server"], capture_output=True, text=True)
+        print(f"  herdr server: {'reachable' if r.returncode == 0 else 'not reachable'}")
+    if shutil.which("pueue"):
+        r = subprocess.run(["pueue", "status"], capture_output=True, text=True)
+        print(f"  pueue daemon: {'reachable' if r.returncode == 0 else 'not reachable'}")
+    print(f"  RESEARCH_ROOT: {os.getenv('RESEARCH_ROOT', str(Path.home() / 'research'))}")
+    return 0
+
+
+def cmd_gate_status(args):
+    _, checkout, _ = select_project(args.project)
+    result = gate_report(checkout, args.gates)
+    print(json.dumps(result, indent=2))
+    return 0 if result["valid"] else 2
+
+
+def cmd_status(args):
+    _, _, runtime = select_project(args.project)
+    runs = runtime / "runs"
+    if not runs.is_dir():
+        print("No runs found")
+        return 0
+    for folder in sorted(runs.iterdir()):
+        if not folder.is_dir():
+            continue
+        try:
+            submission = load_json(folder / "submission.json")
+            registered = run_registry.inspect(folder)
+            state = registered if registered is not None else load_json(folder / "status.json")
+        except (OSError, json.JSONDecodeError, sqlite3.Error):
+            print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
+            continue
+        # Historical terminal JSON/registry records did not verify containment.
+        label = state.get("state", "UNKNOWN")
+        if registered is None and (folder / "execution.claim").exists():
+            label = "UNKNOWN"
+        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
+            label = "UNKNOWN"
+        print(f"{folder.name}\t{label}\t{submission.get('mode')}")
+    return 0
+
+
+def cmd_reconcile(args):
+    _, _, runtime = select_project(args.project)
+    if not args.run_id or Path(args.run_id).name != args.run_id or args.run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / args.run_id
+    if not folder.is_dir():
+        raise ResearchError("Unknown run")
+    entry = run_registry.inspect(folder)
+    if entry is None:
+        result = {"state": "UNKNOWN", "reason": "No registry record; legacy or pre-claim run needs investigation"}
+    elif entry["state"] in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "UNKNOWN"):
+        result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
+    else:
+        result = {"state": entry["state"], "registry": entry}
+    print(json.dumps(result, indent=2))
+    return 2 if result["state"] == "UNKNOWN" else 0
+
+
+def require_supported_execution(mode, queue, *, submission=False):
+    if mode != "diagnostic":
+        raise ResearchError("Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented")
+    if (submission and queue != "local") or (not submission and queue is not None):
+        raise ResearchError("Queued execution BLOCKED: process containment and daemon interpreter validation not implemented")
+
+
+def cmd_init_run(args):
+    project, checkout, runtime = select_project(args.project)
+    argv = list(args.command)
+    if argv and argv[0] == "--":
+        argv.pop(0)
+    if not argv:
+        raise ResearchError("Supply executable and argv after --")
+    if not (checkout / ".git").exists():
+        raise ResearchError(f"Checkout missing: {checkout}; clone before running")
+    if args.mode == "official":
+        gate = gate_report(checkout, args.gates)
+        if not gate["valid"]:
+            raise ResearchError("Official run BLOCKED: " + "; ".join(gate["problems"]))
+        if not args.approve_official:
+            raise ResearchError("Official run requires --approve-official")
+    if args.queue and args.queue != project.get("gpu_group", "gpu0"):
+        raise ResearchError("Queue must match project GPU group (shared across all projects)")
+    if args.queue and not args.approve_cost:
+        raise ResearchError("Queued execution requires --approve-cost")
+    require_supported_execution(args.mode, args.queue)
+    git = git_metadata(checkout)
+    if args.mode == "official" and (not git["sha"] or git["dirty"] is not False):
+        raise ResearchError("Official runs require a clean, pinned Git checkout")
+
+    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
+    folder = runtime / "runs" / run_id
+    folder.mkdir(parents=True, exist_ok=False)
+    submission = {
+        "schema_version": 1, "run_id": run_id, "project": args.project,
+        "mode": args.mode, "submitted_at": now(), "argv": argv,
+        "working_directory": str(checkout), "git": git,
+        "dataset_version": args.dataset_version, "split_hash": args.split_hash,
+        "seed": args.seed, "queue": args.queue or "local",
+        "python": sys.version.split()[0], "platform": platform.platform(),
+        "gate_manifest": (str(Path(args.gates).resolve()) if args.gates else
+                          str(checkout / ".research" / "gates.json")),
+    }
+    manifest = folder / "submission.json"
+    atomic_json(manifest, submission)
+    digest = sha_file(manifest)
+    (folder / "submission.sha256").write_text(digest + "\n", encoding="utf-8")
+    atomic_json(folder / "status.json", {"state": "QUEUED" if args.queue else "SUBMITTED",
+                                         "updated_at": now()})
+    cmd = [sys.executable, str(Path(__file__).resolve()), "_execute",
+           "--project", args.project, "--run-id", run_id]
+    if args.queue:
+        if not shutil.which("pueue"):
+            atomic_json(folder / "status.json", {"state": "SUBMISSION_FAILED",
+                                                 "updated_at": now(), "error": "pueue missing"})
+            raise ResearchError(f"Run {run_id}: Pueue not installed")
+        # Pueue workers may not inherit the submitter's custom project root/config.
+        cmd = ["env", "RESEARCH_ROOT=" + str(runtime.parent.parent),
+               "HERDR_ML_CONFIG=" + str(Path(os.getenv("HERDR_ML_CONFIG",
+                                                     str(DEFAULT_CONFIG))).expanduser().resolve()), *cmd]
+        launch = subprocess.run(["pueue", "add", "-g", args.queue, "--", shlex.join(cmd)],
+                                capture_output=True, text=True, check=False)
+        if launch.returncode:
+            atomic_json(folder / "status.json", {"state": "SUBMISSION_FAILED",
+                         "updated_at": now(), "error": launch.stderr.strip()[:2000]})
+            raise ResearchError(f"Run {run_id}: queue failed: {launch.stderr.strip()[:300]}")
+        print(f"QUEUED run={run_id} folder={folder}")
+        print(launch.stdout.strip())
+        return 0
+    print(f"STARTING run={run_id} folder={folder}", flush=True)
+    return execute(args.project, run_id)
+
+
+def execute(project_id, run_id):
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise ResearchError("SIGCHLD disposition is not default; cannot safely pin and reap child identity")
+    _, checkout, runtime = select_project(project_id)
+    if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / run_id
+    # Hash and parse exactly the same bytes, even if the path changes later.
+    manifest_bytes = (folder / "submission.json").read_bytes()
+    expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
+    actual = hashlib.sha256(manifest_bytes).hexdigest()
+    if expected != actual:
+        raise ResearchError("Submission manifest integrity mismatch")
+    try:
+        submission = json.loads(manifest_bytes)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ResearchError("Invalid submission manifest JSON") from exc
+    if not isinstance(submission, dict) or submission.get("project") != project_id:
+        raise ResearchError("Invalid submission manifest project or type")
+    argv = submission.get("argv")
+    if not isinstance(argv, list) or not argv or any(not isinstance(v, str) or "\x00" in v for v in argv) or not argv[0]:
+        raise ResearchError("Invalid submission command")
+    require_supported_execution(submission.get("mode"), submission.get("queue"), submission=True)
+    status_file = folder / "status.json"
+    state = load_json(status_file).get("state")
+    # Queued records, including legacy records called "local", remain held.
+    if state != "SUBMITTED":
+        raise ResearchError(f"Refusing execution: queued or repeated state={state}")
+    try:
+        token = run_registry.claim(folder, run_id, project_id, actual, state)
+    except run_registry.RegistryError as exc:
+        raise ResearchError(str(exc)) from exc
+    if submission.get("mode") == "official":
+        gate = gate_report(checkout, submission.get("gate_manifest"))
+        current_git = git_metadata(checkout)
+        if not gate["valid"] or current_git != submission.get("git") or current_git.get("dirty") is not False:
+            atomic_json(status_file, {"state": "BLOCKED", "updated_at": now(),
+                                      "error": "Gate invalid or source checkout changed since submission"})
+            raise ResearchError("Official job BLOCKED: gates or pinned Git source changed")
+    run_registry.advance(folder, token, "CLAIMED", "DISPATCHING")
+    atomic_json(status_file, {"state": "DISPATCHING", "updated_at": now()})
+    child = None
+    interrupted = False
+    interruption_signal = None
+    group_owned = False
+
+    def signal_group(sig):
+        # The unreaped leader pins its PID/PGID. Never signal after reaping.
+        if group_owned:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def terminate(signum, _frame):
+        nonlocal interrupted, interruption_signal
+        interrupted = True
+        interruption_signal = interruption_signal or signum
+        signal_group(signal.SIGTERM)
+
+    def stop_and_reap():
+        nonlocal group_owned
+        if group_owned:
+            signal_group(signal.SIGKILL)
+            # No process-group signal is sent after wait() reaps the leader.
+            group_owned = False
+            return child.wait()
+        return None
+
+    old_handlers = {sig: signal.signal(sig, terminate)
+                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)}
+    try:
+        with (folder / "stdout.log").open("wb") as stdout, (folder / "stderr.log").open("wb") as stderr:
+            try:
+                if interrupted:
+                    code = 128 + interruption_signal
+                else:
+                    child = subprocess.Popen(submission["argv"], cwd=checkout,
+                                             stdin=subprocess.DEVNULL, stdout=stdout,
+                                             stderr=stderr, shell=False, start_new_session=True)
+                    group_owned = True
+                    run_registry.record_child(folder, token, child.pid)
+                    run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
+                    atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+                    if interrupted:
+                        signal_group(signal.SIGTERM)
+                    deadline = None
+                    while True:
+                        # WNOWAIT keeps the exited leader as a zombie, preventing
+                        # its PID and process group ID from being reused.
+                        result = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if result is not None:
+                            break
+                        if interrupted and deadline is None:
+                            deadline = time.monotonic() + 3
+                        if deadline is not None and time.monotonic() >= deadline:
+                            signal_group(signal.SIGKILL)
+                        time.sleep(0.05)
+                    code = stop_and_reap()
+            except OSError as exc:
+                if child is not None:
+                    stop_and_reap()
+                    raise
+                stderr.write((str(exc) + "\n").encode("utf-8", errors="replace"))
+                code = 127
+            except BaseException:
+                stop_and_reap()
+                raise
+        # Process groups cannot establish whether detached descendants survive.
+        # Record the leader outcome without asserting whole-workload completion.
+        leader_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
+        end_state = "UNKNOWN"
+        result = {"state": end_state, "leader_state": leader_state,
+                  "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
+                  "stdout_sha256_after_leader_exit": sha_file(folder / "stdout.log"),
+                  "stderr_sha256_after_leader_exit": sha_file(folder / "stderr.log"),
+                  "log_hash_observed_at": now()}
+        run_registry.finish(folder, token, result)
+        atomic_json(folder / "result.json", result)
+        atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
+        print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
+        return 128 + interruption_signal if interrupted else (2 if code == 0 else (code if code >= 0 else 128 + abs(code)))
+    finally:
+        stop_and_reap()
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
+
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("doctor")
+    status = sub.add_parser("status")
+    status.add_argument("--project", required=True)
+    reconcile = sub.add_parser("reconcile", help="Inspect a run without reclaiming ownership")
+    reconcile.add_argument("--project", required=True)
+    reconcile.add_argument("--run-id", required=True)
+    gates = sub.add_parser("gate-status")
+    gates.add_argument("--project", required=True)
+    gates.add_argument("--gates")
+    run = sub.add_parser("init-run")
+    run.add_argument("--project", required=True)
+    run.add_argument("--mode", choices=("diagnostic", "official"), required=True)
+    run.add_argument("--dataset-version", required=True)
+    run.add_argument("--split-hash", required=True)
+    run.add_argument("--seed", type=int, required=True)
+    run.add_argument("--gates")
+    run.add_argument("--queue")
+    run.add_argument("--approve-cost", action="store_true")
+    run.add_argument("--approve-official", action="store_true")
+    run.add_argument("command", nargs=argparse.REMAINDER)
+    worker = sub.add_parser("_execute", help=argparse.SUPPRESS)
+    worker.add_argument("--project", required=True)
+    worker.add_argument("--run-id", required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.action == "doctor":
+            return cmd_doctor(args)
+        if args.action == "status":
+            return cmd_status(args)
+        if args.action == "reconcile":
+            return cmd_reconcile(args)
+        if args.action == "gate-status":
+            return cmd_gate_status(args)
+        if args.action == "init-run":
+            return cmd_init_run(args)
+        return execute(args.project, args.run_id)
+    except (ResearchError, run_registry.RegistryError, sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    if sys.version_info < (3, 10):
+        print("ERROR: Python 3.10 or later is required", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main())
+
+--- scripts/run_registry.py ---
+"""Transactional per-run ownership for a single trusted Linux host.
+
+SQLite is authoritative; JSON files written by the runner are projections.
+An active claim is never reclaimed here, even when its owner appears dead:
+without verified containment, descendants may still be running.
+"""
+import json
+import os
+from pathlib import Path
+import socket
+import sqlite3
+import uuid
+
+
+class RegistryError(Exception):
+    pass
+
+
+def _connect(folder):
+    db = sqlite3.connect(str(Path(folder) / 'registry.sqlite3'), timeout=30, isolation_level=None)
+    db.execute('PRAGMA synchronous=FULL')
+    db.execute('PRAGMA busy_timeout=30000')
+    db.execute('''CREATE TABLE IF NOT EXISTS run (
+        id INTEGER PRIMARY KEY CHECK (id = 1), run_id TEXT NOT NULL,
+        project TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL, owner TEXT NOT NULL, owner_pid INTEGER NOT NULL,
+        owner_host TEXT NOT NULL, owner_boot TEXT, owner_start TEXT,
+        queue_task_id TEXT, result_json TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
+        id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
+        boot TEXT, start_ticks TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        owner TEXT, state TEXT NOT NULL, detail TEXT)''')
+    return db
+
+
+def _identity():
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        stat = Path('/proc/self/stat').read_text()
+        start = stat[stat.rfind(')') + 2:].split()[19]
+    except (OSError, IndexError):
+        boot, start = None, None
+    return boot, start
+
+
+def claim(folder, run_id, project, digest, initial_state):
+    """Atomically create a run and claim it exactly once, never stealing owners."""
+    if initial_state not in ('SUBMITTED', 'QUEUED'):
+        raise RegistryError('Run is not eligible for execution')
+    # Older deployed workers claim with mkdir. Acquire the same marker first,
+    # atomically, so mixed versions cannot execute concurrently. Never delete
+    # it automatically: a crash here needs manual investigation.
+    try:
+        (Path(folder) / 'execution.claim').mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise RegistryError('Execution already claimed; reconcile before retry') from exc
+    directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    db = _connect(folder)
+    token = uuid.uuid4().hex
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if db.execute('SELECT 1 FROM run WHERE id=1').fetchone():
+            raise RegistryError('Run already claimed; do not retry without reconciliation')
+        boot, start = _identity()
+        db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?,?,?,?,?)',
+                   (run_id, project, digest, 'CLAIMED', token, os.getpid(),
+                    socket.gethostname(), boot, start, None, None))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (token, 'CLAIMED', 'Atomic one-time owner acquisition'))
+        db.execute('COMMIT')
+        # Persist the new registry directory entry before any dispatch.
+        directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return token
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def record_child(folder, token, pid):
+    """Record forensic identity; this is not evidence of containment."""
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        stat = Path('/proc/%d/stat' % pid).read_text()
+        start = stat[stat.rfind(')') + 2:].split()[19]
+    except (OSError, IndexError):
+        boot, start = None, None
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND state='DISPATCHING'", (token,)).fetchone():
+            raise RegistryError('Stale owner or illegal child registration')
+        db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (token, 'CHILD_IDENTIFIED', json.dumps({'pid': pid, 'boot': boot, 'start_ticks': start})))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def advance(folder, token, expected, target):
+    if (expected, target) not in {('CLAIMED', 'DISPATCHING'), ('DISPATCHING', 'RUNNING')}:
+        raise RegistryError('Illegal execution transition')
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        updated = db.execute('UPDATE run SET state=? WHERE id=1 AND owner=? AND state=?',
+                             (target, token, expected)).rowcount
+        if updated != 1:
+            raise RegistryError('Stale owner or illegal execution state')
+        db.execute('INSERT INTO events(owner,state) VALUES (?,?)', (token, target))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def finish(folder, token, result):
+    state = result.get('state')
+    if state != 'UNKNOWN':
+        raise RegistryError('Invalid terminal state')
+    data = json.dumps(result, sort_keys=True)
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        updated = db.execute("UPDATE run SET state=?, result_json=? WHERE id=1 AND owner=? AND state IN ('RUNNING','DISPATCHING')",
+                             (state, data, token)).rowcount
+        if updated != 1:
+            raise RegistryError('Stale owner or illegal terminal state')
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, state, data))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def inspect(folder):
+    path = Path(folder) / 'registry.sqlite3'
+    if not path.is_file():
+        return None
+    db = _connect(folder)
+    try:
+        row = db.execute('SELECT run_id,project,manifest_sha256,state,owner_pid,owner_host,owner_boot,owner_start,queue_task_id,result_json FROM run WHERE id=1').fetchone()
+        if row is None:
+            return None
+        fields = ('run_id','project','manifest_sha256','state','owner_pid','owner_host','owner_boot','owner_start','queue_task_id','result')
+        result = dict(zip(fields, row))
+        if result['result'] is not None:
+            result['result'] = json.loads(result['result'])
+        child = db.execute('SELECT pid,boot,start_ticks FROM child_identity WHERE id=1').fetchone()
+        result['child'] = dict(zip(('pid','boot','start_ticks'), child)) if child else None
+        result['events'] = [dict(zip(('seq','at','state','detail'), item)) for item in db.execute('SELECT seq,at,state,detail FROM events ORDER BY seq')]
+        return result
+    finally:
+        db.close()
+
+--- tests/test_researchctl.py ---
+"""CPU-only tests: never load models, datasets, agents, queues or GPU."""
+import importlib.util
+import contextlib
+import io
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "researchctl.py"
+spec = importlib.util.spec_from_file_location("researchctl", MODULE_PATH)
+researchctl = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(researchctl)
+
+
+class ResearchCtlTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "research"
+        self.repo = self.root / "demo"
+        self.repo.mkdir(parents=True)
+        (self.repo / ".git").mkdir()
+        cfg = Path(self.temp.name) / "projects.json"
+        cfg.write_text(json.dumps({"version": 1, "projects": [
+            {"id": "demo", "directory": "demo", "label": "Demo", "gpu_group": "gpu0"}
+        ]}), encoding="utf-8")
+        self.env = patch.dict(os.environ, {"RESEARCH_ROOT": str(self.root),
+                                          "HERDR_ML_CONFIG": str(cfg)})
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _run(self, code="print('hello')", mode="diagnostic", **kwargs):
+        args = ["init-run", "--project", "demo", "--mode", mode,
+                "--dataset-version", "test", "--split-hash", "split-hash",
+                "--seed", "42"]
+        if kwargs.get("approve"):
+            args.append("--approve-official")
+        args += ["--", sys.executable, "-c", code]
+        return researchctl.main(args)
+
+    def _records(self):
+        return list((self.root / ".runtime" / "demo" / "runs").glob("*"))
+
+    def test_diagnostic_success_writes_evidence(self):
+        self.assertEqual(self._run(), 2)
+        folder, = self._records()
+        state = researchctl.load_json(folder / "status.json")
+        submission = researchctl.load_json(folder / "submission.json")
+        result = researchctl.load_json(folder / "result.json")
+        self.assertEqual(state["state"], "UNKNOWN")
+        self.assertEqual(result["leader_state"], "COMPLETED")
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("stdout_sha256_after_leader_exit", result)
+        self.assertIn("stderr_sha256_after_leader_exit", result)
+        self.assertNotIn("stdout_sha256", result)
+        self.assertNotIn("stderr_sha256", result)
+        self.assertEqual(submission["mode"], "diagnostic")
+        self.assertIn("hello", (folder / "stdout.log").read_text())
+        self.assertEqual(
+            researchctl.hashlib.sha256((folder / "submission.json").read_bytes()).hexdigest(),
+            (folder / "submission.sha256").read_text().strip())
+
+    def test_failed_run_keeps_logs(self):
+        self.assertEqual(self._run("import sys;sys.stderr.write('bad');sys.exit(9)"), 9)
+        folder, = self._records()
+        self.assertEqual(researchctl.load_json(folder / "status.json")["state"], "UNKNOWN")
+        self.assertEqual(researchctl.load_json(folder / "result.json")["leader_state"], "FAILED")
+        self.assertIn("bad", (folder / "stderr.log").read_text())
+
+    def test_missing_gate_blocks_official_before_submission(self):
+        self.assertEqual(self._run(mode="official", approve=True), 2)
+        self.assertEqual(self._records(), [])
+
+    def test_missing_explicit_official_approval_blocks(self):
+        self._write_valid_gates()
+        self.assertEqual(self._run(mode="official"), 2)
+
+    def _write_valid_gates(self):
+        evidence_dir = self.repo / ".research"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "report.md").write_text("# Signed outside runner\n")
+        gates = {key: {"status": "PASS", "reviewer": "independent-reviewer",
+                       "reviewed_at": "2026-11-02", "evidence": [".research/report.md"]}
+                 for key in researchctl.REQUIRED}
+        (evidence_dir / "gates.json").write_text(json.dumps({
+            "schema_version": 1, "gates": gates}), encoding="utf-8")
+
+    def test_valid_gate_schema_checks_local_evidence(self):
+        self._write_valid_gates()
+        self.assertTrue(researchctl.gate_report(self.repo)["valid"])
+
+    def test_gate_path_escape_rejected(self):
+        self._write_valid_gates()
+        path = self.repo / ".research" / "gates.json"
+        manifest = json.loads(path.read_text())
+        manifest["gates"]["DATA_READY"]["evidence"] = ["../../outside.md"]
+        path.write_text(json.dumps(manifest))
+        self.assertFalse(researchctl.gate_report(self.repo)["valid"])
+
+    def test_official_requires_pinned_clean_git_even_with_gates(self):
+        self._write_valid_gates()
+        self.assertEqual(self._run(mode="official", approve=True), 2)
+        self.assertEqual(self._records(), [])
+
+    def test_registry_is_authoritative_over_stale_or_missing_json(self):
+        self.assertEqual(self._run(), 2)
+        folder, = self._records()
+        (folder / "status.json").unlink()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["status", "--project", "demo"]), 0)
+        self.assertIn("UNKNOWN", output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", folder.name]), 2)
+        self.assertEqual(json.loads(output.getvalue())["state"], "UNKNOWN")
+        child = json.loads(output.getvalue())["registry"]["child"]
+        self.assertGreater(child["pid"], 0)
+        self.assertTrue(child["boot"])
+        self.assertTrue(child["start_ticks"])
+
+    def test_worker_cannot_rerun_a_completed_run(self):
+        self.assertEqual(self._run(), 2)
+        folder, = self._records()
+        self.assertEqual(researchctl.main(["_execute", "--project", "demo",
+                                           "--run-id", folder.name]), 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

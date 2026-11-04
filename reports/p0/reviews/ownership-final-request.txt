@@ -1,0 +1,1123 @@
+Independent final-scope adversarial review of exact Git commit 29b32a46ac333c72fdfc9afa8db4b7357772c822. All source below is generated locally from Git blobs via git show. Identify CRITICAL/HIGH bugs, root causes, reproducible scenarios, and any remaining prerequisite gaps; distinguish standalone components from live integrated execution. No tools and no test execution: say so. Do not certify scientific validity or operational readiness.
+
+--- PRIOR REVIEW ---
+# Follow-up review of commit `7c1450f149ebf97644e581354379f934adea914a`
+
+**Scope.** I reviewed only the source and tests included in your message. I did not compare them against the Git object, and I ran no tests. Anything I say a test does comes from reading it. Live integrations (Herdr, Pueue) and scientific correctness are out of scope. The holds on official runs, queued runs and bootstrap are assumed to stay in place.
+
+## Verdict
+
+**No CRITICAL or HIGH defects found.** Reading the code, I found no path to double execution and no path to a false `COMPLETED`:
+
+- **Exactly one claimant.** The `execution.claim` `mkdir` fence decides who wins between new and legacy workers. The SQLite row check is a second barrier behind it.
+- **`COMPLETED` is narrow.** It is recorded only when the leader exited 0 and no signal was observed.
+- **Faults after launch kill the workload.** A fault after `Popen` now kills and reaps the process group, and leaves the registry non-terminal.
+
+**Two actionable MEDIUM issues remain.** Both are leftovers of the previous MEDIUM-1 and MEDIUM-3. I also list several LOW items and test gaps.
+
+---
+
+## Status of previous findings
+
+| Prior finding | Status | Evidence in 7c1450f |
+|---|---|---|
+| **MEDIUM-1** SIGHUP orphans the workload; no handle on the child | **Partially resolved** | SIGHUP is now in the handled set (`execute`, `old_handlers = {… SIGHUP}`), and `test_sighup_stops_stubborn_descendant` covers it. Still missing: SIGQUIT handling, recorded child pid/pgid/start time, and `PR_SET_PDEATHSIG`. See **MEDIUM-A**. |
+| **MEDIUM-2** Exception after `Popen` abandons a live child | **Resolved** | Both `except OSError` (when `child is not None`) and `except BaseException` call `stop_and_reap()` and re-raise. `finally` also calls `stop_and_reap()`. The registry stays `RUNNING`/`DISPATCHING`, which meets the prior acceptance criterion ("never `COMPLETED`"). `test_post_spawn_status_failure_kills_group_and_stays_uncertain` covers the `atomic_json` fault. The `advance()` sqlite fault is not tested; see Tests. |
+| **MEDIUM-3** Terminal state committed while group members still run | **Containment resolved; record-keeping not** | The leader exit is observed with `waitid(… WNOWAIT)`, then `stop_and_reap()` always sends `killpg(SIGKILL)` before reaping. `test_normal_leader_exit_stops_same_group_descendant` covers it. The result still does not record that survivors were killed. See **MEDIUM-B**. |
+| **MEDIUM (conditional)** No mutual exclusion with legacy `mkdir` claimers | **Resolved** | `claim()` creates `execution.claim` (0700) before the transaction and fsyncs the directory. `MixedVersionTests` races a legacy `mkdir` against `claim()` 10 times. A new LOW item follows from this: a fence can now exist without a registry row (LOW-1). |
+| LOW-1 A signal before `Popen` still launches | **Resolved (narrow residual)** | `if interrupted: code = 128 + sig` skips the launch. A signal between that check and `Popen` still launches, but the post-launch `if interrupted: signal_group(SIGTERM)` then kills it. |
+| LOW-2 Signals before handlers are installed leave a stuck claim | **Open** | Handlers are installed after `claim()`, `advance(CLAIMED→DISPATCHING)` and the projection write. A default-action SIGTERM, SIGINT or SIGHUP there leaves `CLAIMED`/`DISPATCHING` permanently, with nothing launched. This fails closed. |
+| LOW-3 Official `BLOCKED` path never closes the claim | **Open (unreachable)** | Unchanged. `require_supported_execution` rejects `official` before `claim()`. This must be fixed before the official hold is lifted. |
+| LOW-4 `finish` from `DISPATCHING` accepts `COMPLETED` | **Open (unreachable)** | `finish()` still allows any terminal state from `DISPATCHING`. |
+| LOW-5 A corrupt registry breaks `cmd_status` for every run | **Open** | The per-run `except` catches only `(OSError, JSONDecodeError)`. A `sqlite3.DatabaseError` reaches `main` and returns 2 for the whole listing. `inspect()` still runs DDL and can roll back a hot journal. |
+| LOW-6 pgid-reuse race in the interrupt path | **Resolved** | `signal_group` only signals while `group_owned` is true. `stop_and_reap` clears `group_owned` before `child.wait()`. The wait loop uses `WNOWAIT`, so the zombie leader pins the pgid. |
+| LOW-7 Test hygiene | **Partially open** | `OwnershipTests.test_twenty_workers_have_one_owner` still sets `os.environ[...]` globally, and `worker` still catches only `ResearchError`/`OSError`. The new tests use `patch.dict` or `env=`. |
+
+---
+
+## Remaining MEDIUM
+
+### MEDIUM-A: If the controller dies without running its handler, the workload is orphaned and the registry cannot identify it
+
+**Root cause.** The child is started with `start_new_session=True`, so it does not share the controller's fate.
+
+- If the controller dies in a way that bypasses its handlers, the group keeps running with no supervisor. Examples are SIGKILL, the OOM killer, SIGQUIT (Ctrl-\ is not handled), or an interpreter crash.
+- The `run` row stores only the controller's identity (`owner_pid`, `owner_boot`, `owner_start`), never the child's.
+- `reconcile` therefore reports `UNKNOWN` "may own live descendants", with nothing an operator or tool can check that claim against.
+
+Liveness and reclaim are intentionally absent, but this is a separate gap: without the child's identity, an `UNKNOWN` state can never be resolved with evidence.
+
+**Reproduction (by reading).** Use the setup of `_cancel_stubborn_descendant`, but call `proc.kill()` instead of sending a handled signal.
+- The child and grandchild survive.
+- `inspect()` shows `RUNNING` with no child pid or pgid.
+
+**Fix.**
+1. Record `child_pid`, `child_pgid` (equal to `child_pid`), `boot_id`, and the child's `/proc/<pid>/stat` field 22 start time in the same transaction as `DISPATCHING→RUNNING`.
+   - Pass these through `advance()`, or add a dedicated `set_running(folder, token, child_identity)`.
+   - Use a new `CREATE TABLE IF NOT EXISTS child(...)` table rather than new `run` columns. Existing `registry.sqlite3` files would not gain new columns through the current `CREATE TABLE IF NOT EXISTS run` DDL.
+2. In `reconcile`, report whether that pid with that start time is still alive, and list any `/proc/*/stat` entries whose pgrp equals `child_pgid`. This is evidence only, not reclaim.
+3. Add SIGQUIT to the handled set.
+4. Optionally set `PR_SET_PDEATHSIG(SIGKILL)` on the direct child, re-checking `getppid()` after the call to close the race. This does not cover grandchildren.
+
+**Residual.** A SIGKILL that lands between `Popen` and the RUNNING commit still leaves `DISPATCHING` with no identity. This is inherent, and `reconcile` already treats `DISPATCHING` as `UNKNOWN`.
+
+**Acceptance tests.**
+- After SIGKILL to the controller, `inspect()` exposes the child's pgid and start time, and `reconcile` reports that the group is alive.
+- After the test kills the group, `reconcile` reports that it is gone.
+- SIGQUIT to the controller results in `INTERRUPTED` with no survivors.
+
+### MEDIUM-B: `COMPLETED` is recorded even when the controller had to SIGKILL surviving descendants
+
+**Root cause.** On a normal leader exit, `stop_and_reap()` unconditionally sends `killpg(SIGKILL)`, which is correct for containment. However:
+
+- The result written to the registry and `result.json` contains only `exit_code` and the log hashes.
+- If a background writer, data loader or checkpoint flusher was still running in the group, the controller truncated it.
+- The run is then recorded as `COMPLETED exit=0`, with no indication that the controller cut the work short.
+- `test_normal_leader_exit_stops_same_group_descendant` checks that the grandchild dies, but not what was recorded.
+
+This is not a false completion by the leader's contract, but the terminal record is misleading. Runs are diagnostic only, which limits the impact.
+
+**Fix.**
+1. Before the SIGKILL in the normal-exit path, while the zombie leader still pins the pgid, scan `/proc/*/stat` for pgrp equal to `child.pid` and pid not equal to `child.pid`.
+2. Record the result as `descendants_terminated: <count or pids>`.
+3. Decide on a policy and test it. Either downgrade to `FAILED` with `detail="descendants_killed"`, or keep `COMPLETED` but make the flag mandatory in the result schema.
+
+**Acceptance test.** Rerun the existing normal-exit test, and assert that `inspect()['result']` records the terminated descendant. Also assert the chosen terminal state.
+
+---
+
+## New / remaining LOW
+
+1. **A fence can exist without a registry row.** In `claim()`, an exception after the `mkdir` and before `COMMIT` leaves `execution.claim` with no `run` row. Examples are `_connect` failing on a lock timeout, ENOSPC, or a corrupt database, or the directory `fsync` failing.
+   - This fails closed: retries hit `EEXIST`, and `reconcile` reports `UNKNOWN`.
+   - However, `cmd_status` falls back to `status.json` and shows `SUBMITTED` indefinitely.
+   - The fence is also empty, so it cannot be told apart from a genuine legacy claim. The prior review suggested writing the token into it.
+   - Fix:
+     - Write `token`, pid, boot_id and time into a file inside the fence before opening the database.
+     - Have `status` and `reconcile` show `FENCED_NO_RECORD` when the fence exists but no row does.
+2. **SIGHUP now overrides `nohup`.** If the controller was started with SIGHUP ignored (`nohup researchctl init-run …`), `execute` replaces that disposition with `terminate`. Closing the terminal then kills a run the operator explicitly detached.
+   - This fails safe, and the state is recorded truthfully as `INTERRUPTED`, but it is surprising.
+   - Fix: if `signal.getsignal(SIGHUP) is SIG_IGN`, leave SIGHUP ignored.
+3. **The exit code can contradict the recorded state, and output can fail after a terminal hang-up.**
+   - A signal that arrives after `finish(COMPLETED)` commits makes `execute` return `128 + sig`, while the registry says `COMPLETED`.
+   - After a real tty hang-up, the final `print(..., flush=True)` raises `EIO`. `main`'s own `print(..., file=sys.stderr)` raises again, so the process exits 1 with no message.
+   - In both cases the registry and projections are already correct; only the exit status is wrong.
+   - Fix:
+     - Compute the return code from the committed `end_state`.
+     - Wrap the final print in `try/except OSError`.
+4. **An inherited `SIGCHLD=SIG_IGN` breaks supervision.** If a parent leaves SIGCHLD ignored, the kernel reaps the leader automatically.
+   - `waitid` then raises `ChildProcessError`, an `OSError`, so the code takes the `child is not None` branch.
+   - That branch sends `killpg` to a pgid that is no longer pinned, so a pgid-reuse race becomes possible.
+   - `Popen.wait` maps `ECHILD` to 0. The registry stays `RUNNING`, so this still fails closed.
+   - Fix: set SIGCHLD to `SIG_DFL` before `Popen`.
+5. **Unchanged from the prior review:** LOW-2 (handler install order), LOW-3 (official `BLOCKED` path), LOW-4 (`finish` from `DISPATCHING`), LOW-5 (corrupt registry in `status`). Details are in the table above.
+6. **An optional evidence event on post-launch faults.** When `stop_and_reap()` runs because of an exception, a best-effort `events` insert would help an operator during reconcile, for example `detail='controller_error: <exc>; group SIGKILLed'`. It should not change state.
+
+---
+
+## Test gaps (no tests were executed)
+
+1. **Registry fault after `Popen` is untested.**
+   - Patch `run_registry.advance` to raise `sqlite3.OperationalError` on `('DISPATCHING','RUNNING')`.
+   - Assert the child is dead and `inspect()['state'] == 'DISPATCHING'`.
+   - Assert `main` returns 2.
+2. **A signal before `Popen` is untested.**
+   - Deliver SIGTERM after the handlers are installed and before `Popen`.
+   - Assert that nothing launched and the registry is `INTERRUPTED`.
+3. **The SIGHUP and SIGTERM tests check only the `status.json` projection.** Also assert `run_registry.inspect(folder)['state'] == 'INTERRUPTED'` and that a result is present.
+4. **Controller SIGKILL and SIGQUIT are untested.** Add these with MEDIUM-A.
+5. **The registry row check is no longer exercised on its own.** Every reclaim test is now stopped by the `mkdir` fence first. Add a test that removes `execution.claim` after a committed claim and asserts that `claim()` still raises. This covers an operator following a legacy runbook.
+6. **A crash between the fence and the `COMMIT` is untested.** Inject a failure into `_connect`, then assert the fence remains, there is no row, retries fail, and `reconcile` returns `UNKNOWN`.
+7. **Hygiene in `test_p0_ownership.py`:**
+   - Switch `test_twenty_workers_have_one_owner` to `patch.dict(os.environ, …)`.
+   - Have `worker` catch `Exception` and report `repr(exc)`, so sqlite errors do not surface as `queue.Empty`.
+
+--- scripts/researchctl.py ---
+#!/usr/bin/env python3
+"""Local research run ledger + optional Pueue queue; Python stdlib only.
+
+Not an agent sandbox, isolation boundary, or independent scientific certifier.
+"""
+import argparse
+import datetime as dt
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import shutil
+import shlex
+import sqlite3
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+BASE = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG = BASE / "config" / "projects.json"
+REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
+
+# Explicit path enables direct execution and importlib-based test loading.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_registry
+
+
+class ResearchError(Exception):
+    pass
+
+
+def now():
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def sha_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_json(path):
+    with Path(path).open(encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def atomic_json(path, payload):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                     prefix=".pending-", delete=False) as temp:
+        json.dump(payload, temp, indent=2, sort_keys=True)
+        temp.write("\n")
+        staged = Path(temp.name)
+    os.replace(staged, path)
+
+
+def settings():
+    cfg = load_json(Path(os.getenv("HERDR_ML_CONFIG", str(DEFAULT_CONFIG))).expanduser())
+    if cfg.get("version") != 1 or not isinstance(cfg.get("projects"), list):
+        raise ResearchError("Invalid projects manifest")
+    return cfg
+
+
+def select_project(project_id):
+    selected = next((p for p in settings()["projects"] if p.get("id") == project_id), None)
+    if selected is None:
+        raise ResearchError(f"Unknown project: {project_id}")
+    directory = selected.get("directory", "")
+    if not directory or Path(directory).name != directory or directory in (".", ".."):
+        raise ResearchError("Unsafe project directory in config")
+    if not project_id.replace("-", "").replace("_", "").isalnum():
+        raise ResearchError("Unsafe project ID")
+    root = Path(os.getenv("RESEARCH_ROOT", str(Path.home() / "research"))).expanduser().resolve()
+    return selected, root / directory, root / ".runtime" / project_id
+
+
+def git_metadata(checkout):
+    if not (checkout / ".git").exists():
+        return {"sha": None, "dirty": None}
+    def git(*args):
+        result = subprocess.run(["git", "-C", str(checkout), *args],
+                                capture_output=True, text=True, check=False)
+        return result.stdout.strip() if result.returncode == 0 else None
+    sha = git("rev-parse", "HEAD")
+    changed = git("status", "--porcelain")
+    return {"sha": sha, "dirty": None if changed is None else bool(changed)}
+
+
+def gate_report(checkout, gate_file=None):
+    path = Path(gate_file).expanduser() if gate_file else checkout / ".research" / "gates.json"
+    if not path.is_file():
+        return {"valid": False, "path": str(path), "problems": ["Missing gate file"]}
+    try:
+        data = load_json(path)
+    except (OSError, json.JSONDecodeError) as exc:
+        return {"valid": False, "path": str(path), "problems": [f"Unreadable gate JSON: {exc}"]}
+    entries = data.get("gates", {})
+    errors = []
+    if data.get("schema_version") != 1 or not isinstance(entries, dict):
+        errors.append("Invalid gate schema")
+        entries = {}
+    for gate in REQUIRED:
+        entry = entries.get(gate, {})
+        if not isinstance(entry, dict) or entry.get("status") != "PASS":
+            errors.append(f"{gate}: missing PASS verdict")
+            continue
+        if not entry.get("reviewer") or not entry.get("reviewed_at"):
+            errors.append(f"{gate}: missing reviewer/date")
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            errors.append(f"{gate}: missing evidence")
+        else:
+            for item in evidence:
+                if not isinstance(item, str) or not item.strip():
+                    errors.append(f"{gate}: invalid evidence item")
+                    continue
+                source = (checkout / item).resolve()
+                if not source.is_relative_to(checkout.resolve()) or not source.is_file():
+                    errors.append(f"{gate}: evidence missing/outside checkout: {item}")
+    return {"valid": not errors, "path": str(path), "problems": errors}
+
+
+def cmd_doctor(_args):
+    print("Herdr ML diagnostics (no installs or GPU allocation):")
+    for binary in ("python3", "git", "jq", "herdr", "pueue", "pueued", "uv",
+                   "mlflow", "nvidia-smi", "nvtop", "btop", "docker"):
+        print(f"  {binary:12} {shutil.which(binary) or 'not found (optional)'}")
+    if shutil.which("herdr"):
+        r = subprocess.run(["herdr", "status", "server"], capture_output=True, text=True)
+        print(f"  herdr server: {'reachable' if r.returncode == 0 else 'not reachable'}")
+    if shutil.which("pueue"):
+        r = subprocess.run(["pueue", "status"], capture_output=True, text=True)
+        print(f"  pueue daemon: {'reachable' if r.returncode == 0 else 'not reachable'}")
+    print(f"  RESEARCH_ROOT: {os.getenv('RESEARCH_ROOT', str(Path.home() / 'research'))}")
+    return 0
+
+
+def cmd_gate_status(args):
+    _, checkout, _ = select_project(args.project)
+    result = gate_report(checkout, args.gates)
+    print(json.dumps(result, indent=2))
+    return 0 if result["valid"] else 2
+
+
+def cmd_status(args):
+    _, _, runtime = select_project(args.project)
+    runs = runtime / "runs"
+    if not runs.is_dir():
+        print("No runs found")
+        return 0
+    for folder in sorted(runs.iterdir()):
+        if not folder.is_dir():
+            continue
+        try:
+            submission = load_json(folder / "submission.json")
+            registered = run_registry.inspect(folder)
+            state = registered if registered is not None else load_json(folder / "status.json")
+        except (OSError, json.JSONDecodeError):
+            print(f"{folder.name}\tINVALID\tmissing/corrupt record")
+            continue
+        # Historical terminal JSON/registry records did not verify containment.
+        label = state.get("state", "UNKNOWN")
+        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
+            label = "UNKNOWN"
+        print(f"{folder.name}\t{label}\t{submission.get('mode')}")
+    return 0
+
+
+def cmd_reconcile(args):
+    _, _, runtime = select_project(args.project)
+    if not args.run_id or Path(args.run_id).name != args.run_id or args.run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / args.run_id
+    if not folder.is_dir():
+        raise ResearchError("Unknown run")
+    entry = run_registry.inspect(folder)
+    if entry is None:
+        result = {"state": "UNKNOWN", "reason": "No registry record; legacy or pre-claim run needs investigation"}
+    elif entry["state"] in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "UNKNOWN"):
+        result = {"state": "UNKNOWN", "reason": "Containment not verified; no automatic recovery", "registry": entry}
+    else:
+        result = {"state": entry["state"], "registry": entry}
+    print(json.dumps(result, indent=2))
+    return 2 if result["state"] == "UNKNOWN" else 0
+
+
+def require_supported_execution(mode, queue, *, submission=False):
+    if mode != "diagnostic":
+        raise ResearchError("Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented")
+    if (submission and queue != "local") or (not submission and queue is not None):
+        raise ResearchError("Queued execution BLOCKED: process containment and daemon interpreter validation not implemented")
+
+
+def cmd_init_run(args):
+    project, checkout, runtime = select_project(args.project)
+    argv = list(args.command)
+    if argv and argv[0] == "--":
+        argv.pop(0)
+    if not argv:
+        raise ResearchError("Supply executable and argv after --")
+    if not (checkout / ".git").exists():
+        raise ResearchError(f"Checkout missing: {checkout}; clone before running")
+    if args.mode == "official":
+        gate = gate_report(checkout, args.gates)
+        if not gate["valid"]:
+            raise ResearchError("Official run BLOCKED: " + "; ".join(gate["problems"]))
+        if not args.approve_official:
+            raise ResearchError("Official run requires --approve-official")
+    if args.queue and args.queue != project.get("gpu_group", "gpu0"):
+        raise ResearchError("Queue must match project GPU group (shared across all projects)")
+    if args.queue and not args.approve_cost:
+        raise ResearchError("Queued execution requires --approve-cost")
+    require_supported_execution(args.mode, args.queue)
+    git = git_metadata(checkout)
+    if args.mode == "official" and (not git["sha"] or git["dirty"] is not False):
+        raise ResearchError("Official runs require a clean, pinned Git checkout")
+
+    run_id = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:12]
+    folder = runtime / "runs" / run_id
+    folder.mkdir(parents=True, exist_ok=False)
+    submission = {
+        "schema_version": 1, "run_id": run_id, "project": args.project,
+        "mode": args.mode, "submitted_at": now(), "argv": argv,
+        "working_directory": str(checkout), "git": git,
+        "dataset_version": args.dataset_version, "split_hash": args.split_hash,
+        "seed": args.seed, "queue": args.queue or "local",
+        "python": sys.version.split()[0], "platform": platform.platform(),
+        "gate_manifest": (str(Path(args.gates).resolve()) if args.gates else
+                          str(checkout / ".research" / "gates.json")),
+    }
+    manifest = folder / "submission.json"
+    atomic_json(manifest, submission)
+    digest = sha_file(manifest)
+    (folder / "submission.sha256").write_text(digest + "\n", encoding="utf-8")
+    atomic_json(folder / "status.json", {"state": "QUEUED" if args.queue else "SUBMITTED",
+                                         "updated_at": now()})
+    cmd = [sys.executable, str(Path(__file__).resolve()), "_execute",
+           "--project", args.project, "--run-id", run_id]
+    if args.queue:
+        if not shutil.which("pueue"):
+            atomic_json(folder / "status.json", {"state": "SUBMISSION_FAILED",
+                                                 "updated_at": now(), "error": "pueue missing"})
+            raise ResearchError(f"Run {run_id}: Pueue not installed")
+        # Pueue workers may not inherit the submitter's custom project root/config.
+        cmd = ["env", "RESEARCH_ROOT=" + str(runtime.parent.parent),
+               "HERDR_ML_CONFIG=" + str(Path(os.getenv("HERDR_ML_CONFIG",
+                                                     str(DEFAULT_CONFIG))).expanduser().resolve()), *cmd]
+        launch = subprocess.run(["pueue", "add", "-g", args.queue, "--", shlex.join(cmd)],
+                                capture_output=True, text=True, check=False)
+        if launch.returncode:
+            atomic_json(folder / "status.json", {"state": "SUBMISSION_FAILED",
+                         "updated_at": now(), "error": launch.stderr.strip()[:2000]})
+            raise ResearchError(f"Run {run_id}: queue failed: {launch.stderr.strip()[:300]}")
+        print(f"QUEUED run={run_id} folder={folder}")
+        print(launch.stdout.strip())
+        return 0
+    print(f"STARTING run={run_id} folder={folder}", flush=True)
+    return execute(args.project, run_id)
+
+
+def execute(project_id, run_id):
+    if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
+        raise ResearchError("SIGCHLD disposition is not default; cannot safely pin and reap child identity")
+    _, checkout, runtime = select_project(project_id)
+    if not run_id or Path(run_id).name != run_id or run_id in (".", ".."):
+        raise ResearchError("Unsafe run ID")
+    folder = runtime / "runs" / run_id
+    submission = load_json(folder / "submission.json")
+    expected = (folder / "submission.sha256").read_text(encoding="utf-8").strip()
+    actual = sha_file(folder / "submission.json")
+    require_supported_execution(submission.get("mode"), submission.get("queue"), submission=True)
+    if expected != actual or submission.get("project") != project_id:
+        raise ResearchError("Submission manifest integrity mismatch")
+    status_file = folder / "status.json"
+    state = load_json(status_file).get("state")
+    # Queued records, including legacy records called "local", remain held.
+    if state != "SUBMITTED":
+        raise ResearchError(f"Refusing execution: queued or repeated state={state}")
+    try:
+        token = run_registry.claim(folder, run_id, project_id, actual, state)
+    except run_registry.RegistryError as exc:
+        raise ResearchError(str(exc)) from exc
+    if submission.get("mode") == "official":
+        gate = gate_report(checkout, submission.get("gate_manifest"))
+        current_git = git_metadata(checkout)
+        if not gate["valid"] or current_git != submission.get("git") or current_git.get("dirty") is not False:
+            atomic_json(status_file, {"state": "BLOCKED", "updated_at": now(),
+                                      "error": "Gate invalid or source checkout changed since submission"})
+            raise ResearchError("Official job BLOCKED: gates or pinned Git source changed")
+    run_registry.advance(folder, token, "CLAIMED", "DISPATCHING")
+    atomic_json(status_file, {"state": "DISPATCHING", "updated_at": now()})
+    child = None
+    interrupted = False
+    interruption_signal = None
+    group_owned = False
+
+    def signal_group(sig):
+        # The unreaped leader pins its PID/PGID. Never signal after reaping.
+        if group_owned:
+            try:
+                os.killpg(child.pid, sig)
+            except ProcessLookupError:
+                pass
+
+    def terminate(signum, _frame):
+        nonlocal interrupted, interruption_signal
+        interrupted = True
+        interruption_signal = interruption_signal or signum
+        signal_group(signal.SIGTERM)
+
+    def stop_and_reap():
+        nonlocal group_owned
+        if group_owned:
+            signal_group(signal.SIGKILL)
+            # No process-group signal is sent after wait() reaps the leader.
+            group_owned = False
+            return child.wait()
+        return None
+
+    old_handlers = {sig: signal.signal(sig, terminate)
+                    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT)}
+    try:
+        with (folder / "stdout.log").open("wb") as stdout, (folder / "stderr.log").open("wb") as stderr:
+            try:
+                if interrupted:
+                    code = 128 + interruption_signal
+                else:
+                    child = subprocess.Popen(submission["argv"], cwd=checkout,
+                                             stdin=subprocess.DEVNULL, stdout=stdout,
+                                             stderr=stderr, shell=False, start_new_session=True)
+                    group_owned = True
+                    run_registry.record_child(folder, token, child.pid)
+                    run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
+                    atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+                    if interrupted:
+                        signal_group(signal.SIGTERM)
+                    deadline = None
+                    while True:
+                        # WNOWAIT keeps the exited leader as a zombie, preventing
+                        # its PID and process group ID from being reused.
+                        result = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+                        if result is not None:
+                            break
+                        if interrupted and deadline is None:
+                            deadline = time.monotonic() + 3
+                        if deadline is not None and time.monotonic() >= deadline:
+                            signal_group(signal.SIGKILL)
+                        time.sleep(0.05)
+                    code = stop_and_reap()
+            except OSError as exc:
+                if child is not None:
+                    stop_and_reap()
+                    raise
+                stderr.write((str(exc) + "\n").encode("utf-8", errors="replace"))
+                code = 127
+            except BaseException:
+                stop_and_reap()
+                raise
+        # Process groups cannot establish whether detached descendants survive.
+        # Record the leader outcome without asserting whole-workload completion.
+        leader_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
+        end_state = "UNKNOWN"
+        result = {"state": end_state, "leader_state": leader_state,
+                  "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
+                  "stdout_sha256": sha_file(folder / "stdout.log"),
+                  "stderr_sha256": sha_file(folder / "stderr.log")}
+        run_registry.finish(folder, token, result)
+        atomic_json(folder / "result.json", result)
+        atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
+        print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
+        return 128 + interruption_signal if interrupted else (2 if code == 0 else (code if code >= 0 else 128 + abs(code)))
+    finally:
+        stop_and_reap()
+        for sig, handler in old_handlers.items():
+            signal.signal(sig, handler)
+
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="action", required=True)
+    sub.add_parser("doctor")
+    status = sub.add_parser("status")
+    status.add_argument("--project", required=True)
+    reconcile = sub.add_parser("reconcile", help="Inspect a run without reclaiming ownership")
+    reconcile.add_argument("--project", required=True)
+    reconcile.add_argument("--run-id", required=True)
+    gates = sub.add_parser("gate-status")
+    gates.add_argument("--project", required=True)
+    gates.add_argument("--gates")
+    run = sub.add_parser("init-run")
+    run.add_argument("--project", required=True)
+    run.add_argument("--mode", choices=("diagnostic", "official"), required=True)
+    run.add_argument("--dataset-version", required=True)
+    run.add_argument("--split-hash", required=True)
+    run.add_argument("--seed", type=int, required=True)
+    run.add_argument("--gates")
+    run.add_argument("--queue")
+    run.add_argument("--approve-cost", action="store_true")
+    run.add_argument("--approve-official", action="store_true")
+    run.add_argument("command", nargs=argparse.REMAINDER)
+    worker = sub.add_parser("_execute", help=argparse.SUPPRESS)
+    worker.add_argument("--project", required=True)
+    worker.add_argument("--run-id", required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.action == "doctor":
+            return cmd_doctor(args)
+        if args.action == "status":
+            return cmd_status(args)
+        if args.action == "reconcile":
+            return cmd_reconcile(args)
+        if args.action == "gate-status":
+            return cmd_gate_status(args)
+        if args.action == "init-run":
+            return cmd_init_run(args)
+        return execute(args.project, args.run_id)
+    except (ResearchError, run_registry.RegistryError, sqlite3.Error, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    if sys.version_info < (3, 10):
+        print("ERROR: Python 3.10 or later is required", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main())
+
+--- scripts/run_registry.py ---
+"""Transactional per-run ownership for a single trusted Linux host.
+
+SQLite is authoritative; JSON files written by the runner are projections.
+An active claim is never reclaimed here, even when its owner appears dead:
+without verified containment, descendants may still be running.
+"""
+import json
+import os
+from pathlib import Path
+import socket
+import sqlite3
+import uuid
+
+
+class RegistryError(Exception):
+    pass
+
+
+def _connect(folder):
+    db = sqlite3.connect(str(Path(folder) / 'registry.sqlite3'), timeout=30, isolation_level=None)
+    db.execute('PRAGMA synchronous=FULL')
+    db.execute('PRAGMA busy_timeout=30000')
+    db.execute('''CREATE TABLE IF NOT EXISTS run (
+        id INTEGER PRIMARY KEY CHECK (id = 1), run_id TEXT NOT NULL,
+        project TEXT NOT NULL, manifest_sha256 TEXT NOT NULL,
+        state TEXT NOT NULL, owner TEXT NOT NULL, owner_pid INTEGER NOT NULL,
+        owner_host TEXT NOT NULL, owner_boot TEXT, owner_start TEXT,
+        queue_task_id TEXT, result_json TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
+        id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER NOT NULL,
+        boot TEXT, start_ticks TEXT)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        owner TEXT, state TEXT NOT NULL, detail TEXT)''')
+    return db
+
+
+def _identity():
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        stat = Path('/proc/self/stat').read_text()
+        start = stat[stat.rfind(')') + 2:].split()[19]
+    except (OSError, IndexError):
+        boot, start = None, None
+    return boot, start
+
+
+def claim(folder, run_id, project, digest, initial_state):
+    """Atomically create a run and claim it exactly once, never stealing owners."""
+    if initial_state not in ('SUBMITTED', 'QUEUED'):
+        raise RegistryError('Run is not eligible for execution')
+    # Older deployed workers claim with mkdir. Acquire the same marker first,
+    # atomically, so mixed versions cannot execute concurrently. Never delete
+    # it automatically: a crash here needs manual investigation.
+    try:
+        (Path(folder) / 'execution.claim').mkdir(mode=0o700)
+    except FileExistsError as exc:
+        raise RegistryError('Execution already claimed; reconcile before retry') from exc
+    directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    db = _connect(folder)
+    token = uuid.uuid4().hex
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if db.execute('SELECT 1 FROM run WHERE id=1').fetchone():
+            raise RegistryError('Run already claimed; do not retry without reconciliation')
+        boot, start = _identity()
+        db.execute('INSERT INTO run VALUES (1,?,?,?,?,?,?,?,?,?,?,?)',
+                   (run_id, project, digest, 'CLAIMED', token, os.getpid(),
+                    socket.gethostname(), boot, start, None, None))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (token, 'CLAIMED', 'Atomic one-time owner acquisition'))
+        db.execute('COMMIT')
+        # Persist the new registry directory entry before any dispatch.
+        directory = os.open(str(folder), os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        return token
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def record_child(folder, token, pid):
+    """Record forensic identity; this is not evidence of containment."""
+    try:
+        boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        stat = Path('/proc/%d/stat' % pid).read_text()
+        start = stat[stat.rfind(')') + 2:].split()[19]
+    except (OSError, IndexError):
+        boot, start = None, None
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        if not db.execute("SELECT 1 FROM run WHERE id=1 AND owner=? AND state='DISPATCHING'", (token,)).fetchone():
+            raise RegistryError('Stale owner or illegal child registration')
+        db.execute('INSERT INTO child_identity VALUES (1,?,?,?)', (pid, boot, start))
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (token, 'CHILD_IDENTIFIED', json.dumps({'pid': pid, 'boot': boot, 'start_ticks': start})))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def advance(folder, token, expected, target):
+    if (expected, target) not in {('CLAIMED', 'DISPATCHING'), ('DISPATCHING', 'RUNNING')}:
+        raise RegistryError('Illegal execution transition')
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        updated = db.execute('UPDATE run SET state=? WHERE id=1 AND owner=? AND state=?',
+                             (target, token, expected)).rowcount
+        if updated != 1:
+            raise RegistryError('Stale owner or illegal execution state')
+        db.execute('INSERT INTO events(owner,state) VALUES (?,?)', (token, target))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def finish(folder, token, result):
+    state = result.get('state')
+    if state != 'UNKNOWN':
+        raise RegistryError('Invalid terminal state')
+    data = json.dumps(result, sort_keys=True)
+    db = _connect(folder)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        updated = db.execute("UPDATE run SET state=?, result_json=? WHERE id=1 AND owner=? AND state IN ('RUNNING','DISPATCHING')",
+                             (state, data, token)).rowcount
+        if updated != 1:
+            raise RegistryError('Stale owner or illegal terminal state')
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)', (token, state, data))
+        db.execute('COMMIT')
+    except BaseException:
+        if db.in_transaction:
+            db.execute('ROLLBACK')
+        raise
+    finally:
+        db.close()
+
+
+def inspect(folder):
+    path = Path(folder) / 'registry.sqlite3'
+    if not path.is_file():
+        return None
+    db = _connect(folder)
+    try:
+        row = db.execute('SELECT run_id,project,manifest_sha256,state,owner_pid,owner_host,owner_boot,owner_start,queue_task_id,result_json FROM run WHERE id=1').fetchone()
+        if row is None:
+            return None
+        fields = ('run_id','project','manifest_sha256','state','owner_pid','owner_host','owner_boot','owner_start','queue_task_id','result')
+        result = dict(zip(fields, row))
+        if result['result'] is not None:
+            result['result'] = json.loads(result['result'])
+        child = db.execute('SELECT pid,boot,start_ticks FROM child_identity WHERE id=1').fetchone()
+        result['child'] = dict(zip(('pid','boot','start_ticks'), child)) if child else None
+        result['events'] = [dict(zip(('seq','at','state','detail'), item)) for item in db.execute('SELECT seq,at,state,detail FROM events ORDER BY seq')]
+        return result
+    finally:
+        db.close()
+
+--- tests/test_p0_ownership.py ---
+"""Adversarial CPU tests for concurrent run ownership."""
+import importlib.util
+import json
+import multiprocessing
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+
+MODULE = Path(__file__).resolve().parents[1] / 'scripts' / 'researchctl.py'
+spec = importlib.util.spec_from_file_location('researchctl_p0', MODULE)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+
+def worker(project, run_id, start, results):
+    start.wait()
+    try:
+        results.put(('ok', m.execute(project, run_id)))
+    except (m.ResearchError, OSError) as exc:
+        results.put(('error', str(exc)))
+
+
+class OwnershipTests(unittest.TestCase):
+    def test_twenty_workers_have_one_owner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / 'demo'
+            repo.mkdir()
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id': 'demo', 'directory': 'demo'}]}))
+            os.environ['RESEARCH_ROOT'] = str(root)
+            os.environ['HERDR_ML_CONFIG'] = str(config)
+            folder = root / '.runtime/demo/runs/test'
+            folder.mkdir(parents=True)
+            marker = root / 'marker'
+            manifest = {'project': 'demo', 'mode': 'diagnostic', 'queue': 'local', 'argv': [sys.executable, '-c',
+                'import pathlib,time; pathlib.Path(%r).open("a").write("run\\n"); time.sleep(.2)' % str(marker)]}
+            m.atomic_json(folder / 'submission.json', manifest)
+            (folder / 'submission.sha256').write_text(m.sha_file(folder / 'submission.json'))
+            m.atomic_json(folder / 'status.json', {'state': 'SUBMITTED'})
+            start = multiprocessing.Event()
+            results = multiprocessing.Queue()
+            processes = [multiprocessing.Process(target=worker, args=('demo', 'test', start, results)) for _ in range(20)]
+            for process in processes: process.start()
+            start.set()
+            for process in processes: process.join(10)
+            self.assertTrue(all(not p.is_alive() for p in processes))
+            outcomes = [results.get(timeout=2) for _ in processes]
+            self.assertEqual(sum(x[0] == 'ok' for x in outcomes), 1, outcomes)
+            self.assertEqual(marker.read_text().splitlines(), ['run'])
+
+class CancellationTests(unittest.TestCase):
+    def test_sigterm_stops_stubborn_descendant(self):
+        import signal
+        self._cancel_stubborn_descendant(signal.SIGTERM)
+
+    def test_sighup_stops_stubborn_descendant(self):
+        import signal
+        self._cancel_stubborn_descendant(signal.SIGHUP)
+
+    def test_sigquit_stops_stubborn_descendant(self):
+        import signal
+        self._cancel_stubborn_descendant(signal.SIGQUIT)
+
+    def _cancel_stubborn_descendant(self, sig):
+        import signal
+        import subprocess
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / 'demo'
+            (repo / '.git').mkdir(parents=True)
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id': 'demo', 'directory': 'demo'}]}))
+            marker = root / 'pid'
+            env = dict(os.environ, RESEARCH_ROOT=str(root), HERDR_ML_CONFIG=str(config))
+            grandchild = 'import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); pathlib.Path(%r).write_text(str(os.getpid())); time.sleep(60)' % str(marker)
+            program = 'import subprocess,sys,time; subprocess.Popen([sys.executable,"-c",%r]); time.sleep(60)' % grandchild
+            proc = subprocess.Popen([sys.executable, str(MODULE), 'init-run', '--project', 'demo', '--mode', 'diagnostic', '--dataset-version', 'test', '--split-hash', 'test', '--seed', '1', '--', sys.executable, '-c', program], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 10
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(marker.exists())
+                pid = int(marker.read_text())
+                proc.send_signal(sig)
+                proc.communicate(timeout=10)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    stat = Path('/proc/%d/stat' % pid)
+                    if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                        break
+                    time.sleep(.02)
+                else:
+                    self.fail('stubborn descendant remained running')
+                folder, = (root / '.runtime/demo/runs').iterdir()
+                self.assertEqual(json.loads((folder / 'status.json').read_text())['state'], 'UNKNOWN')
+                self.assertEqual(json.loads((folder / 'result.json').read_text())['leader_state'], 'INTERRUPTED')
+            finally:
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+    def test_normal_leader_exit_stops_same_group_descendant(self):
+        import subprocess
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'demo' / '.git').mkdir(parents=True)
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id':'demo','directory':'demo'}]}))
+            marker = root / 'pid'
+            grandchild = 'import os,time,pathlib; pathlib.Path(%r).write_text(str(os.getpid())); time.sleep(60)' % str(marker)
+            program = 'import subprocess,sys,time,pathlib; subprocess.Popen([sys.executable,"-c",%r]); p=pathlib.Path(%r); exec("while not p.exists(): time.sleep(.01)")' % (grandchild, str(marker))
+            env = dict(os.environ, RESEARCH_ROOT=str(root), HERDR_ML_CONFIG=str(config))
+            proc = subprocess.run([sys.executable,str(MODULE),'init-run','--project','demo','--mode','diagnostic','--dataset-version','test','--split-hash','test','--seed','1','--',sys.executable,'-c',program], env=env, capture_output=True, timeout=10)
+            self.assertEqual(proc.returncode, 2, proc.stderr)
+            folder, = (root / '.runtime/demo/runs').iterdir()
+            result = json.loads((folder / 'result.json').read_text())
+            self.assertEqual(result['state'], 'UNKNOWN')
+            self.assertEqual(result['leader_state'], 'COMPLETED')
+            pid = int(marker.read_text())
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                stat = Path('/proc/%d/stat' % pid)
+                if not stat.exists() or stat.read_text().split()[2] == 'Z':
+                    break
+                time.sleep(.02)
+            else:
+                self.fail('same-group descendant outlived leader')
+
+    def test_post_spawn_status_failure_kills_group_and_stays_uncertain(self):
+        from unittest.mock import patch
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'demo').mkdir()
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version': 1, 'projects': [{'id':'demo','directory':'demo'}]}))
+            folder = root / '.runtime/demo/runs/test'
+            folder.mkdir(parents=True)
+            marker = root / 'pid'
+            script = 'import pathlib,os,time; pathlib.Path(%r).write_text(str(os.getpid())); time.sleep(60)' % str(marker)
+            m.atomic_json(folder / 'submission.json', {'project':'demo','mode':'diagnostic','queue':'local','argv':[sys.executable,'-c',script]})
+            (folder / 'submission.sha256').write_text(m.sha_file(folder / 'submission.json'))
+            m.atomic_json(folder / 'status.json', {'state':'SUBMITTED'})
+            original = m.atomic_json
+            def fail_running(path, payload):
+                if payload.get('state') == 'RUNNING':
+                    deadline = time.monotonic() + 5
+                    while not marker.exists() and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    if not marker.exists():
+                        raise AssertionError('child did not start')
+                    raise OSError('simulated disk error')
+                return original(path, payload)
+            with patch.dict(os.environ, {'RESEARCH_ROOT':str(root),'HERDR_ML_CONFIG':str(config)}):
+                with patch.object(m, 'atomic_json', side_effect=fail_running):
+                    with self.assertRaises(OSError): m.execute('demo','test')
+            pid = int(marker.read_text())
+            stat = Path('/proc/%d/stat' % pid)
+            self.assertTrue(not stat.exists() or stat.read_text().split()[2] == 'Z')
+            self.assertEqual(m.run_registry.inspect(folder)['state'], 'RUNNING')
+            self.assertIsNone(m.run_registry.inspect(folder)['result'])
+
+    def test_ignored_sigchld_is_rejected_without_execution(self):
+        import signal
+        old = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        try:
+            with self.assertRaises(m.ResearchError):
+                m.execute('demo', 'unused')
+        finally:
+            signal.signal(signal.SIGCHLD, old)
+
+--- tests/test_registry_p0.py ---
+"""CPU-only transactional registry ownership and recovery tests."""
+import importlib.util
+import multiprocessing
+import tempfile
+from pathlib import Path
+import unittest
+
+path = Path(__file__).resolve().parents[1] / 'scripts' / 'run_registry.py'
+spec = importlib.util.spec_from_file_location('run_registry', path)
+registry = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(registry)
+
+
+def attempt(path, ready, queue):
+    ready.wait()
+    try:
+        token = registry.claim(Path(path), 'run', 'project', 'a' * 64, 'SUBMITTED')
+        queue.put(('won', token))
+    except registry.RegistryError:
+        queue.put(('lost', None))
+
+
+class RegistryTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.folder = Path(self.temp.name)
+
+    def claim(self):
+        return registry.claim(self.folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
+
+    def test_twenty_workers_one_claim(self):
+        start = multiprocessing.Event()
+        queue = multiprocessing.Queue()
+        workers = [multiprocessing.Process(target=attempt, args=(str(self.folder), start, queue)) for _ in range(20)]
+        for worker in workers: worker.start()
+        start.set()
+        for worker in workers: worker.join(20)
+        self.assertTrue(all(worker.exitcode == 0 for worker in workers))
+        results = [queue.get(timeout=3) for _ in workers]
+        self.assertEqual(sum(item[0] == 'won' for item in results), 1)
+
+    def test_stale_token_cannot_change_or_complete(self):
+        token = self.claim()
+        with self.assertRaises(registry.RegistryError):
+            registry.advance(self.folder, 'incorrect', 'CLAIMED', 'DISPATCHING')
+        registry.advance(self.folder, token, 'CLAIMED', 'DISPATCHING')
+        with self.assertRaises(registry.RegistryError):
+            registry.finish(self.folder, 'incorrect', {'state': 'COMPLETED', 'exit_code': 0})
+        self.assertEqual(registry.inspect(self.folder)['state'], 'DISPATCHING')
+
+    def test_abandoned_claim_is_never_reclaimed_on_retry(self):
+        token = self.claim()
+        self.assertTrue(token)
+        for _ in range(2):
+            with self.assertRaises(registry.RegistryError): self.claim()
+            self.assertEqual(registry.inspect(self.folder)['state'], 'CLAIMED')
+
+    def test_result_and_completion_are_atomic_and_terminal(self):
+        token = self.claim()
+        registry.advance(self.folder, token, 'CLAIMED', 'DISPATCHING')
+        registry.advance(self.folder, token, 'DISPATCHING', 'RUNNING')
+        result = {'state': 'UNKNOWN', 'leader_state': 'COMPLETED', 'exit_code': 0}
+        registry.finish(self.folder, token, result)
+        item = registry.inspect(self.folder)
+        self.assertEqual(item['state'], 'UNKNOWN')
+        self.assertEqual(item['result'], result)
+        with self.assertRaises(registry.RegistryError): registry.finish(self.folder, token, result)
+
+    def test_existing_legacy_claim_fails_closed(self):
+        (self.folder / 'execution.claim').mkdir()
+        with self.assertRaises(registry.RegistryError): self.claim()
+
+
+def crash_at_phase(folder, phase, ready):
+    token = registry.claim(Path(folder), 'run', 'project', 'a' * 64, 'SUBMITTED')
+    if phase in ('DISPATCHING', 'RUNNING', 'UNCOMMITTED_RESULT'):
+        registry.advance(Path(folder), token, 'CLAIMED', 'DISPATCHING')
+    if phase in ('RUNNING', 'UNCOMMITTED_RESULT'):
+        registry.advance(Path(folder), token, 'DISPATCHING', 'RUNNING')
+    if phase == 'UNCOMMITTED_RESULT':
+        db = registry._connect(Path(folder))
+        db.execute('BEGIN IMMEDIATE')
+        db.execute("UPDATE run SET state='COMPLETED', result_json='{}' WHERE id=1")
+    ready.set()
+    import time
+    time.sleep(60)
+
+
+class CrashTests(unittest.TestCase):
+    def test_crashes_keep_claim_and_never_report_false_completion(self):
+        import signal
+        for phase in ('CLAIMED', 'DISPATCHING', 'RUNNING', 'UNCOMMITTED_RESULT'):
+            with self.subTest(phase=phase), tempfile.TemporaryDirectory() as tmp:
+                folder = Path(tmp)
+                ready = multiprocessing.Event()
+                proc = multiprocessing.Process(target=crash_at_phase, args=(tmp, phase, ready))
+                proc.start()
+                try:
+                    self.assertTrue(ready.wait(10))
+                    proc.kill()
+                    proc.join(10)
+                    self.assertFalse(proc.is_alive())
+                    expected = 'RUNNING' if phase == 'UNCOMMITTED_RESULT' else phase
+                    self.assertEqual(registry.inspect(folder)['state'], expected)
+                    self.assertIsNone(registry.inspect(folder)['result'])
+                    for _ in range(2):
+                        with self.assertRaises(registry.RegistryError):
+                            registry.claim(folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
+                finally:
+                    if proc.is_alive():
+                        proc.kill()
+                        proc.join()
+
+
+def legacy_claim(folder, start, results):
+    start.wait()
+    try:
+        (Path(folder) / 'execution.claim').mkdir(mode=0o700)
+        results.put('legacy')
+    except FileExistsError:
+        results.put('lost')
+
+
+def new_claim(folder, start, results):
+    start.wait()
+    try:
+        registry.claim(Path(folder), 'run', 'project', 'a' * 64, 'SUBMITTED')
+        results.put('new')
+    except registry.RegistryError:
+        results.put('lost')
+
+
+class MixedVersionTests(unittest.TestCase):
+    def test_legacy_and_new_workers_cannot_both_claim(self):
+        for _ in range(10):
+            with tempfile.TemporaryDirectory() as tmp:
+                start = multiprocessing.Event()
+                results = multiprocessing.Queue()
+                processes = [multiprocessing.Process(target=fn, args=(tmp, start, results))
+                             for fn in (legacy_claim, new_claim)]
+                for process in processes: process.start()
+                start.set()
+                for process in processes: process.join(10)
+                self.assertTrue(all(process.exitcode == 0 for process in processes))
+                self.assertEqual(sum(results.get(timeout=2) != 'lost' for _ in processes), 1)
+
+--- tests/test_p0_guards.py ---
+"""Unsafe operational modes must not silently proceed while P0 is incomplete."""
+import importlib.util
+from pathlib import Path
+import unittest
+
+spec = importlib.util.spec_from_file_location('researchctl_guard', Path(__file__).resolve().parents[1] / 'scripts/researchctl.py')
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+
+class GuardTests(unittest.TestCase):
+    def test_official_and_queued_are_blocked(self):
+        for mode, queue in [('official', None), ('diagnostic', 'gpu0')]:
+            with self.subTest(mode=mode, queue=queue):
+                with self.assertRaises(m.ResearchError):
+                    m.require_supported_execution(mode, queue)
+
+    def test_local_diagnostic_allowed(self):
+        m.require_supported_execution('diagnostic', None)
+
+    def test_explicit_local_queue_is_blocked_but_ledger_local_is_allowed(self):
+        with self.assertRaises(m.ResearchError):
+            m.require_supported_execution('diagnostic', 'local')
+        m.require_supported_execution('diagnostic', 'local', submission=True)
+        with self.assertRaises(m.ResearchError):
+            m.require_supported_execution('diagnostic', None, submission=True)
+
+    def test_legacy_queued_local_record_cannot_execute(self):
+        import json
+        import os
+        import sys
+        import tempfile
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / 'demo').mkdir()
+            config = root / 'config.json'
+            config.write_text(json.dumps({'version':1,'projects':[{'id':'demo','directory':'demo'}]}))
+            folder = root / '.runtime/demo/runs/legacy'
+            folder.mkdir(parents=True)
+            marker = root / 'executed'
+            m.atomic_json(folder / 'submission.json', {'project':'demo','mode':'diagnostic','queue':'local',
+                'argv':[sys.executable, '-c', 'import pathlib; pathlib.Path(%r).touch()' % str(marker)]})
+            (folder / 'submission.sha256').write_text(m.sha_file(folder / 'submission.json'))
+            m.atomic_json(folder / 'status.json', {'state':'QUEUED'})
+            with patch.dict(os.environ, {'RESEARCH_ROOT':str(root),'HERDR_ML_CONFIG':str(config)}):
+                self.assertEqual(m.main(['_execute','--project','demo','--run-id','legacy']), 2)
+            self.assertFalse(marker.exists())
+            self.assertFalse((folder / 'execution.claim').exists())

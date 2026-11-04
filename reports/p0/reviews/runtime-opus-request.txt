@@ -1,0 +1,174 @@
+Independent security and correctness review of exact commit 95f7b0814b4e9ee4a5505a4185630e3448c95dd3, scope Python runtime and daemon fingerprinting. Review only supplied source; no tools. Identify concrete high or critical defects and actionable gaps. Do not infer actual daemon or Herdr readiness.
+
+--- scripts/runtime_identity.py ---
+#!/usr/bin/env python3
+"""Report or compare the current interpreter environment; not a sandbox.
+
+Use the same absolute interpreter for CLI and worker. A matching fingerprint is
+necessary, but does not prove that a daemon actually executed a submitted job.
+"""
+import argparse
+import hashlib
+import importlib.metadata
+import json
+from pathlib import Path
+import platform
+import sys
+
+
+def identity():
+    executable = Path(sys.executable).resolve(strict=True)
+    digest = hashlib.sha256()
+    with executable.open('rb') as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+    packages = sorted((d.metadata.get('Name', ''), d.version) for d in importlib.metadata.distributions())
+    packages_json = json.dumps(packages, separators=(',', ':'), ensure_ascii=True)
+    return {'schema_version': 1, 'executable': str(executable), 'executable_sha256': digest.hexdigest(),
+            'python_version': platform.python_version(), 'implementation': platform.python_implementation(),
+            'prefix': str(Path(sys.prefix).resolve()), 'base_prefix': str(Path(sys.base_prefix).resolve()),
+            'packages_sha256': hashlib.sha256(packages_json.encode()).hexdigest()}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--expect', type=Path, help='Compare to a previously saved JSON fingerprint')
+    args = parser.parse_args()
+    if sys.version_info < (3, 10):
+        print('BLOCKED: Python 3.10 or newer required', file=sys.stderr)
+        return 2
+    try:
+        actual = identity()
+        if args.expect:
+            expected = json.loads(args.expect.read_text(encoding='utf-8'))
+            if actual != expected:
+                print('BLOCKED: interpreter fingerprint mismatch', file=sys.stderr)
+                return 2
+        print(json.dumps(actual, sort_keys=True, indent=2))
+        return 0
+    except (OSError, ValueError) as exc:
+        print('BLOCKED: cannot fingerprint runtime: {}'.format(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == '__main__':
+    sys.exit(main())
+
+--- tests/test_runtime_identity.py ---
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'runtime_identity.py'
+
+class RuntimeIdentityTests(unittest.TestCase):
+    def test_matching_and_changed_interpreter_identity(self):
+        snapshot = subprocess.run([sys.executable, str(SCRIPT)], text=True, capture_output=True, check=True)
+        record = json.loads(snapshot.stdout)
+        self.assertEqual(len(record['executable_sha256']), 64)
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'expected.json'
+            path.write_text(snapshot.stdout)
+            self.assertEqual(subprocess.run([sys.executable, str(SCRIPT), '--expect', str(path)], capture_output=True).returncode, 0)
+            record['python_version'] = 'invalid'
+            path.write_text(json.dumps(record))
+            self.assertNotEqual(subprocess.run([sys.executable, str(SCRIPT), '--expect', str(path)], capture_output=True).returncode, 0)
+
+--- .github/workflows/ci.yml ---
+name: offline checks
+
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10.21"
+      - name: Python and Bash syntax
+        run: |
+          python3 -m compileall -q scripts tests
+          bash -n scripts/*.sh
+          python3 -m json.tool config/projects.json >/dev/null
+          python3 -m json.tool config/agent-roles.json >/dev/null
+          python3 -m json.tool config/gates.example.json >/dev/null
+      - name: Unit tests (CPU only)
+        run: python3 -m unittest discover -s tests -v
+      - name: CLI doctor (no installs)
+        run: python3 scripts/researchctl.py doctor
+
+--- .python-version ---
+3.10.21
+
+--- docs/OPERATIONS.md ---
+# Operator runbook
+
+**P0 safety hold:** workspace bootstrap, queued runs, and official runs are blocked pending reconciliation, process containment, authenticated approval, provenance binding, and independent validation. Do not use this starter for GPU workloads. Local CPU diagnostics only. The commands below describe intended future operation where applicable.
+
+## Prerequisites and setup
+Linux server (headless), SSH, Python 3.10.21 (the pinned development runtime; 3.10+ supported), git, jq, bash, Herdr TUI. Optional: Pueue/pueued, uv, MLflow, nvidia-smi, nvtop, btop. Most tools can use user space; NVIDIA driver and Docker GPU runtime may need administrator installation.
+
+1. Inspect the host and agent dependencies: python3 scripts/researchctl.py doctor.
+2. Install Herdr via its published install documentation (review script before executing).
+3. Start Herdr interactively once, then detach. For supervised installations consider its headless server command and a user service.
+4. Edit config/projects.json so project directories are existing Git checkouts; do not use the bootstrap as a cloning tool.
+5. Run: RESEARCH_ROOT=$HOME/research bash scripts/bootstrap-herdr.sh
+6. Install and authenticate agent CLIs separately; only then run herdr integration install codex/claude/hermes and check herdr integration status.
+7. Find an *idle shell* pane with herdr pane list, then run herdr agent start <name> --kind codex --pane <id>.
+8. Optionally initialize the one global Pueue GPU queue via scripts/setup-gpu-queue.sh.
+9. Optionally install and run MLflow bound to 127.0.0.1; use SSH local port forwarding to view.
+10. Test a CPU diagnostic run and inspect metadata/logs before running any GPU workloads.
+
+## Example data flow
+
+~~~bash
+python3 scripts/researchctl.py gate-status --project fl-iot
+python3 scripts/researchctl.py init-run --project fl-iot --mode diagnostic --dataset-version test --split-hash test --seed 123 -- python3 -c 'print("ok")'
+python3 scripts/researchctl.py status --project fl-iot
+~~~
+
+Queued execution is blocked. Before enabling it, capture a fingerprint with `python scripts/runtime_identity.py` and compare the actual daemon-launched worker using `python scripts/runtime_identity.py --expect <fingerprint.json>`. A fingerprint alone cannot prove which interpreter a daemon uses: verify the worker inside the real daemon and preserve its output. Do not treat matching version strings as sufficient. The fingerprint covers the executable and installed package versions, not all package contents or scientific dependencies. Use fully specified argv.
+
+## Host monitoring and troubleshooting
+- herdr status server, herdr workspace list, herdr pane list, herdr agent list
+- pueue status, pueue log, pueue group
+- nvidia-smi, btop, df -h, du -sh $HOME/research/.runtime
+- Research ledger: python3 scripts/researchctl.py status --project <project-id>
+- Localhost MLflow: ssh -L 5000:127.0.0.1:5000 USER@SERVER
+
+## Incident and recovery
+- Mark interrupted/outdated runs as requiring human intervention; never call an interrupted run COMPLETE.
+- On reboot confirm Herdr, queue and MLflow services are running; require operator decision before rerunning failed jobs.
+- Restore artifacts from backup before investigating and preserve logs for scientific auditing.
+- Stop an accidental GPU job through Pueue or the process supervisor, not by deleting the run folder.
+
+## Retention and backups
+Keep manifests and final metric summaries long term. Rotate raw logs by age/size after archiving; retain negative results. Exclude raw datasets and model weights from Git. Back up Pueue settings, MLflow metadata, run manifests and irreplaceable dataset split manifests with checksums. Test restore at intervals.
+
+## Optional MLflow (manual service; no public binding)
+
+~~~bash
+uv tool install mlflow
+mkdir -p "$HOME/research-services/mlflow/artifacts"
+mlflow server --host 127.0.0.1 --port 5000 \
+  --backend-store-uri "sqlite:///$HOME/research-services/mlflow/mlflow.db" \
+  --artifacts-destination "file://$HOME/research-services/mlflow/artifacts"
+~~~
+
+Use a service manager and persistent storage for production; SQLite is a single-user starting point. Do not expose ports externally.
+
+## Run registry and recovery (CPU diagnostics only)
+
+Each new run uses a per-run SQLite registry with a one-time owner token and an event history. SQLite state and committed result are authoritative; the JSON result and status are compatibility projections and can be stale after interruption. `python3 scripts/researchctl.py reconcile --project <id> --run-id <id>` is read-only. It reports UNKNOWN for claims or processes whose completion is not proven; repeat inspection does not reclaim a run. Do not delete registry files or legacy `execution.claim` directories to retry. Preserve them and investigate the original supervisor and all descendants, then submit a new run only after an operator verifies that the old workload is no longer running. Automatic reclaim and queue task-ID reconciliation are not implemented. This protocol is for a trusted single host and supported local filesystems with working SQLite locking and fsync, not a distributed lock or an authentication boundary. Queued and official execution remain blocked.

@@ -1,0 +1,23 @@
+fixture-head 2026-11-03T11:24:09.611Z 2026-11-03T11:24:09.612Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture rev-parse --abbrev-ref HEAD
+session-status 2026-11-03T11:24:13.614Z 2026-11-03T11:24:13.616Z 0 herdr --session mlrec-gate status
+workspace-create 2026-11-03T11:24:13.617Z 2026-11-03T11:24:13.620Z 0 herdr --session mlrec-gate workspace create --cwd /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture --label gate-disposable --no-focus
+tab-create 2026-11-03T11:24:13.643Z 2026-11-03T11:24:13.647Z 0 herdr --session mlrec-gate tab create --workspace w1 --label gate-tab2 --no-focus
+pane-run 2026-11-03T11:24:13.647Z 2026-11-03T11:24:13.649Z 0 herdr --session mlrec-gate pane run w1:p1 cd '/tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture' && mkdir -p logs && (for i in 1 2 3; do echo GATE_LOG_LINE_$i; done) | tee logs/gate.log; echo GATE_DONE
+pane-wait 2026-11-03T11:24:13.650Z 2026-11-03T11:24:13.652Z 0 herdr --session mlrec-gate pane wait-output w1:p1 --match GATE_DONE --timeout 30000
+pane-read 2026-11-03T11:24:13.653Z 2026-11-03T11:24:13.655Z 0 herdr --session mlrec-gate pane read w1:p1 --source recent-unwrapped --lines 40
+pane-get 2026-11-03T11:24:13.656Z 2026-11-03T11:24:13.658Z 0 herdr --session mlrec-gate pane get w1:p1
+pane-process-info 2026-11-03T11:24:13.658Z 2026-11-03T11:24:13.660Z 0 herdr --session mlrec-gate pane process-info --pane w1:p1
+workspace-get 2026-11-03T11:24:13.662Z 2026-11-03T11:24:13.664Z 0 herdr --session mlrec-gate workspace get w1
+worktree-create 2026-11-03T11:24:13.665Z 2026-11-03T11:24:13.673Z 0 herdr --session mlrec-gate worktree create --cwd /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture --branch gate-wt --path /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-wt --label gate-wt --no-focus
+worktree-list-before-commit 2026-11-03T11:24:13.699Z 2026-11-03T11:24:13.705Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture worktree list
+wt-commit 2026-11-03T11:24:13.706Z 2026-11-03T11:24:13.708Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-wt -c user.email=gate@example.invalid -c user.name=gate add ISOLATION.txt
+wt-commit2 2026-11-03T11:24:13.723Z 2026-11-03T11:24:13.730Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-wt -c user.email=gate@example.invalid -c user.name=gate commit -q -m isolation
+wt-head 2026-11-03T11:24:13.731Z 2026-11-03T11:24:13.733Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-wt rev-parse --short HEAD
+main-head 2026-11-03T11:24:13.734Z 2026-11-03T11:24:13.736Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture rev-parse --short HEAD
+worktree-remove 2026-11-03T11:24:13.737Z 2026-11-03T11:24:13.760Z 0 herdr --session mlrec-gate worktree remove --workspace w2
+worktree-list-after 2026-11-03T11:24:13.761Z 2026-11-03T11:24:13.762Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture worktree list
+branch-after 2026-11-03T11:24:13.763Z 2026-11-03T11:24:13.769Z 0 git -C /tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/gates-scratch/gate-fixture branch --list gate-wt
+server-stop 2026-11-03T11:24:13.770Z 2026-11-03T11:24:13.974Z 0 herdr --session mlrec-gate server stop
+session-delete 2026-11-03T11:24:16.975Z 2026-11-03T11:24:16.977Z 0 herdr session delete mlrec-gate --json
+sessions-after 2026-11-03T11:24:16.978Z 2026-11-03T11:24:16.979Z 0 herdr session list --json
+done 2026-11-03T11:24:16.980Z

@@ -1,0 +1,8 @@
+{
+  "exit_code": 0,
+  "model_ids": [
+    "claude-opus-5-5"
+  ],
+  "is_error": false,
+  "reviewed_sha": "1376f400e5df7bd1ae030a185c961a8cb50c9b6d"
+}

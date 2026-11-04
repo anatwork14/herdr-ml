@@ -1,0 +1,23 @@
+{
+  "opus": {
+    "result": "READY",
+    "model_ids": [
+      "claude-opus-5-5"
+    ],
+    "exit_code": 0
+  },
+  "sonnet": {
+    "result": "READY",
+    "model_ids": [
+      "claude-sonnet-5-5"
+    ],
+    "exit_code": 0
+  },
+  "haiku": {
+    "result": "READY",
+    "model_ids": [
+      "claude-haiku-5-5"
+    ],
+    "exit_code": 0
+  }
+}

@@ -1,0 +1,2 @@
+agent: None status: unknown agent_session: None
+foreground: ['bash']

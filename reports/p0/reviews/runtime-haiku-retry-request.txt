@@ -1,0 +1,1 @@
+Review runtime identity fingerprinting for one or two material risks when fingerprint compares executable SHA256, version, prefix, and a digest of installed package names and versions. This is a diagnostic, not an authorization control. Be concise.

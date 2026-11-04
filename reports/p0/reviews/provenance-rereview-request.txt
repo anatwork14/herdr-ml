@@ -1,0 +1,430 @@
+Independent follow-up review of exact Git commit 7c1450f149ebf97644e581354379f934adea914a. Reassess previous findings, identify any remaining/new CRITICAL or HIGH defects and actionable MEDIUM issues. Review exact included source and tests; do not assume live integrations or scientific correctness. Holds remain active. Provide explicit finding status and evidence; do not claim tests were executed.
+
+--- PRIOR REVIEW ---
+# Provenance review of commit `1376f400e5df` (`scripts/provenance.py`, its tests, and docs)
+
+**Bottom line:** I found no CRITICAL or HIGH defects. Within the narrow claim it makes, the verifier holds up. It verifies the exact bytes it parses, it parses only after the signature check, it rejects duplicate keys, it requires an exact set of artifact roles, and it hashes artifacts through `O_NOFOLLOW` directory traversal from a file descriptor.
+
+I found three MEDIUM defects (two in tests, one in code) and several LOW items. I had no tools, so these reproductions are reasoned from the source, not executed.
+
+## MEDIUM
+
+### M1. Three adversarial tests would still pass if their protection were removed
+
+**Root cause:** each negative test fails for a reason other than the one it claims to test.
+
+| Test | What it claims | Why it passes anyway |
+|---|---|---|
+| `test_symlink_escape_and_missing_required_role_rejected` | Symlinks are rejected | The symlink target `self.root / 'outside'` does not exist. If `O_NOFOLLOW` were dropped, `open` would follow the link, get `ENOENT`, and raise `ProvenanceError`. |
+| `test_signed_path_traversal_and_duplicate_keys_rejected` (traversal part) | `..` is rejected | `../outside` also does not exist. If the normalization check were removed, `os.open('..', O_DIRECTORY\|O_NOFOLLOW, dir_fd=…)` succeeds, then `outside` gives `ENOENT`, which still raises. |
+| Same test (duplicate-key part) | Duplicate keys are rejected | `{"schema_version":1,"schema_version":1}` has no `project` key. Without the `_object` hook, it fails on `missing project` instead. |
+
+None of the three tests checks which error was raised, so the duplicate-key, `..`, and symlink controls are effectively untested against regression. Intermediate-directory symlinks are not tested at all.
+
+**Reproduction:** delete `os.O_NOFOLLOW` from the final `os.open`, delete the `'..'` check, or drop `object_pairs_hook`. The suite stays green each time.
+
+**Acceptance tests.** Each attack must be constructed so it would succeed if the control were missing:
+
+```python
+def test_symlink_to_identical_bytes_rejected(self):
+    role = 'test_split'
+    target = self.bundle / self.artifacts[role]['path']
+    outside = self.root / 'outside'
+    outside.write_bytes(target.read_bytes())   # hash would match if followed
+    target.unlink(); target.symlink_to(outside)
+    with self.assertRaisesRegex(p.ProvenanceError, 'cannot safely read'): self.verify()
+
+def test_symlinked_intermediate_directory_rejected(self):
+    real = self.root / 'real'; real.mkdir()
+    (real / 'x.dat').write_bytes(b'fixture test_split')
+    (self.bundle / 'sub').symlink_to(real, target_is_directory=True)
+    self.manifest['artifacts']['test_split'] = {'path': 'sub/x.dat',
+        'sha256': hashlib.sha256(b'fixture test_split').hexdigest()}
+    self.write_signed()
+    with self.assertRaisesRegex(p.ProvenanceError, 'cannot safely read'): self.verify()
+
+def test_dotdot_to_identical_bytes_rejected(self):
+    (self.root / 'outside').write_bytes(b'fixture test_split')
+    self.manifest['artifacts']['test_split']['path'] = '../outside'
+    self.write_signed()
+    with self.assertRaisesRegex(p.ProvenanceError, 'relative and normalized'): self.verify()
+
+def test_duplicate_key_last_wins_would_pass_rejected(self):
+    body = json.dumps(self.manifest, sort_keys=True, separators=(',', ':'))
+    self.path.write_text(body[:-1] + ',"project":"evil"}\n')  # otherwise-valid manifest
+    Path(str(self.path) + '.sig').unlink()
+    subprocess.run(['ssh-keygen','-Y','sign','-q','-n',p.NAMESPACE,'-f',str(self.key),str(self.path)], check=True)
+    with self.assertRaisesRegex(p.ProvenanceError, 'duplicate JSON key'): self.verify()
+```
+
+### M2. No test pins the signature namespace
+
+**Root cause:** every test signs with the correct namespace. If `NAMESPACE` changed, or the `-n` argument were built wrongly, nothing would catch it. That breaks the cross-protocol separation the docs rely on.
+
+**Acceptance test:** sign the manifest with `-n other-namespace` and assert `ProvenanceError`. Also add a test where the `.sig` file comes from a different but valid manifest, and assert rejection.
+
+### M3. The manifest is opened with weaker rules than the artifacts, so a FIFO hangs the verifier
+
+**Root cause:** `manifest_path.open('rb')` follows symlinks, does not check `S_ISREG`, and has no timeout. Only the `ssh-keygen` call has the 15-second timeout. If an untrusted bundle makes `manifest.json` a FIFO, `open()` blocks forever waiting for a writer. If it is a symlink to a device, the 1 MiB cap limits the read, but the open itself can still have side effects.
+
+Integrity is not affected, because the bytes are signature-checked. This is an availability problem and an inconsistency: the docs say symlinks are rejected, but the manifest itself may be a symlink.
+
+**Reproduction:** `os.mkfifo(bundle/'manifest.json')`, then `verify_bundle(...)` never returns.
+
+**Fix:** open the manifest with `O_RDONLY|O_NOFOLLOW|O_NONBLOCK`, check `fstat` for a regular file, then read. Ideally open the bundle root once as a dirfd and use it for both the manifest and the artifacts.
+
+**Acceptance test:** create a FIFO manifest and a symlinked manifest. Run `verify_bundle` in a subprocess with a timeout and assert that it returns `ProvenanceError` quickly.
+
+## LOW
+
+- **L1. Some errors after verification escape as non-`ProvenanceError` exceptions.**
+  - A signed manifest with a seed over 4300 digits raises a plain `ValueError` from Python ≥3.11's int-digit limit. That is not a `JSONDecodeError`, so the `except` clause misses it.
+  - About 1 MB of nested `[` raises `RecursionError`.
+  - Both happen only after signature verification, so the attacker must hold a signing key, and both still fail closed. They do break the exception contract.
+  - Test: sign `{"seed": 1e5000-digit int...}` and assert `ProvenanceError`.
+- **L2. Unknown top-level keys are accepted and returned.** A signed `{"official": true, "env": {...}}` passes through. Any downstream reader of those keys would treat them as verified schema fields. Fix by rejecting keys outside the v1 set, just as `artifacts` entries already are.
+- **L3. Unrestricted string content.** `project` and `argv` allow control characters and lone surrogates (`\ud800`); a lone surrogate in `argv` makes `subprocess` fail later. `seed` has no range limit, while NumPy's legacy seeding needs `0 ≤ seed < 2**32`.
+- **L4. Documentation imprecision.**
+  - "Symlinks in any path component are rejected" is true only below the root. Ancestors of the root, and the manifest file itself, may be symlinks.
+  - "Paths are distinct" means distinct strings only. Hard links and case-insensitive filesystems can alias the same file. Integrity is unaffected because the checks are content hashes.
+- **L5. No key revocation.** There is no `-r` revocation list, and SSHSIG signatures carry no timestamp, so `valid-before` is checked against the time of verification, not the time of signing. The only way to revoke a key is to edit `allowed_signers`. Worth documenting.
+- **L6. `ssh-keygen` is resolved from PATH and inherits the full environment.** This is documented as a trust requirement. Using an absolute path and a minimal `env` would be cheap hardening.
+
+## Known missing integrations (not new defects)
+
+These are consistent with the stated holds, and the docs already disclose them:
+
+- Replay and cross-project acceptance. `verify_bundle` takes no expected project, Git SHA, run ID, nonce, or expiry, so any validly signed bundle passes. A caller that only checks "no exception was raised" accepts a bundle from another project. When execution binding is designed, add `expected_project` and `expected_source_git_sha` parameters.
+- There is a point-in-time time-of-check/time-of-use gap after the function returns. No file descriptors or snapshot are handed back.
+- `source` is not bound to `source_git_sha`, `argv[0]` is resolved through PATH, and the environment is not bound to the launched process.
+- Identical hashes across `train_split`, `validation_split`, and `test_split` are accepted. That is a scientific-validity question, which I am not certifying. A cheap structural check for distinct digests would be a reasonable optional guard.
+
+The holds on official execution, queued execution, and bootstrap remain warranted. Nothing in this commit should lift them.
+
+--- scripts/provenance.py ---
+#!/usr/bin/env python3
+"""Verify a signed provenance envelope; this is not an execution authorizer.
+
+The caller must supply an independently administered allowed-signers file and
+principal. Verification does not lock artifacts or prove scientific validity.
+Official execution remains disabled until a trusted execution boundary binds
+verified immutable artifacts to the actual process and environment.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path, PurePosixPath
+import re
+import stat
+import subprocess
+
+NAMESPACE = 'herdr-ml-official-v1'
+REQUIRED_ARTIFACTS = frozenset(('source', 'environment', 'dataset_manifest',
+    'dataset_content', 'train_split', 'validation_split', 'test_split',
+    'config', 'protocol', 'baseline', 'review_evidence'))
+
+
+class ProvenanceError(Exception):
+    pass
+
+
+def _object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProvenanceError('duplicate JSON key')
+        result[key] = value
+    return result
+
+
+def _reject_constant(_value):
+    raise ProvenanceError('nonstandard JSON constant')
+
+
+def _hash_relative(root, name):
+    if not isinstance(name, str) or not name or '\\' in name or '\x00' in name:
+        raise ProvenanceError('invalid artifact path')
+    path = PurePosixPath(name)
+    if path.is_absolute() or any(part in ('', '.', '..') for part in name.split('/')):
+        raise ProvenanceError('artifact path must be relative and normalized')
+    directory = None
+    file_fd = None
+    try:
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for component in path.parts[:-1]:
+            next_dir = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+            os.close(directory)
+            directory = next_dir
+        file_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        before = os.fstat(file_fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise ProvenanceError('artifact must be a regular file')
+        digest = hashlib.sha256()
+        with os.fdopen(file_fd, 'rb') as stream:
+            file_fd = None
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+            after = os.fstat(stream.fileno())
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise ProvenanceError('artifact changed during verification')
+        return digest.hexdigest()
+    except OSError as exc:
+        raise ProvenanceError('cannot safely read artifact') from exc
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        if directory is not None:
+            os.close(directory)
+
+
+def verify_bundle(manifest_path, signature_path, allowed_signers, principal):
+    """Verify signed bytes and all named artifact bytes, returning parsed metadata.
+
+    This is point-in-time checking, not a filesystem isolation or authorization
+    boundary. Never use this as the sole precondition for launching a run.
+    """
+    if not isinstance(principal, str) or not principal or principal.startswith('-') or '\n' in principal:
+        raise ProvenanceError('invalid trusted principal')
+    try:
+        manifest_path = Path(manifest_path)
+        with os.fdopen(os.open(manifest_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), 'rb') as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise ProvenanceError('manifest must be a regular file')
+            data = handle.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            raise ProvenanceError('manifest too large')
+        verified = subprocess.run(['ssh-keygen', '-Y', 'verify', '-f', str(allowed_signers),
+            '-I', principal, '-n', NAMESPACE, '-s', str(signature_path)], input=data,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
+        if verified.returncode:
+            raise ProvenanceError('signature verification failed')
+        manifest = json.loads(data.decode('utf-8', errors='strict'),
+                              object_pairs_hook=_object, parse_constant=_reject_constant)
+    except (OSError, subprocess.SubprocessError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ProvenanceError('unable to verify signed manifest') from exc
+    if not isinstance(manifest, dict) or type(manifest.get('schema_version')) is not int or manifest['schema_version'] != 1:
+        raise ProvenanceError('invalid manifest schema')
+    if set(manifest) != {'schema_version', 'project', 'source_git_sha', 'argv', 'seed', 'artifacts'}:
+        raise ProvenanceError('unknown or missing manifest fields')
+    if not isinstance(manifest.get('project'), str) or not manifest['project'].strip():
+        raise ProvenanceError('missing project')
+    if not isinstance(manifest.get('source_git_sha'), str) or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', manifest['source_git_sha']):
+        raise ProvenanceError('invalid Git object ID')
+    argv = manifest.get('argv')
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and '\x00' not in arg for arg in argv) or not argv[0]:
+        raise ProvenanceError('invalid command argv')
+    if type(manifest.get('seed')) is not int:
+        raise ProvenanceError('invalid seed')
+    artifacts = manifest.get('artifacts')
+    if not isinstance(artifacts, dict) or set(artifacts) != REQUIRED_ARTIFACTS:
+        raise ProvenanceError('missing or unsupported artifact roles')
+    paths = set()
+    for role, entry in artifacts.items():
+        if not isinstance(entry, dict) or set(entry) != {'path', 'sha256'}:
+            raise ProvenanceError('invalid artifact record: ' + role)
+        name, expected = entry['path'], entry['sha256']
+        if not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected):
+            raise ProvenanceError('invalid artifact hash: ' + role)
+        if not isinstance(name, str) or name in paths:
+            raise ProvenanceError('duplicate or invalid artifact path')
+        paths.add(name)
+        if _hash_relative(manifest_path.parent, name) != expected:
+            raise ProvenanceError('artifact digest mismatch: ' + role)
+    split_hashes = [artifacts[role]['sha256'] for role in ('train_split', 'validation_split', 'test_split')]
+    if len(set(split_hashes)) != len(split_hashes):
+        raise ProvenanceError('split artifacts have identical content')
+    return manifest
+
+--- tests/test_provenance.py ---
+"""Adversarial CPU tests for signed provenance envelopes."""
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+MODULE = Path(__file__).resolve().parents[1] / 'scripts' / 'provenance.py'
+if MODULE.exists():
+    spec = importlib.util.spec_from_file_location('provenance', MODULE)
+    p = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(p)
+else:
+    p = None
+
+
+class SignedProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.bundle = self.root / 'bundle'
+        self.bundle.mkdir()
+        self.key = self.root / 'reviewer'
+        subprocess.run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-f', str(self.key)], check=True)
+        self.allowed = self.root / 'allowed_signers'
+        self.allowed.write_text('reviewer ' + self.key.with_suffix('.pub').read_text())
+        self.artifacts = {}
+        for role in ('source', 'environment', 'dataset_manifest', 'dataset_content', 'train_split',
+                     'validation_split', 'test_split', 'config', 'protocol', 'baseline', 'review_evidence'):
+            f = self.bundle / (role + '.dat')
+            f.write_text('fixture ' + role)
+            self.artifacts[role] = {'path': f.name, 'sha256': hashlib.sha256(f.read_bytes()).hexdigest()}
+        self.manifest = {'schema_version': 1, 'project': 'demo', 'source_git_sha': 'a' * 40,
+                         'argv': ['python', 'train.py'], 'seed': 42, 'artifacts': self.artifacts}
+        self.path = self.bundle / 'manifest.json'
+        self.write_signed()
+
+    def write_signed(self):
+        self.path.write_text(json.dumps(self.manifest, sort_keys=True, separators=(',', ':')) + '\n')
+        signature = Path(str(self.path) + '.sig')
+        if signature.exists(): signature.unlink()
+        subprocess.run(['ssh-keygen', '-Y', 'sign', '-q', '-n', 'herdr-ml-official-v1', '-f', str(self.key), str(self.path)], check=True)
+
+    def verify(self):
+        return p.verify_bundle(self.path, Path(str(self.path) + '.sig'), self.allowed, 'reviewer')
+
+    def test_real_signature_and_all_artifact_hashes(self):
+        self.assertEqual(self.verify()['project'], 'demo')
+
+    def test_changed_dataset_split_evidence_or_manifest_rejected(self):
+        for role in ('dataset_content', 'test_split', 'review_evidence'):
+            with self.subTest(role=role):
+                f = self.bundle / self.artifacts[role]['path']
+                original = f.read_bytes()
+                f.write_bytes(original + b'changed')
+                with self.assertRaises(p.ProvenanceError): self.verify()
+                f.write_bytes(original)
+        self.path.write_text(self.path.read_text().replace('demo', 'evil'))
+        with self.assertRaises(p.ProvenanceError): self.verify()
+
+    def test_untrusted_principal_and_unsigned_changes_rejected(self):
+        with self.assertRaises(p.ProvenanceError):
+            p.verify_bundle(self.path, Path(str(self.path) + '.sig'), self.allowed, 'attacker')
+        self.manifest['argv'].append('--changed')
+        self.path.write_text(json.dumps(self.manifest))
+        with self.assertRaises(p.ProvenanceError): self.verify()
+
+    def test_symlink_escape_and_missing_required_role_rejected(self):
+        target = self.bundle / self.artifacts['test_split']['path']
+        outside = self.root / 'outside'
+        outside.write_bytes(target.read_bytes())
+        target.unlink()
+        target.symlink_to(outside)
+        with self.assertRaisesRegex(p.ProvenanceError, 'cannot safely read artifact'): self.verify()
+        target.unlink()
+        del self.manifest['artifacts']['test_split']
+        self.write_signed()
+        with self.assertRaisesRegex(p.ProvenanceError, 'missing or unsupported artifact roles'): self.verify()
+
+    def test_intermediate_symlink_rejected_even_with_correct_target(self):
+        target = self.bundle / self.artifacts['test_split']['path']
+        directory = self.root / 'outside_dir'
+        directory.mkdir()
+        (directory / 'split').write_bytes(target.read_bytes())
+        (self.bundle / 'alias').symlink_to(directory, target_is_directory=True)
+        self.manifest['artifacts']['test_split']['path'] = 'alias/split'
+        self.write_signed()
+        with self.assertRaisesRegex(p.ProvenanceError, 'cannot safely read artifact'): self.verify()
+
+    def test_signed_path_traversal_and_duplicate_keys_rejected(self):
+        outside = self.root / 'outside'
+        outside.write_bytes((self.bundle / self.artifacts['test_split']['path']).read_bytes())
+        self.manifest['artifacts']['test_split']['path'] = '../outside'
+        self.write_signed()
+        with self.assertRaisesRegex(p.ProvenanceError, 'artifact path must be relative and normalized'): self.verify()
+        self.manifest['artifacts']['test_split']['path'] = 'test_split.dat'
+        canonical = json.dumps(self.manifest, sort_keys=True, separators=(',', ':'))
+        self.sign_bytes(('{"project":"demo",' + canonical[1:]).encode())
+        with self.assertRaisesRegex(p.ProvenanceError, 'duplicate JSON key'): self.verify()
+
+    def test_manifest_symlink_rejected_with_otherwise_valid_signature(self):
+        self.assertEqual(self.verify()['project'], 'demo')
+        actual = self.bundle / 'real-manifest.json'
+        self.path.rename(actual)
+        self.path.symlink_to(actual)
+        with self.assertRaisesRegex(p.ProvenanceError, 'unable to verify signed manifest'): self.verify()
+
+    def test_manifest_fifo_rejected_without_blocking(self):
+        self.path.unlink()
+        os.mkfifo(self.path)
+        code = ("import importlib.util,sys; "
+                "spec=importlib.util.spec_from_file_location('p',sys.argv[1]); "
+                "p=importlib.util.module_from_spec(spec); spec.loader.exec_module(p); "
+                "p.verify_bundle(sys.argv[2],sys.argv[3],sys.argv[4],'reviewer')")
+        try:
+            result = subprocess.run([sys.executable, '-c', code, str(MODULE), str(self.path),
+                str(self.path) + '.sig', str(self.allowed)], capture_output=True, text=True, timeout=2)
+        except subprocess.TimeoutExpired:
+            self.fail('FIFO manifest blocked verification')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('manifest must be a regular file', result.stderr)
+
+    def test_unsigned_environment_or_config_changes_rejected(self):
+        for role in ('source', 'environment', 'dataset_manifest', 'train_split', 'validation_split', 'config', 'protocol', 'baseline'):
+            with self.subTest(role=role):
+                artifact = self.bundle / self.artifacts[role]['path']
+                before = artifact.read_bytes()
+                artifact.write_bytes(before + b' altered')
+                with self.assertRaises(p.ProvenanceError): self.verify()
+                artifact.write_bytes(before)
+
+    def sign_bytes(self, data, namespace='herdr-ml-official-v1'):
+        self.path.write_bytes(data)
+        signature = Path(str(self.path) + '.sig')
+        if signature.exists(): signature.unlink()
+        subprocess.run(['ssh-keygen', '-Y', 'sign', '-q', '-n', namespace, '-f', str(self.key), str(self.path)], check=True)
+
+    def test_rejects_non_utf8_nonstandard_and_unknown_fields(self):
+        canonical = json.dumps(self.manifest, sort_keys=True).encode()
+        self.sign_bytes(canonical.decode().encode('utf-16'))
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.manifest['extra'] = 123
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.manifest.pop('extra')
+        self.manifest['seed'] = float('nan')
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.manifest['seed'] = float('inf')
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()
+
+    def test_wrong_namespace_signature_and_oversize_rejected(self):
+        data = self.path.read_bytes()
+        self.sign_bytes(data, namespace='other-purpose')
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.sign_bytes(data + b' ' * (1024 * 1024))
+        with self.assertRaises(p.ProvenanceError): self.verify()
+        self.sign_bytes(data)
+        Path(str(self.path) + '.sig').write_text('invalid')
+        with self.assertRaises(p.ProvenanceError): self.verify()
+
+    def test_identical_train_validation_test_content_rejected(self):
+        train = (self.bundle / self.artifacts['train_split']['path']).read_bytes()
+        validation = self.bundle / self.artifacts['validation_split']['path']
+        validation.write_bytes(train)
+        self.manifest['artifacts']['validation_split']['sha256'] = hashlib.sha256(train).hexdigest()
+        self.write_signed()
+        with self.assertRaises(p.ProvenanceError): self.verify()
+
+--- docs/PROVENANCE.md ---
+# Signed provenance envelope (experimental; official execution remains blocked)
+
+`scripts/provenance.py` verifies an SSH signature over the exact bytes of a JSON manifest and checks SHA-256 digests of the artifact files it names. The allowed-signers file and expected principal are supplied independently by the caller; they must come from an operator-controlled trust policy, not from the manifest or an untrusted project checkout. The signature namespace is `herdr-ml-official-v1`. The implementation uses `ssh-keygen` from the caller's PATH, which must itself be trusted. An authorized key proves possession of that key; it is not independent scientific certification.
+
+Schema version 1 requires `project`, `source_git_sha` (a full lowercase Git object ID), exact `argv`, integer `seed`, and an `artifacts` object with exactly these roles: `source`, `environment`, `dataset_manifest`, `dataset_content`, `train_split`, `validation_split`, `test_split`, `config`, `protocol`, `baseline`, and `review_evidence`. Each role contains `path` and lowercase SHA-256 `sha256`; paths are distinct, normalized relative file paths beneath the manifest directory. Use regular files; symlinks in any path component are rejected. The three split artifacts must have distinct content hashes; this catches exact duplicates but does not prove their contents are disjoint. Unknown top-level fields, duplicate JSON keys, invalid UTF-8 and nonstandard JSON constants are rejected. For a multi-file artifact, the producer can provide a deterministically produced archive, but a future execution layer must verify the extracted content and bind actual accesses to it.
+
+Create and sign the exact manifest bytes with the owner's authorized signing key:
+
+```sh
+ssh-keygen -Y sign -n herdr-ml-official-v1 -f /path/to/owner-key /path/to/bundle/manifest.json
+```
+
+Call `verify_bundle(manifest, signature, allowed_signers, trusted_principal)` from a trusted Python process. Signing keys must not be committed or included in the bundle. Example trust policy format follows OpenSSH `allowed_signers` (for example, `owner ssh-ed25519 AAAA...`); its contents and principal selection are not authorized by the manifest itself. Review and protect policy and key ownership separately.
+
+This verifier checks files at one point in time. It **does not** establish that the source archive actually corresponds to the claimed Git object, the dataset manifest describes the complete files used, the split files have the claimed semantics or no leakage, environment versions match the launched process, evidence is independently reviewed, authorization was granted for a particular actual execution, or files cannot change after verification. Source/data snapshot materialization, immutable access enforcement, authenticated operator policy provisioning, ownership fencing, execution-time binding and independent security/scientific review are required before official execution can be enabled. A signed statement is evidence of the signer's statement, not proof that the statement is scientifically correct.

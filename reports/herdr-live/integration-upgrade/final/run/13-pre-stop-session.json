@@ -1,0 +1,48 @@
+{
+  "version": 3,
+  "workspaces": [
+    {
+      "id": "w1",
+      "custom_name": "final-disposable",
+      "identity_cwd": "/tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/final-fixture",
+      "public_pane_numbers": {
+        "1": 1
+      },
+      "next_public_pane_number": 2,
+      "public_tab_numbers": [
+        1
+      ],
+      "next_public_tab_number": 2,
+      "tabs": [
+        {
+          "custom_name": null,
+          "layout": {
+            "Pane": 1
+          },
+          "panes": {
+            "1": {
+              "cwd": "/tmp/claude-5011/-mnt-ssd-genos2-workspace-herdr-ml-p0/f04f12fb-1743-4780-ad30-7fa71b190a14/scratchpad/final-fixture",
+              "agent_name": "final-agent",
+              "managed_agent_kind": "claude",
+              "agent_session": {
+                "source": "herdr:claude",
+                "agent": "claude",
+                "kind": "id",
+                "value": "2d592efa-10f5-41dc-a7df-c0a3b08aeb7e"
+              }
+            }
+          },
+          "zoomed": false,
+          "focused": 1,
+          "root_pane": 1
+        }
+      ],
+      "active_tab": 0
+    }
+  ],
+  "active": 0,
+  "selected": 0,
+  "sidebar_width": null,
+  "sidebar_section_split": null,
+  "collapsed_space_keys": []
+}

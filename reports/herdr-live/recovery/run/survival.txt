@@ -1,0 +1,8 @@
+ticker.log lines: 124; first TICK 1 2026-11-03T11:06:50.105000Z; last TICK 124 2026-11-03T11:08:53.457000Z
+tick interval: min 1.001s max 1.026s; sequence contiguous: True
+observer attach1: window 2026-11-03T11:06:57.763000Z..2026-11-03T11:07:03.766000Z exit=124 ticks_in_window=6
+observer attach2: window 2026-11-03T11:07:07.770000Z..2026-11-03T11:07:13.774000Z exit=124 ticks_in_window=6
+observer attach3: window 2026-11-03T11:07:17.777000Z..2026-11-03T11:07:23.780000Z exit=124 ticks_in_window=6
+tui attach 1: window 2026-11-03T11:08:21.963000Z..2026-11-03T11:08:27.143000Z exit_code=0 detach_observed_exit=True ticks_in_window=5
+tui attach 2: window 2026-11-03T11:08:31.147000Z..2026-11-03T11:08:36.207000Z exit_code=0 detach_observed_exit=True ticks_in_window=5
+interpretation: ticks inside each window and during gaps show the pane process kept running; this is process survival, not streaming evidence.

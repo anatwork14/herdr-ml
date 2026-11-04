@@ -1,0 +1,1 @@
+top-level keys: ['active', 'collapsed_space_keys', 'selected', 'sidebar_section_split', 'sidebar_width', 'version', 'workspaces']

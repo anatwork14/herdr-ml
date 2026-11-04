@@ -1,0 +1,19 @@
+{
+  "session": "mlrec-c2",
+  "terminal_id": "term_65f5d670305601",
+  "command": [
+    "herdr",
+    "--session",
+    "mlrec-c2",
+    "terminal",
+    "attach",
+    "term_65f5d670305601"
+  ],
+  "start": "2026-11-03T11:18:50.040Z",
+  "bytes_before_detach": 9210,
+  "detach_sent": "2026-11-03T11:18:55.116Z",
+  "detach_observed_exit": true,
+  "exit_code": 0,
+  "end": "2026-11-03T11:18:55.117Z",
+  "bytes_total": 9363
+}

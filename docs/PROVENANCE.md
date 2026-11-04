@@ -1,0 +1,25 @@
+# Signed provenance envelope (experimental; official execution remains blocked)
+
+`scripts/provenance.py` verifies an SSH signature over the exact bytes of a JSON manifest and checks SHA-256 digests of the artifact files it names. The allowed-signers file and expected principal are supplied independently by the caller; they must come from an operator-controlled trust policy, not from the manifest or an untrusted project checkout. The signature namespace is `herdr-ml-official-v1`. The implementation uses `ssh-keygen` from the caller's PATH, which must itself be trusted. An authorized key proves possession of that key; it is not independent scientific certification.
+
+Schema version 1 requires `project`, `source_git_sha` (a full lowercase Git object ID), exact `argv`, integer `seed`, and an `artifacts` object with exactly these roles: `source`, `environment`, `dataset_manifest`, `dataset_content`, `train_split`, `validation_split`, `test_split`, `config`, `protocol`, `baseline`, and `review_evidence`. Each role contains `path` and lowercase SHA-256 `sha256`; paths are distinct, normalized relative file paths beneath the manifest directory. Use regular files; symlinks in any path component are rejected. The three split artifacts must have distinct content hashes; this catches exact duplicates but does not prove their contents are disjoint. Unknown top-level fields, duplicate JSON keys, invalid UTF-8 and nonstandard JSON constants are rejected. For a multi-file artifact, the producer can provide a deterministically produced archive, but a future execution layer must verify the extracted content and bind actual accesses to it.
+
+Create and sign the exact manifest bytes with the owner's authorized signing key:
+
+```sh
+ssh-keygen -Y sign -n herdr-ml-official-v1 -f /path/to/owner-key /path/to/bundle/manifest.json
+```
+
+Call `verify_bundle(manifest, signature, allowed_signers, trusted_principal)` from a trusted Python process. Signing keys must not be committed or included in the bundle. Example trust policy format follows OpenSSH `allowed_signers` (for example, `owner ssh-ed25519 AAAA...`); its contents and principal selection are not authorized by the manifest itself. Review and protect policy and key ownership separately.
+
+This verifier checks files at one point in time. It **does not** establish that the source archive actually corresponds to the claimed Git object, the dataset manifest describes the complete files used, the split files have the claimed semantics or no leakage, environment versions match the launched process, evidence is independently reviewed, authorization was granted for a particular actual execution, or files cannot change after verification. Source/data snapshot materialization, immutable access enforcement, authenticated operator policy provisioning, ownership fencing, execution-time binding and independent security/scientific review are required before official execution can be enabled. A signed statement is evidence of the signer's statement, not proof that the statement is scientifically correct.
+
+## Diagnostic directory inventory
+
+On Linux with procfs, `python3 scripts/artifact_tree.py /path/to/data > /path/outside/data-tree.json` inventories regular files by relative path, size and SHA-256, including empty directories. `python3 scripts/artifact_tree.py /path/to/data --verify /path/outside/data-tree.json` re-scans the actual files and exits nonzero on mismatch. The output file must be outside the scanned tree. This inventory records content, paths, file sizes and directory presence; it does not capture permissions, ownership, ACLs, timestamps or hard-link topology. The tool imposes entry, depth, path and manifest-size limits; it rejects symlinks and non-regular entries and detects several concurrent file/directory changes; the root's ancestor paths remain trusted.
+
+This is a diagnostic inventory, not an atomic multi-file snapshot, a signature, a dataset license or leakage review, or a guarantee about files later used by a process. It is not connected to official execution. Store and independently authenticate the output; the official hold remains until an immutable execution boundary and authorization bind the actual accessed data and source to the run.
+
+The verifier pins and classifies manifest and artifact inodes with Linux `O_PATH|O_NOFOLLOW` before reopening only regular files through `/proc/self/fd`; nonregular files and symlinks fail closed. It requires Linux procfs and does not establish a shared immutable tree or protect against later mutation. Signature and allowed-signers paths, the `ssh-keygen` executable, and the caller's trust policy remain trusted inputs; this standalone verifier is not a sandbox or an execution authorization mechanism.
+
+Artifact content reads are limited to the pinned file's observed initial size, with an additional one-byte growth check; short reads and observed growth fail closed. This limits unbounded reading of a growing file but is not an atomic snapshot or proof of later execution-time data access.

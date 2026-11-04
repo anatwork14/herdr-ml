@@ -1,5 +1,7 @@
 """CPU-only tests: never load models, datasets, agents, queues or GPU."""
 import importlib.util
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -44,13 +46,18 @@ class ResearchCtlTests(unittest.TestCase):
         return list((self.root / ".runtime" / "demo" / "runs").glob("*"))
 
     def test_diagnostic_success_writes_evidence(self):
-        self.assertEqual(self._run(), 0)
+        self.assertEqual(self._run(), 2)
         folder, = self._records()
         state = researchctl.load_json(folder / "status.json")
         submission = researchctl.load_json(folder / "submission.json")
         result = researchctl.load_json(folder / "result.json")
-        self.assertEqual(state["state"], "COMPLETED")
+        self.assertEqual(state["state"], "UNKNOWN")
+        self.assertEqual(result["leader_state"], "COMPLETED")
         self.assertEqual(result["exit_code"], 0)
+        self.assertIn("stdout_sha256_after_leader_exit", result)
+        self.assertIn("stderr_sha256_after_leader_exit", result)
+        self.assertNotIn("stdout_sha256", result)
+        self.assertNotIn("stderr_sha256", result)
         self.assertEqual(submission["mode"], "diagnostic")
         self.assertIn("hello", (folder / "stdout.log").read_text())
         self.assertEqual(
@@ -60,7 +67,8 @@ class ResearchCtlTests(unittest.TestCase):
     def test_failed_run_keeps_logs(self):
         self.assertEqual(self._run("import sys;sys.stderr.write('bad');sys.exit(9)"), 9)
         folder, = self._records()
-        self.assertEqual(researchctl.load_json(folder / "status.json")["state"], "FAILED")
+        self.assertEqual(researchctl.load_json(folder / "status.json")["state"], "UNKNOWN")
+        self.assertEqual(researchctl.load_json(folder / "result.json")["leader_state"], "FAILED")
         self.assertIn("bad", (folder / "stderr.log").read_text())
 
     def test_missing_gate_blocks_official_before_submission(self):
@@ -98,8 +106,72 @@ class ResearchCtlTests(unittest.TestCase):
         self.assertEqual(self._run(mode="official", approve=True), 2)
         self.assertEqual(self._records(), [])
 
+    def test_registry_is_authoritative_over_stale_or_missing_json(self):
+        self.assertEqual(self._run(), 2)
+        folder, = self._records()
+        (folder / "status.json").unlink()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["status", "--project", "demo"]), 0)
+        self.assertIn("UNKNOWN", output.getvalue())
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", folder.name]), 2)
+        self.assertEqual(json.loads(output.getvalue())["state"], "UNKNOWN")
+        child = json.loads(output.getvalue())["registry"]["child"]
+        self.assertGreater(child["pid"], 0)
+        self.assertTrue(child["boot"])
+        self.assertTrue(child["start_ticks"])
+
+    def test_status_reports_non_object_json_as_unknown_per_run(self):
+        runs = self.root / ".runtime" / "demo" / "runs"
+        malformed_status = runs / "malformed-status"
+        malformed_status.mkdir(parents=True)
+        researchctl.atomic_json(malformed_status / "submission.json", {"mode": "diagnostic"})
+        researchctl.atomic_json(malformed_status / "status.json", ["SUBMITTED"])
+
+        malformed_submission = runs / "malformed-submission"
+        malformed_submission.mkdir()
+        researchctl.atomic_json(malformed_submission / "submission.json", ["diagnostic"])
+        researchctl.atomic_json(malformed_submission / "status.json", {"state": "SUBMITTED"})
+
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["status", "--project", "demo"]), 0)
+
+        lines = output.getvalue().splitlines()
+        self.assertIn("malformed-status\tUNKNOWN\tmissing/corrupt record", lines)
+        self.assertIn("malformed-submission\tUNKNOWN\tmissing/corrupt record", lines)
+
+    def test_reconcile_reports_read_only_process_identity_without_reclaim(self):
+        self.assertEqual(self._run(), 2)
+        folder, = self._records()
+        output = io.StringIO()
+        before = researchctl.run_registry.inspect(folder)
+        with contextlib.redirect_stdout(output):
+            self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", folder.name]), 2)
+        response = json.loads(output.getvalue())
+        self.assertEqual(response["state"], "UNKNOWN")
+        self.assertEqual(response["identity_observations"]["owner"]["observation"], "MATCH")
+        self.assertIn(response["identity_observations"]["child"]["observation"],
+                      ("NOT_VISIBLE", "IDENTITY_MISMATCH", "MATCH_ZOMBIE", "UNKNOWN"))
+        self.assertEqual(researchctl.run_registry.inspect(folder), before)
+        self.assertTrue((folder / "execution.claim").exists())
+
+    def test_reconcile_never_accepts_unrecognized_registry_state(self):
+        folder = self.root / ".runtime" / "demo" / "runs" / "forged"
+        folder.mkdir(parents=True)
+        for state in ("SAFE", "SUBMITTED", "BLOCKED", "", None):
+            with self.subTest(state=state):
+                entry = {"state": state, "owner_host": "host", "child": None}
+                output = io.StringIO()
+                with patch.object(researchctl.run_registry, "inspect", return_value=entry), \
+                     contextlib.redirect_stdout(output):
+                    self.assertEqual(researchctl.main(["reconcile", "--project", "demo", "--run-id", "forged"]), 2)
+                self.assertEqual(json.loads(output.getvalue())["state"], "UNKNOWN")
+
     def test_worker_cannot_rerun_a_completed_run(self):
-        self.assertEqual(self._run(), 0)
+        self.assertEqual(self._run(), 2)
         folder, = self._records()
         self.assertEqual(researchctl.main(["_execute", "--project", "demo",
                                            "--run-id", folder.name]), 2)

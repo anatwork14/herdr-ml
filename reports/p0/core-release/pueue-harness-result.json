@@ -1,0 +1,23 @@
+{
+  "test": "isolated CPU-only Pueue 4.0.4 queue protocol harness",
+  "implementation": "ce34ee415f2b83e7d3e7f2b76dc8a9b72b96a1a7",
+  "pueue_task_id": "0",
+  "pueue_worker_index": "0",
+  "fence_created": true,
+  "task_finished": true,
+  "isolated_xdg": true,
+  "daemon_stopped": true,
+  "shutdown_command_exit": 0,
+  "daemon_exit": 0,
+  "sanitized_environment": [
+    "LANG",
+    "LC_ALL",
+    "PATH",
+    "SHELL",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_RUNTIME_DIR"
+  ],
+  "limitations": "Standalone CPU harness; queue instance is caller supplied; production researchctl dispatch, crash recovery, containment and GPU slot release remain blocked.",
+  "shell_escaping_test": "isolated harness rerun from a temporary repository path containing spaces and semicolon; exit 0, daemon stopped"
+}

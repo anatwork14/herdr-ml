@@ -1,0 +1,23 @@
+## workspaces: stable diffs=0 transient diffs=0
+## tabs: stable diffs=0 transient diffs=0
+## agents: stable diffs=0 transient diffs=4
+  transient ('.result.agents[0].completion_seq', 201, 232)
+  transient ('.result.agents[0].state_change_seq', 201, 232)
+  transient ('.result.agents[1].state_change_seq', 206, 231)
+  transient ('.result.agents[1].terminal_title', '◐ HERDR-ML Manual Core integration', '◑ HERDR-ML Manual Core integration')
+## sessions: stable diffs=0 transient diffs=0
+## panes-w1: stable diffs=0 transient diffs=4
+  transient ('.result.panes[0].scroll.max_offset_from_bottom', 577, 1195)
+  transient ('.result.panes[0].scroll.viewport_rows', 29, 38)
+  transient ('.result.panes[1].scroll.viewport_rows', 29, 38)
+  transient ('.result.panes[2].scroll.viewport_rows', 29, 38)
+## panes-w3: stable diffs=0 transient diffs=1
+  transient ('.result.panes[0].scroll.viewport_rows', 29, 38)
+## panes-w5: stable diffs=0 transient diffs=4
+  transient ('.result.panes[0].scroll.viewport_rows', 27, 36)
+  transient ('.result.panes[0].terminal_title', '◐ HERDR-ML Manual Core integration', '◑ HERDR-ML Manual Core integration')
+  transient ('.result.panes[1].scroll.max_offset_from_bottom', 37, 60)
+  transient ('.result.panes[1].scroll.viewport_rows', 27, 36)
+## panes-w6: stable diffs=0 transient diffs=2
+  transient ('.result.panes[0].scroll.max_offset_from_bottom', 295, 1332)
+  transient ('.result.panes[0].scroll.viewport_rows', 29, 38)

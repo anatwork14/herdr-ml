@@ -1,0 +1,41 @@
+2026-11-03T16:58:16.251706Z  INFO herdr::api::server: api server listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr.sock
+2026-11-03T16:58:16.252151Z  INFO herdr::persist::io: session file is missing event="persist.restore" subsystem="persist" outcome="missing" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/session.json
+2026-11-03T16:58:16.252183Z  INFO herdr::app: using pane scrollback configuration pane_scrollback_limit_bytes=10000000
+2026-11-03T16:58:16.328381Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T16:58:16.328846Z  INFO herdr::server::headless: client protocol socket listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr-client.sock
+2026-11-03T16:58:16.328901Z  INFO herdr::server::headless::bootstrap: herdr server started api_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr.sock client_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr-clien
+2026-11-03T16:58:16.328937Z  INFO herdr::logging: herdr starting event="app.startup" subsystem="server" outcome="started" pid=352837
+2026-11-03T16:58:20.254398Z  INFO herdr::logging: api request received event="api.request.start" subsystem="api" outcome="started" request_id="cli:workspace:create" method="workspace.create" changes_ui=true
+2026-11-03T16:58:20.254528Z  INFO herdr::logging: spawning pane terminal event="pane.spawn.start" subsystem="pane" outcome="started" pane_id=1 rows=40 cols=119 scrollback_limit_bytes=10000000
+2026-11-03T16:58:20.255152Z  INFO herdr::logging: pane child spawned event="pane.spawned" subsystem="pane" outcome="ok" pane_id=1 pid=353071
+2026-11-03T16:58:20.255306Z  INFO herdr::logging: workspace created event="workspace.create" subsystem="workspace" outcome="ok" workspace_id="w1" pane_id=1
+2026-11-03T16:58:20.255311Z  INFO herdr::logging: workspace focused event="workspace.focus" subsystem="workspace" outcome="ok" workspace_id="w1"
+2026-11-03T16:58:20.255314Z  INFO herdr::logging: tab focused event="tab.focus" subsystem="tab" outcome="ok" workspace_id="w1" tab_id="w1:t1"
+2026-11-03T16:58:20.255317Z  INFO herdr::logging: workspace renamed event="workspace.rename" subsystem="workspace" outcome="ok" workspace_id="w1"
+2026-11-03T16:58:20.255521Z  INFO herdr::logging: api request completed event="api.request.complete" subsystem="api" outcome="ok" request_id="cli:workspace:create" method="workspace.create"
+2026-11-03T16:58:20.257481Z  INFO herdr::logging: api request received event="api.request.start" subsystem="api" outcome="started" request_id="cli:agent:start" method="agent.start" changes_ui=true
+2026-11-03T16:58:20.257759Z  INFO herdr::logging: api request completed event="api.request.complete" subsystem="api" outcome="ok" request_id="cli:agent:start" method="agent.start"
+2026-11-03T16:58:20.807548Z  INFO herdr::pane: agent changed pane=1 previous_agent=None agent=Some(Claude) process=claude pgid=Some(353350)
+2026-11-03T16:58:29.146266Z  INFO herdr::persist::writer: preserved session recovery copy event="persist.backup" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/session.json backup_path=/mnt/ssd/geno
+2026-11-03T16:58:29.146303Z  INFO herdr::logging: session saved event="persist.save" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/session.json workspaces=1
+2026-11-03T16:58:39.550141Z  INFO herdr::logging: session saved event="persist.save" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/session.json workspaces=1
+2026-11-03T16:58:52.935407Z  INFO herdr::logging: api request received event="api.request.start" subsystem="api" outcome="started" request_id="cli:agent:prompt" method="agent.prompt" changes_ui=true
+2026-11-03T16:58:54.639541Z  INFO herdr::logging: api request completed event="api.request.complete" subsystem="api" outcome="ok" request_id="cli:agent:prompt" method="agent.prompt"
+2026-11-03T16:59:02.296897Z  INFO herdr::server::headless::lifecycle: server shutdown initiated reason=server.stop request from pid 355681 (herdr), parent pid 355651 (bash)
+2026-11-03T16:59:02.347008Z  INFO herdr::server::headless::lifecycle: completing server shutdown
+2026-11-03T16:59:02.395513Z  INFO herdr::logging: session saved event="persist.save" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/session.json workspaces=1
+2026-11-03T16:59:02.395564Z  INFO herdr::server::headless: headless server exiting
+2026-11-03T16:59:02.396434Z  INFO herdr::logging: pane child exited event="pane.exit" subsystem="pane" outcome="completed" pane_id=1 status="ExitStatus { code: 1, signal: Some(\"Hangup\") }"
+2026-11-03T16:59:02.948097Z  INFO herdr::pane: pane session terminated pane=1 pid=353071 signal=Kill
+2026-11-03T16:59:02.948425Z  INFO herdr::logging: herdr exiting event="app.shutdown" subsystem="server" outcome="completed" pid=352837
+2026-11-03T16:59:12.908718Z  INFO herdr::api::server: api server listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr.sock
+2026-11-03T16:59:12.909359Z  INFO herdr::logging: session restore evaluated event="persist.restore" subsystem="persist" outcome="ok" workspaces=1
+2026-11-03T16:59:12.909373Z  INFO herdr::app: using pane scrollback configuration pane_scrollback_limit_bytes=10000000
+2026-11-03T16:59:12.986129Z  INFO herdr::logging: checking for updates event="update.check.start" subsystem="update" outcome="started"
+2026-11-03T16:59:12.986675Z  INFO herdr::server::headless: client protocol socket listening path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr-client.sock
+2026-11-03T16:59:12.986703Z  INFO herdr::server::headless::bootstrap: herdr server started api_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr.sock client_socket=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/herdr-clien
+2026-11-03T16:59:12.986754Z  INFO herdr::logging: herdr starting event="app.startup" subsystem="server" outcome="started" pid=356210
+2026-11-03T16:59:13.754294Z  INFO herdr::logging: spawning pane terminal event="pane.spawn.start" subsystem="pane" outcome="started" pane_id=1 rows=40 cols=120 scrollback_limit_bytes=10000000
+2026-11-03T16:59:13.754873Z  INFO herdr::logging: pane child spawned event="pane.spawned" subsystem="pane" outcome="ok" pane_id=1 pid=356269
+2026-11-03T16:59:14.307476Z  INFO herdr::pane: agent changed pane=1 previous_agent=None agent=Some(Claude) process=claude pgid=Some(356542)
+2026-11-03T16:59:18.765233Z  INFO herdr::logging: session saved event="persist.save" subsystem="persist" outcome="ok" path=/mnt/ssd/genos2/.config/herdr/sessions/mlrec-final/session.json workspaces=1

@@ -1,0 +1,16 @@
+## workspaces: stable differences=0 transient differences=1
+  transient ('.result.workspaces[0].agent_status', 'idle', 'done')
+## tabs: stable differences=0 transient differences=1
+  transient ('.result.tabs[0].agent_status', 'idle', 'done')
+## agents: stable differences=0 transient differences=3
+  transient ('.result.agents[0].agent_status', 'idle', 'done')
+  transient ('.result.agents[0].completion_seq', 177, 180)
+  transient ('.result.agents[0].state_change_seq', 177, 180)
+## sessions: stable differences=0 transient differences=0
+## panes-w1: stable differences=0 transient differences=2
+  transient ('.result.panes[0].agent_status', 'idle', 'done')
+  transient ('.result.panes[0].scroll.max_offset_from_bottom', 104, 185)
+## panes-w3: stable differences=0 transient differences=0
+## panes-w5: stable differences=0 transient differences=0
+## panes-w6: stable differences=0 transient differences=1
+  transient ('.result.panes[0].scroll.max_offset_from_bottom', 41, 55)
