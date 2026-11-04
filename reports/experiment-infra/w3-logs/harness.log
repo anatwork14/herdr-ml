@@ -1,0 +1,6 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w3-queue && /mnt/ssd/genos2/.local/bin/python3.12 scripts/pueue_cpu_worker_integration.py --pueue /mnt/ssd/genos2/workspace/herdr-ml-pueue-test/bin/pueue-x86_64-unknown-linux-musl --pueued /mnt/ssd/genos2/workspace/herdr-ml-pueue-test/bin/pueued-x86_64-unknown-linux-musl --python /mnt/ssd/genos2/.local/bin/python3.12
+# sha256:
+c1b10d7e4e62211075ddd0e1dc3e8cbfc5a43d662cb3be7402a28504e23fcb51  /mnt/ssd/genos2/workspace/herdr-ml-pueue-test/bin/pueue-x86_64-unknown-linux-musl
+5afeff6adbafb909e8d54e2caff158e6966c2adffa2c09e60fd631cc51b60390  /mnt/ssd/genos2/workspace/herdr-ml-pueue-test/bin/pueued-x86_64-unknown-linux-musl
+{"attempt_bound": true, "claim_replayed_without_write": true, "daemon_exit": 0, "fence": 1, "local_state": "UNKNOWN", "private_daemon": true, "pueue_task_id": "0", "sanitized_environment": ["HOME", "LANG", "LC_ALL", "PATH", "PUEUE_CONFIG_PATH", "SHELL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"], "shutdown_command_exit": 0, "worker_id": "pueue-worker-0"}
+# exit: 0

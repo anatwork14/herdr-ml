@@ -497,6 +497,61 @@ def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker
     return fence
 
 
+def queue_claim_idempotent(folder, run_id, manifest_sha256, queue_instance, task_id, worker_id, *,
+                           _store_home=None):
+    """Claim a bound task, or return the existing claim when this same claimant repeats it.
+
+    Returns (attempt_id, fence, replayed). A repeat by the same claimant process with
+    identical run, manifest, queue instance, task and worker reads the CLAIMED row and
+    writes nothing, so the attempt and fence never change. Any other caller, any field
+    mismatch, and every non-BOUND/non-CLAIMED phase (INTENT, AMBIGUOUS, RETRYABLE) is
+    refused. queue_claim keeps its single-shot behaviour for existing callers.
+    """
+    _validate_queue_args(run_id, _folder_project(folder), manifest_sha256, queue_instance)
+    run_ownership.validate_opaque_task(task_id)
+    run_ownership.validate_name('worker_id', worker_id)
+    claimant = _this_claimant()
+    if claimant is None:
+        raise RegistryError('Process identity unavailable; cannot bind queue claimant')
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase, manifest_sha256, queue_instance, task_id, worker_id, '
+                         'attempt_id, fence, claimant FROM queue_binding WHERE run_folder=?',
+                         (_folder_key(folder),)).fetchone()
+        if (row is None or row[0] != run_id or row[2] != manifest_sha256 or
+                row[3] != queue_instance or row[4] != task_id):
+            raise RegistryError('Queue task/run/manifest/project mismatch, stale replay, or ambiguous enqueue')
+        phase = row[1]
+        if phase == 'CLAIMED':
+            if row[5] != worker_id or row[8] != claimant:
+                raise RegistryError('Task already claimed by another worker or process; never stolen')
+            db.execute('COMMIT')
+            return row[6], row[7], True
+        if phase != 'BOUND':
+            raise RegistryError('Queue row is %s; only a BOUND task can be claimed' % phase)
+        attempt_id = run_ownership.new_attempt_id()
+        updated = db.execute(
+            "UPDATE queue_binding SET phase='CLAIMED', worker_id=?, attempt_id=?, claimant=?, fence=fence+1 "
+            "WHERE run_id=? AND phase='BOUND' AND run_folder=?",
+            (worker_id, attempt_id, claimant, run_id, _folder_key(folder))).rowcount
+        if updated != 1:
+            raise RegistryError('Queue row changed during claim')
+        fence = db.execute('SELECT fence FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+        _queue_event(db, run_id, 'CLAIMED', {'task_id': task_id, 'worker_id': worker_id,
+                                             'attempt_id': attempt_id, 'fence': fence})
+        db.execute('COMMIT')
+        return attempt_id, fence, False
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
 def queue_recover(folder, *, _store_home=None):
     """Restart recovery. Fences every intent without binding and every claim without local ownership.
 
