@@ -483,5 +483,53 @@ class ReviewRegressionTests(ManifestFixture):
         self.assertEqual(sorted(os.listdir(seal)), [])
 
 
+class SubmoduleRegressionTests(ManifestFixture):
+    """N1: a submodule's filter must never run, and submodules are refused."""
+
+    def make_superproject_with_evil_submodule(self, marker):
+        sub_src = self.temp / 'sub-src'
+        sub_src.mkdir()
+        (sub_src / 'a.txt').write_text('one\n')
+        git(sub_src, 'init', '-q')
+        git(sub_src, 'add', '-A')
+        git(sub_src, 'commit', '-q', '-m', 'sub base')
+        (sub_src / '.gitattributes').write_text('*.txt filter=evil\n')
+        git(sub_src, 'add', '.gitattributes')
+        git(sub_src, 'commit', '-q', '-m', 'attributes')
+        superproject = self.temp / 'super'
+        superproject.mkdir()
+        (superproject / 'README.md').write_text('super\n')
+        git(superproject, 'init', '-q')
+        git(superproject, 'add', '-A')
+        git(superproject, 'commit', '-q', '-m', 'super base')
+        sub = superproject / 'sub'
+        subprocess.run(['git', '-c', 'protocol.file.allow=always', 'clone', '-q', str(sub_src), str(sub)],
+                       check=True, capture_output=True)
+        git(superproject, 'add', 'sub')
+        git(superproject, 'commit', '-q', '-m', 'add submodule')
+        git(sub, 'config', 'filter.evil.clean', 'touch %s && cat' % marker)
+        (sub / 'a.txt').write_text('two\n')
+        return superproject
+
+    def test_submodule_filter_is_refused_and_never_runs(self):
+        marker = self.temp / 'submodule-filter.marker'
+        superproject = self.make_superproject_with_evil_submodule(marker)
+        spec = dict(self.spec, source_root=str(superproject), source_files=['README.md'])
+        self.assertCode(em.SOURCE_UNVERIFIABLE, em.build_manifest, **spec)
+        self.assertFalse(marker.exists(), 'submodule clean filter must not run')
+
+    def test_tracked_gitmodules_file_is_refused(self):
+        (self.source / '.gitmodules').write_text('')
+        git(self.source, 'add', '.gitmodules')
+        git(self.source, 'commit', '-q', '-m', 'gitmodules')
+        self.assertCode(em.SOURCE_UNVERIFIABLE, self.build)
+
+    def test_populated_git_modules_directory_is_refused(self):
+        modules = self.source / '.git' / 'modules' / 'leftover'
+        modules.mkdir(parents=True)
+        (modules / 'config').write_text('[core]\n')
+        self.assertCode(em.SOURCE_UNVERIFIABLE, self.build)
+
+
 if __name__ == '__main__':
     unittest.main()

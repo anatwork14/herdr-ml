@@ -537,9 +537,28 @@ def _reject_repo_filters(root):
                                     'repository-local filter or diff configuration is refused')
 
 
+def _reject_submodules(root):
+    """Refuse any submodule. Git would run submodule filters during status."""
+    for entry in _git(root, 'ls-files', '-s', '-z').split(b'\x00'):
+        if not entry:
+            continue
+        meta, _, path = entry.partition(b'\t')
+        if meta.split(b' ')[0] == b'160000':
+            raise VerificationError(SOURCE_UNVERIFIABLE, 'submodules (gitlinks) are refused')
+        if path == b'.gitmodules':
+            raise VerificationError(SOURCE_UNVERIFIABLE, '.gitmodules is refused')
+    if os.path.lexists(os.path.join(root, '.gitmodules')):
+        raise VerificationError(SOURCE_UNVERIFIABLE, '.gitmodules is refused')
+    gitdir = _git(root, 'rev-parse', '--absolute-git-dir').decode('utf-8', 'strict').strip()
+    modules = os.path.join(gitdir, 'modules')
+    if os.path.lexists(modules) and (not os.path.isdir(modules) or os.listdir(modules)):
+        raise VerificationError(SOURCE_UNVERIFIABLE, 'repository has submodule metadata')
+
+
 def _git_state(root):
     """Return (HEAD object id, tree is clean including untracked and ignored files)."""
     _reject_repo_filters(root)
+    _reject_submodules(root)
     try:
         top = _git(root, 'rev-parse', '--show-toplevel').decode('utf-8', 'strict').strip()
         head = _git(root, 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}')
@@ -550,7 +569,8 @@ def _git_state(root):
         raise VerificationError(SOURCE_UNVERIFIABLE, 'source root must be the repository top level')
     if not GIT_OID_RE.match(head):
         raise VerificationError(SOURCE_UNVERIFIABLE, 'HEAD is not a commit')
-    status = _git(root, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching')
+    status = _git(root, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching',
+                   '--ignore-submodules=all')
     return head, status == b''
 
 
