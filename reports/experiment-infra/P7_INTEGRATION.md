@@ -63,6 +63,8 @@ without the fix. The fix commit SHA is recorded in the last line of this section
 | R5 LOW | `verify_handoff(..., mode='production')`. A `TestOnlyHandoffVerifier` is accepted only with `mode='test'`; production mode (the default) and unknown modes refuse with `HANDOFF_VERIFIER_NOT_SELECTABLE`. Existing handoff tests now pass `mode='test'`. | `HandoffModeTests.test_production_mode_refuses_test_only_verifier` |
 | R6 LOW | New `scripts/dispatch_guard.py` raises if `queue_adapter.PRODUCTION_DISPATCH_ENABLED` is not False, at import and via `require_disabled()`. The boundary (`DISPATCH_ENABLED`, check 0) and `researchctl.require_supported_execution` call it. The flag stays False; researchctl does not name the adapter module. | `DispatchDisabledTests.test_constant_is_false`, `test_import_time_check_refuses_when_flag_is_true`, `test_boundary_and_researchctl_refuse_when_flag_is_true` |
 
+Fix commit SHA: c47df58. Full suite at that commit (Python 3.12): Ran 575, OK, exit 0; marker pgrep empty; P0 diff vs 3e6ed54 has no assert or def test_ line.
+
 ## Verification
 
 See the final section appended after the last run: full suite, markers, P0 diff.
