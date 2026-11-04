@@ -36,6 +36,9 @@ test_non_toplevel_source_root_is_unverifiable (tests.test_execution_manifest.Sou
 test_source_mutation_after_manifest_creation_is_rejected (tests.test_execution_manifest.SourceBindingTests.test_source_mutation_after_manifest_creation_is_rejected) ... ok
 test_symlink_in_source_path_is_rejected (tests.test_execution_manifest.SourceBindingTests.test_symlink_in_source_path_is_rejected) ... ok
 test_untracked_file_makes_checkout_dirty (tests.test_execution_manifest.SourceBindingTests.test_untracked_file_makes_checkout_dirty) ... ok
+test_populated_git_modules_directory_is_refused (tests.test_execution_manifest.SubmoduleRegressionTests.test_populated_git_modules_directory_is_refused) ... ok
+test_submodule_filter_is_refused_and_never_runs (tests.test_execution_manifest.SubmoduleRegressionTests.test_submodule_filter_is_refused_and_never_runs) ... ok
+test_tracked_gitmodules_file_is_refused (tests.test_execution_manifest.SubmoduleRegressionTests.test_tracked_gitmodules_file_is_refused) ... ok
 test_containment_evidence_must_match_attempt (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_containment_evidence_must_match_attempt) ... ok
 test_existing_or_escaping_output_destination_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_existing_or_escaping_output_destination_is_rejected) ... ok
 test_invalid_worker_identity_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_invalid_worker_identity_is_rejected) ... ok
@@ -44,7 +47,7 @@ test_result_record_is_unknown_without_verified_containment (tests.test_execution
 test_wrong_attempt_or_run_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_wrong_attempt_or_run_is_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 43 tests in 5.613s
+Ran 46 tests in 5.465s
 
 OK
 # exit code: 0

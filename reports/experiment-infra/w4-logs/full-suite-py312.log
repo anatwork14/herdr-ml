@@ -32,6 +32,7 @@ test_revocation_state_directory_must_not_be_group_writable (test_approval.Revoca
 test_revoked_approval_is_rejected (test_approval.RevocationTests.test_revoked_approval_is_rejected) ... ok
 test_revoked_manifest_digest_invalidates_its_approvals (test_approval.RevocationTests.test_revoked_manifest_digest_invalidates_its_approvals) ... ok
 test_rollback_check_applies_before_any_other_use_of_the_list (test_approval.RevocationTests.test_rollback_check_applies_before_any_other_use_of_the_list) ... ok
+test_state_for_a_different_anchor_is_refused_with_its_own_code (test_approval.RevocationTests.test_state_for_a_different_anchor_is_refused_with_its_own_code) ... ok
 test_tampered_revocation_list_is_rejected (test_approval.RevocationTests.test_tampered_revocation_list_is_rejected) ... ok
 test_unauthenticated_list_does_not_advance_recorded_sequence (test_approval.RevocationTests.test_unauthenticated_list_does_not_advance_recorded_sequence) ... ok
 test_non_ascii_or_malformed_signature_value_fails_with_reason_code (test_approval.SignatureAndSelfIssueTests.test_non_ascii_or_malformed_signature_value_fails_with_reason_code) ... ok
@@ -112,6 +113,9 @@ test_non_toplevel_source_root_is_unverifiable (test_execution_manifest.SourceBin
 test_source_mutation_after_manifest_creation_is_rejected (test_execution_manifest.SourceBindingTests.test_source_mutation_after_manifest_creation_is_rejected) ... ok
 test_symlink_in_source_path_is_rejected (test_execution_manifest.SourceBindingTests.test_symlink_in_source_path_is_rejected) ... ok
 test_untracked_file_makes_checkout_dirty (test_execution_manifest.SourceBindingTests.test_untracked_file_makes_checkout_dirty) ... ok
+test_populated_git_modules_directory_is_refused (test_execution_manifest.SubmoduleRegressionTests.test_populated_git_modules_directory_is_refused) ... ok
+test_submodule_filter_is_refused_and_never_runs (test_execution_manifest.SubmoduleRegressionTests.test_submodule_filter_is_refused_and_never_runs) ... ok
+test_tracked_gitmodules_file_is_refused (test_execution_manifest.SubmoduleRegressionTests.test_tracked_gitmodules_file_is_refused) ... ok
 test_containment_evidence_must_match_attempt (test_execution_manifest.WorkerIdentityAndOutputTests.test_containment_evidence_must_match_attempt) ... ok
 test_existing_or_escaping_output_destination_is_rejected (test_execution_manifest.WorkerIdentityAndOutputTests.test_existing_or_escaping_output_destination_is_rejected) ... ok
 test_invalid_worker_identity_is_rejected (test_execution_manifest.WorkerIdentityAndOutputTests.test_invalid_worker_identity_is_rejected) ... ok
@@ -155,7 +159,7 @@ ERROR: Invalid submission manifest project or type
 ERROR: Invalid submission command
 ERROR: Invalid submission command
 ok
-test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpptdoqccy/.runtime/demo/runs/test
+test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpvfk8d4t0/.runtime/demo/runs/test
 ok
 test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
 test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
@@ -163,7 +167,7 @@ test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_
 test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
 test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
 test_status_reports_legacy_claim_and_corrupt_registry_unknown (test_p0_ownership.CancellationTests.test_status_reports_legacy_claim_and_corrupt_registry_unknown) ... ok
-test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp20bvlc20/.runtime/demo/runs/test
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmphnyq3rtc/.runtime/demo/runs/test
 ok
 test_absent_pid_is_only_not_visible (test_process_identity.IdentityTests.test_absent_pid_is_only_not_visible) ... ok
 test_live_current_process_matches (test_process_identity.IdentityTests.test_live_current_process_matches) ... ok
@@ -209,11 +213,11 @@ test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registr
 test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
 test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
 test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
-test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T035406Z-f7c7cd3879dd folder=/tmp/tmp3quduayb/research/.runtime/demo/runs/20261104T035406Z-f7c7cd3879dd
-UNKNOWN run=20261104T035406Z-f7c7cd3879dd exit=0 logs=/tmp/tmp3quduayb/research/.runtime/demo/runs/20261104T035406Z-f7c7cd3879dd
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T040036Z-84fdcec20c8d folder=/tmp/tmpnkyf8gm0/research/.runtime/demo/runs/20261104T040036Z-84fdcec20c8d
+UNKNOWN run=20261104T040036Z-84fdcec20c8d exit=0 logs=/tmp/tmpnkyf8gm0/research/.runtime/demo/runs/20261104T040036Z-84fdcec20c8d
 ok
-test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T035407Z-0a82701b9970 folder=/tmp/tmpdi1pru8c/research/.runtime/demo/runs/20261104T035407Z-0a82701b9970
-UNKNOWN run=20261104T035407Z-0a82701b9970 exit=9 logs=/tmp/tmpdi1pru8c/research/.runtime/demo/runs/20261104T035407Z-0a82701b9970
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T040036Z-a7ec091296bd folder=/tmp/tmpo0r9px2a/research/.runtime/demo/runs/20261104T040036Z-a7ec091296bd
+UNKNOWN run=20261104T040036Z-a7ec091296bd exit=9 logs=/tmp/tmpo0r9px2a/research/.runtime/demo/runs/20261104T040036Z-a7ec091296bd
 ok
 test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
 test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
@@ -223,23 +227,23 @@ ok
 test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
 ok
 test_reconcile_never_accepts_unrecognized_registry_state (test_researchctl.ResearchCtlTests.test_reconcile_never_accepts_unrecognized_registry_state) ... ok
-test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T035407Z-5ec37b297546 folder=/tmp/tmpxtic5te6/research/.runtime/demo/runs/20261104T035407Z-5ec37b297546
-UNKNOWN run=20261104T035407Z-5ec37b297546 exit=0 logs=/tmp/tmpxtic5te6/research/.runtime/demo/runs/20261104T035407Z-5ec37b297546
+test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T040036Z-734a7626140e folder=/tmp/tmpih6udi44/research/.runtime/demo/runs/20261104T040036Z-734a7626140e
+UNKNOWN run=20261104T040036Z-734a7626140e exit=0 logs=/tmp/tmpih6udi44/research/.runtime/demo/runs/20261104T040036Z-734a7626140e
 ok
-test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T035408Z-b694f5535703 folder=/tmp/tmp2cd75oqc/research/.runtime/demo/runs/20261104T035408Z-b694f5535703
-UNKNOWN run=20261104T035408Z-b694f5535703 exit=0 logs=/tmp/tmp2cd75oqc/research/.runtime/demo/runs/20261104T035408Z-b694f5535703
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T040037Z-4ad0f9d0744c folder=/tmp/tmp7ioq8pn2/research/.runtime/demo/runs/20261104T040037Z-4ad0f9d0744c
+UNKNOWN run=20261104T040037Z-4ad0f9d0744c exit=0 logs=/tmp/tmp7ioq8pn2/research/.runtime/demo/runs/20261104T040037Z-4ad0f9d0744c
 ok
 test_status_reports_non_object_json_as_unknown_per_run (test_researchctl.ResearchCtlTests.test_status_reports_non_object_json_as_unknown_per_run) ... ok
 test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
-test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T035408Z-ebd74fc2e37c folder=/tmp/tmpzjgfr3w4/research/.runtime/demo/runs/20261104T035408Z-ebd74fc2e37c
-UNKNOWN run=20261104T035408Z-ebd74fc2e37c exit=0 logs=/tmp/tmpzjgfr3w4/research/.runtime/demo/runs/20261104T035408Z-ebd74fc2e37c
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T040037Z-7a75d994d0ea folder=/tmp/tmpiem9q3gk/research/.runtime/demo/runs/20261104T040037Z-7a75d994d0ea
+UNKNOWN run=20261104T040037Z-7a75d994d0ea exit=0 logs=/tmp/tmpiem9q3gk/research/.runtime/demo/runs/20261104T040037Z-7a75d994d0ea
 ERROR: Refusing execution: queued or repeated state=UNKNOWN
 ok
 test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIdentityTests.test_matching_and_changed_interpreter_identity) ... ok
 test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
 
 ----------------------------------------------------------------------
-Ran 217 tests in 24.588s
+Ran 221 tests in 16.661s
 
 OK
 # exit code: 0

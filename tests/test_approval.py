@@ -287,6 +287,11 @@ class RevocationTests(ApprovalFixture):
                         revocations=em.canonical_bytes(forged))
         self.assertEqual(self.state.last(), 0)
 
+    def test_state_for_a_different_anchor_is_refused_with_its_own_code(self):
+        other_state = self.open_state(self.state_dir, anchor_id='TEST-ONLY-other')
+        self.assertCode(ap.REVOCATION_STATE_ANCHOR_MISMATCH, self.verify, self.issue(), state=other_state)
+        self.assertEqual(self.state.last(), 0)
+
     def test_missing_revocation_state_fails_closed(self):
         empty = self.temp / 'state-empty'
         empty.mkdir(mode=0o700)
@@ -439,13 +444,15 @@ class ProductionOwnershipTests(ApprovalFixture):
                 ap.load_trust_anchor(ap.DEFAULT_TRUST_ANCHOR_DIR, repo_root=REPO, run_dir=self.run_dir,
                                      admin_uids=(0,), worker_uids=(1000,))
         self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
-        self.assertIn('owner', ctx.exception.detail)
+        self.assertIn('is not an administrative owner', ctx.exception.detail)
         with mock.patch.object(ap.os, 'lstat', self._fake_lstat(uid=0)):
             with self.assertRaises(em.VerificationError) as ctx:
                 ap.load_trust_anchor(ap.DEFAULT_TRUST_ANCHOR_DIR, repo_root=REPO, run_dir=self.run_dir,
                                      admin_uids=(0,), worker_uids=(1000,))
         self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
-        self.assertNotIn('owner', ctx.exception.detail)
+        # Root ownership passed every directory check; the refusal is the anchor.json
+        # file-type check, reached because the simulated entry is a directory.
+        self.assertEqual(ctx.exception.detail, 'must be a regular file')
 
 
 if __name__ == '__main__':

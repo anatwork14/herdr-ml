@@ -96,6 +96,7 @@ REVOCATION_UNAUTHENTICATED = 'REVOCATION_UNAUTHENTICATED'
 REVOCATION_ROLLBACK = 'REVOCATION_ROLLBACK'
 REVOCATION_STATE_MISSING = 'REVOCATION_STATE_MISSING'
 REVOCATION_STATE_INVALID = 'REVOCATION_STATE_INVALID'
+REVOCATION_STATE_ANCHOR_MISMATCH = 'REVOCATION_STATE_ANCHOR_MISMATCH'
 TRUST_ANCHOR_UNPROVISIONED = 'TRUST_ANCHOR_UNPROVISIONED'
 TRUST_ANCHOR_INVALID = 'TRUST_ANCHOR_INVALID'
 CONSUMPTION_STORE_INVALID = 'CONSUMPTION_STORE_INVALID'
@@ -525,6 +526,8 @@ class ConsumptionStore(object):
 
 def load_revocations(anchor, data, *, now, state):
     """Authenticate a revocation list and advance the recorded sequence."""
+    if state.anchor_id != anchor.anchor_id:
+        raise VerificationError(REVOCATION_STATE_ANCHOR_MISMATCH, 'sequence state belongs to another anchor')
     if data is None:
         raise VerificationError(REVOCATION_LIST_MISSING, 'revocation list required')
     body = parse_canonical(data, MAX_REVOCATION_BYTES, REVOCATION_MALFORMED,

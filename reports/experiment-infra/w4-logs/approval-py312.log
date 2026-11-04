@@ -32,6 +32,7 @@ test_revocation_state_directory_must_not_be_group_writable (tests.test_approval.
 test_revoked_approval_is_rejected (tests.test_approval.RevocationTests.test_revoked_approval_is_rejected) ... ok
 test_revoked_manifest_digest_invalidates_its_approvals (tests.test_approval.RevocationTests.test_revoked_manifest_digest_invalidates_its_approvals) ... ok
 test_rollback_check_applies_before_any_other_use_of_the_list (tests.test_approval.RevocationTests.test_rollback_check_applies_before_any_other_use_of_the_list) ... ok
+test_state_for_a_different_anchor_is_refused_with_its_own_code (tests.test_approval.RevocationTests.test_state_for_a_different_anchor_is_refused_with_its_own_code) ... ok
 test_tampered_revocation_list_is_rejected (tests.test_approval.RevocationTests.test_tampered_revocation_list_is_rejected) ... ok
 test_unauthenticated_list_does_not_advance_recorded_sequence (tests.test_approval.RevocationTests.test_unauthenticated_list_does_not_advance_recorded_sequence) ... ok
 test_non_ascii_or_malformed_signature_value_fails_with_reason_code (tests.test_approval.SignatureAndSelfIssueTests.test_non_ascii_or_malformed_signature_value_fails_with_reason_code) ... ok
@@ -55,7 +56,7 @@ test_test_only_mode_requires_label (tests.test_approval.TrustAnchorProvisioningT
 test_unprovisioned_anchor_is_reported_not_assumed (tests.test_approval.TrustAnchorProvisioningTests.test_unprovisioned_anchor_is_reported_not_assumed) ... ok
 
 ----------------------------------------------------------------------
-Ran 54 tests in 1.569s
+Ran 55 tests in 0.704s
 
 OK
 # exit code: 0
