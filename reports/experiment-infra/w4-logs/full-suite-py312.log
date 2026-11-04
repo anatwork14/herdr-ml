@@ -1,9 +1,12 @@
 # command: cd /mnt/ssd/genos2/workspace/herdr-ml-w4-provenance && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -v
 test_approval_for_another_manifest_is_rejected (test_approval.ApprovalBindingTests.test_approval_for_another_manifest_is_rejected) ... ok
+test_approval_issued_for_one_worker_cannot_be_consumed_by_another (test_approval.ApprovalBindingTests.test_approval_issued_for_one_worker_cannot_be_consumed_by_another) ... ok
 test_attempt_replay_against_second_attempt_is_rejected_and_not_consumed (test_approval.ApprovalBindingTests.test_attempt_replay_against_second_attempt_is_rejected_and_not_consumed) ... ok
 test_changed_output_destination_is_rejected (test_approval.ApprovalBindingTests.test_changed_output_destination_is_rejected) ... ok
 test_expired_approval_is_rejected (test_approval.ApprovalBindingTests.test_expired_approval_is_rejected) ... ok
+test_non_string_signer_and_large_integers_return_reason_codes (test_approval.ApprovalBindingTests.test_non_string_signer_and_large_integers_return_reason_codes) ... ok
 test_not_yet_valid_approval_is_rejected (test_approval.ApprovalBindingTests.test_not_yet_valid_approval_is_rejected) ... ok
+test_second_approval_for_same_attempt_is_refused (test_approval.ApprovalBindingTests.test_second_approval_for_same_attempt_is_refused) ... ok
 test_signer_not_provisioned_in_anchor_is_rejected (test_approval.ApprovalBindingTests.test_signer_not_provisioned_in_anchor_is_rejected) ... ok
 test_unauthorized_worker_id_is_rejected (test_approval.ApprovalBindingTests.test_unauthorized_worker_id_is_rejected) ... ok
 test_unknown_anchor_is_rejected (test_approval.ApprovalBindingTests.test_unknown_anchor_is_rejected) ... ok
@@ -11,13 +14,26 @@ test_valid_approval_authorizes_exactly_once (test_approval.ApprovalBindingTests.
 test_wrong_resource_class_is_rejected (test_approval.ApprovalBindingTests.test_wrong_resource_class_is_rejected) ... ok
 test_wrong_run_is_rejected (test_approval.ApprovalBindingTests.test_wrong_run_is_rejected) ... ok
 test_wrong_scope_is_rejected (test_approval.ApprovalBindingTests.test_wrong_scope_is_rejected) ... ok
-test_consumption_store_refuses_second_claim (test_approval.ConsumptionTests.test_consumption_store_refuses_second_claim) ... ok
+test_claims_are_private_and_fsynced_for_file_and_directory (test_approval.ConsumptionTests.test_claims_are_private_and_fsynced_for_file_and_directory) ... ok
+test_consumption_directory_must_not_be_group_writable (test_approval.ConsumptionTests.test_consumption_directory_must_not_be_group_writable) ... ok
+test_missing_consumption_directory_is_reported_not_raised (test_approval.ConsumptionTests.test_missing_consumption_directory_is_reported_not_raised) ... ok
+test_planted_claim_with_open_mode_is_store_invalid (test_approval.ConsumptionTests.test_planted_claim_with_open_mode_is_store_invalid) ... ok
 test_store_inside_repository_or_run_directory_is_refused (test_approval.ConsumptionTests.test_store_inside_repository_or_run_directory_is_refused) ... ok
+test_key_owned_by_worker_uid_is_refused_in_production_mode (test_approval.ProductionOwnershipTests.test_key_owned_by_worker_uid_is_refused_in_production_mode) ... ok
+test_production_default_path_applies_the_same_ownership_rule (test_approval.ProductionOwnershipTests.test_production_default_path_applies_the_same_ownership_rule) ... ok
+test_production_mode_requires_explicit_disjoint_uid_allowlists (test_approval.ProductionOwnershipTests.test_production_mode_requires_explicit_disjoint_uid_allowlists) ... ok
+test_root_owned_directory_passes_when_root_is_admin (test_approval.ProductionOwnershipTests.test_root_owned_directory_passes_when_root_is_admin) ... ok
+test_worker_owned_0755_directory_is_refused_when_not_an_admin_owner (test_approval.ProductionOwnershipTests.test_worker_owned_0755_directory_is_refused_when_not_an_admin_owner) ... ok
 test_forged_revocation_by_non_revoker_is_rejected (test_approval.RevocationTests.test_forged_revocation_by_non_revoker_is_rejected) ... ok
 test_missing_revocation_list_fails_closed (test_approval.RevocationTests.test_missing_revocation_list_fails_closed) ... ok
+test_missing_revocation_state_fails_closed (test_approval.RevocationTests.test_missing_revocation_state_fails_closed) ... ok
+test_older_revocation_list_cannot_mask_newer_one (test_approval.RevocationTests.test_older_revocation_list_cannot_mask_newer_one) ... ok
+test_revocation_state_directory_must_not_be_group_writable (test_approval.RevocationTests.test_revocation_state_directory_must_not_be_group_writable) ... ok
 test_revoked_approval_is_rejected (test_approval.RevocationTests.test_revoked_approval_is_rejected) ... ok
 test_revoked_manifest_digest_invalidates_its_approvals (test_approval.RevocationTests.test_revoked_manifest_digest_invalidates_its_approvals) ... ok
+test_rollback_check_applies_before_any_other_use_of_the_list (test_approval.RevocationTests.test_rollback_check_applies_before_any_other_use_of_the_list) ... ok
 test_tampered_revocation_list_is_rejected (test_approval.RevocationTests.test_tampered_revocation_list_is_rejected) ... ok
+test_unauthenticated_list_does_not_advance_recorded_sequence (test_approval.RevocationTests.test_unauthenticated_list_does_not_advance_recorded_sequence) ... ok
 test_non_ascii_or_malformed_signature_value_fails_with_reason_code (test_approval.SignatureAndSelfIssueTests.test_non_ascii_or_malformed_signature_value_fails_with_reason_code) ... ok
 test_overlong_validity_window_is_malformed (test_approval.SignatureAndSelfIssueTests.test_overlong_validity_window_is_malformed) ... ok
 test_revoker_must_be_a_listed_signer (test_approval.SignatureAndSelfIssueTests.test_revoker_must_be_a_listed_signer) ... ok
@@ -27,14 +43,14 @@ test_tampered_body_fails_signature (test_approval.SignatureAndSelfIssueTests.tes
 test_truncated_and_noncanonical_approvals_are_rejected (test_approval.SignatureAndSelfIssueTests.test_truncated_and_noncanonical_approvals_are_rejected) ... ok
 test_trust_anchor_refuses_a_principal_that_is_both_worker_and_signer (test_approval.SignatureAndSelfIssueTests.test_trust_anchor_refuses_a_principal_that_is_both_worker_and_signer) ... ok
 test_anchor_inside_repository_or_run_directory_is_refused (test_approval.TrustAnchorProvisioningTests.test_anchor_inside_repository_or_run_directory_is_refused) ... ok
+test_anchor_json_with_open_mode_is_refused (test_approval.TrustAnchorProvisioningTests.test_anchor_json_with_open_mode_is_refused) ... ok
 test_asymmetric_placeholder_fails_closed (test_approval.TrustAnchorProvisioningTests.test_asymmetric_placeholder_fails_closed) ... ok
 test_group_or_world_readable_key_is_refused (test_approval.TrustAnchorProvisioningTests.test_group_or_world_readable_key_is_refused) ... ok
 test_key_symlink_is_refused (test_approval.TrustAnchorProvisioningTests.test_key_symlink_is_refused) ... ok
-test_production_mode_refuses_keys_owned_by_verifying_uid (test_approval.TrustAnchorProvisioningTests.test_production_mode_refuses_keys_owned_by_verifying_uid) ... ok
 test_production_mode_refuses_test_only_anchor (test_approval.TrustAnchorProvisioningTests.test_production_mode_refuses_test_only_anchor) ... ok
-test_production_mode_refuses_writable_or_worker_owned_ancestors (test_approval.TrustAnchorProvisioningTests.test_production_mode_refuses_writable_or_worker_owned_ancestors) ... ok
 test_relative_anchor_path_is_refused (test_approval.TrustAnchorProvisioningTests.test_relative_anchor_path_is_refused) ... ok
 test_short_key_is_refused (test_approval.TrustAnchorProvisioningTests.test_short_key_is_refused) ... ok
+test_symlink_in_parent_directory_of_anchor_is_refused (test_approval.TrustAnchorProvisioningTests.test_symlink_in_parent_directory_of_anchor_is_refused) ... ok
 test_test_only_mode_requires_label (test_approval.TrustAnchorProvisioningTests.test_test_only_mode_requires_label) ... ok
 test_unprovisioned_anchor_is_reported_not_assumed (test_approval.TrustAnchorProvisioningTests.test_unprovisioned_anchor_is_reported_not_assumed) ... ok
 test_boolean_integer_fields_are_rejected (test_artifact_tree.ArtifactTreeTests.test_boolean_integer_fields_are_rejected) ... ok
@@ -80,6 +96,15 @@ test_dependency_version_change_between_creation_and_worker_is_rejected (test_exe
 test_interpreter_digest_replacement_is_rejected (test_execution_manifest.InterpreterAndRuntimeTests.test_interpreter_digest_replacement_is_rejected) ... ok
 test_interpreter_path_replacement_is_rejected (test_execution_manifest.InterpreterAndRuntimeTests.test_interpreter_path_replacement_is_rejected) ... ok
 test_runtime_drift_in_process_is_rejected (test_execution_manifest.InterpreterAndRuntimeTests.test_runtime_drift_in_process_is_rejected) ... ok
+test_failed_seal_removes_only_files_it_created (test_execution_manifest.ReviewRegressionTests.test_failed_seal_removes_only_files_it_created) ... ok
+test_ignored_file_makes_checkout_dirty (test_execution_manifest.ReviewRegressionTests.test_ignored_file_makes_checkout_dirty) ... ok
+test_input_changed_during_read_is_detected (test_execution_manifest.ReviewRegressionTests.test_input_changed_during_read_is_detected) ... ok
+test_pre_existing_sealed_file_survives_a_failed_seal (test_execution_manifest.ReviewRegressionTests.test_pre_existing_sealed_file_survives_a_failed_seal) ... ok
+test_repo_local_clean_filter_is_refused_and_never_runs (test_execution_manifest.ReviewRegressionTests.test_repo_local_clean_filter_is_refused_and_never_runs) ... ok
+test_repo_local_diff_driver_is_refused (test_execution_manifest.ReviewRegressionTests.test_repo_local_diff_driver_is_refused) ... ok
+test_surrogate_code_points_cannot_alias_real_characters (test_execution_manifest.ReviewRegressionTests.test_surrogate_code_points_cannot_alias_real_characters) ... ok
+test_symlink_in_parent_directory_of_input_is_rejected (test_execution_manifest.ReviewRegressionTests.test_symlink_in_parent_directory_of_input_is_rejected) ... ok
+test_symlink_in_parent_directory_of_source_is_rejected (test_execution_manifest.ReviewRegressionTests.test_symlink_in_parent_directory_of_source_is_rejected) ... ok
 test_builder_refuses_a_dirty_checkout (test_execution_manifest.SourceBindingTests.test_builder_refuses_a_dirty_checkout) ... ok
 test_missing_source_file_is_rejected (test_execution_manifest.SourceBindingTests.test_missing_source_file_is_rejected) ... ok
 test_new_commit_is_a_different_source (test_execution_manifest.SourceBindingTests.test_new_commit_is_a_different_source) ... ok
@@ -130,7 +155,7 @@ ERROR: Invalid submission manifest project or type
 ERROR: Invalid submission command
 ERROR: Invalid submission command
 ok
-test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmp_dr323zo/.runtime/demo/runs/test
+test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpptdoqccy/.runtime/demo/runs/test
 ok
 test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
 test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
@@ -138,7 +163,7 @@ test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_
 test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
 test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
 test_status_reports_legacy_claim_and_corrupt_registry_unknown (test_p0_ownership.CancellationTests.test_status_reports_legacy_claim_and_corrupt_registry_unknown) ... ok
-test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmpcwr0gj84/.runtime/demo/runs/test
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp20bvlc20/.runtime/demo/runs/test
 ok
 test_absent_pid_is_only_not_visible (test_process_identity.IdentityTests.test_absent_pid_is_only_not_visible) ... ok
 test_live_current_process_matches (test_process_identity.IdentityTests.test_live_current_process_matches) ... ok
@@ -184,11 +209,11 @@ test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registr
 test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
 test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
 test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
-test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T034027Z-d71a90842f4b folder=/tmp/tmptnbaz2_n/research/.runtime/demo/runs/20261104T034027Z-d71a90842f4b
-UNKNOWN run=20261104T034027Z-d71a90842f4b exit=0 logs=/tmp/tmptnbaz2_n/research/.runtime/demo/runs/20261104T034027Z-d71a90842f4b
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T035406Z-f7c7cd3879dd folder=/tmp/tmp3quduayb/research/.runtime/demo/runs/20261104T035406Z-f7c7cd3879dd
+UNKNOWN run=20261104T035406Z-f7c7cd3879dd exit=0 logs=/tmp/tmp3quduayb/research/.runtime/demo/runs/20261104T035406Z-f7c7cd3879dd
 ok
-test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T034027Z-ecf1a6782dfc folder=/tmp/tmpihonh2yf/research/.runtime/demo/runs/20261104T034027Z-ecf1a6782dfc
-UNKNOWN run=20261104T034027Z-ecf1a6782dfc exit=9 logs=/tmp/tmpihonh2yf/research/.runtime/demo/runs/20261104T034027Z-ecf1a6782dfc
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T035407Z-0a82701b9970 folder=/tmp/tmpdi1pru8c/research/.runtime/demo/runs/20261104T035407Z-0a82701b9970
+UNKNOWN run=20261104T035407Z-0a82701b9970 exit=9 logs=/tmp/tmpdi1pru8c/research/.runtime/demo/runs/20261104T035407Z-0a82701b9970
 ok
 test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
 test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
@@ -198,23 +223,23 @@ ok
 test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
 ok
 test_reconcile_never_accepts_unrecognized_registry_state (test_researchctl.ResearchCtlTests.test_reconcile_never_accepts_unrecognized_registry_state) ... ok
-test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T034027Z-f44e7167254b folder=/tmp/tmpahsagpjo/research/.runtime/demo/runs/20261104T034027Z-f44e7167254b
-UNKNOWN run=20261104T034027Z-f44e7167254b exit=0 logs=/tmp/tmpahsagpjo/research/.runtime/demo/runs/20261104T034027Z-f44e7167254b
+test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T035407Z-5ec37b297546 folder=/tmp/tmpxtic5te6/research/.runtime/demo/runs/20261104T035407Z-5ec37b297546
+UNKNOWN run=20261104T035407Z-5ec37b297546 exit=0 logs=/tmp/tmpxtic5te6/research/.runtime/demo/runs/20261104T035407Z-5ec37b297546
 ok
-test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T034028Z-4bea83920b70 folder=/tmp/tmpumlca4hl/research/.runtime/demo/runs/20261104T034028Z-4bea83920b70
-UNKNOWN run=20261104T034028Z-4bea83920b70 exit=0 logs=/tmp/tmpumlca4hl/research/.runtime/demo/runs/20261104T034028Z-4bea83920b70
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T035408Z-b694f5535703 folder=/tmp/tmp2cd75oqc/research/.runtime/demo/runs/20261104T035408Z-b694f5535703
+UNKNOWN run=20261104T035408Z-b694f5535703 exit=0 logs=/tmp/tmp2cd75oqc/research/.runtime/demo/runs/20261104T035408Z-b694f5535703
 ok
 test_status_reports_non_object_json_as_unknown_per_run (test_researchctl.ResearchCtlTests.test_status_reports_non_object_json_as_unknown_per_run) ... ok
 test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
-test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T034028Z-01078bd9a151 folder=/tmp/tmppsbl168g/research/.runtime/demo/runs/20261104T034028Z-01078bd9a151
-UNKNOWN run=20261104T034028Z-01078bd9a151 exit=0 logs=/tmp/tmppsbl168g/research/.runtime/demo/runs/20261104T034028Z-01078bd9a151
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T035408Z-ebd74fc2e37c folder=/tmp/tmpzjgfr3w4/research/.runtime/demo/runs/20261104T035408Z-ebd74fc2e37c
+UNKNOWN run=20261104T035408Z-ebd74fc2e37c exit=0 logs=/tmp/tmpzjgfr3w4/research/.runtime/demo/runs/20261104T035408Z-ebd74fc2e37c
 ERROR: Refusing execution: queued or repeated state=UNKNOWN
 ok
 test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIdentityTests.test_matching_and_changed_interpreter_identity) ... ok
 test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
 
 ----------------------------------------------------------------------
-Ran 192 tests in 18.916s
+Ran 217 tests in 24.588s
 
 OK
 # exit code: 0

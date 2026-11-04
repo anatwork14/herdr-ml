@@ -31,7 +31,7 @@ Canonical serialization: sorted keys, `separators=(',', ':')`, ASCII, no floats 
 
 `build_manifest(...)` runs in the launcher with the interpreter it records:
 
-1. Requires a clean checkout: `git status --porcelain=v1 -z --untracked-files=all --ignored=matching` must be empty, the source root must be the repository top level, and HEAD must be a commit.
+1. Requires a clean checkout, using the git policy below. `git status --porcelain=v1 -z --untracked-files=all --ignored=matching` must be empty, so untracked and ignored files both block. The source root must be the repository top level, and HEAD must be a commit.
 2. Hashes each declared source file, each input and the config. Each file is read once. Symlinks, non-regular files and paths with symlink components are rejected.
 3. Records the resolved running interpreter and SHA-256 of `/proc/self/exe`. It also records the package list of the running interpreter.
 4. Validates the result against the schema before returning it.
@@ -50,6 +50,16 @@ Canonical serialization: sorted keys, `separators=(',', ':')`, ASCII, no floats 
 8. The output destination resolves under `run_dir` and does not already exist (`OUTPUT_DESTINATION_INVALID`).
 
 The returned plan contains the manifest digest, run and attempt identity, worker id, effective runtime (the running image digest and runtime fields), the inputs actually used, the sealed copy paths, and the output path. Execution must use the sealed copies, not the original paths.
+
+## Git policy
+
+Every git call runs with the following controls:
+
+- A fresh environment built from scratch: no inherited `GIT_*` variables, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` set to the null device, and `HOME` and `XDG_CONFIG_HOME` pointing at an empty temporary directory.
+- Command-line overrides: `core.fsmonitor=false`, `core.attributesFile` set to the null device, `core.hooksPath` set to the null device, and `core.untrackedCache=false`.
+- Refusal, not filtering: before any status query, the repository's merged configuration is listed. Any key beginning `filter.` or `diff.` makes the source unverifiable (`SOURCE_UNVERIFIABLE`). Git therefore never runs a clean or textconv driver from repository configuration.
+
+Git attributes naming a filter with no configured driver are inert. Git applies no filter, and such a repository is not refused by this rule. The policy is the refusal of configured drivers, not hashing without git filters. Test `test_repo_local_clean_filter_is_refused_and_never_runs` checks that a modified tracked file in a repository with a configured clean filter reports `SOURCE_UNVERIFIABLE`, and that the marker the filter would create does not exist afterward. Plain `git status` does run that filter, which was confirmed separately. Test `test_repo_local_diff_driver_is_refused` covers the diff rule. Test `test_ignored_file_makes_checkout_dirty` shows that the ignored-file check is active.
 
 ## Result record
 
@@ -77,4 +87,4 @@ Until those integrations are reviewed and an external trust anchor is provisione
 
 ## Tests
 
-`tests/test_execution_manifest.py` (34 tests): canonical determinism; commit-only rejection; floats, NaN, truncation, duplicate keys, non-canonical and digest-over-other-serialization rejection; source mutation, untracked files, new commit, missing file, dirty checkout, non-top-level root, symlink in source path; dataset replacement, split and client substitution, missing and corrupted input, symlink and FIFO input, sealed-copy integrity, private seal directory; interpreter digest and path replacement; in-process and cross-process dependency drift; run, attempt, worker identity; output escape and pre-existing destination; result record with UNKNOWN containment, missing artifact and containment mismatch.
+`tests/test_execution_manifest.py` (43 tests). Review regressions include repo-local clean-filter refusal with a marker check, diff-driver refusal, ignored-file dirtiness, a read that grows during hashing (`INPUT_CHANGED_DURING_READ`), symlinks in parent directories of source and input paths, surrogate code points, and a failed seal that removes only files it created. Earlier cases: canonical determinism; commit-only rejection; floats, NaN, truncation, duplicate keys, non-canonical and digest-over-other-serialization rejection; source mutation, untracked files, new commit, missing file, dirty checkout, non-top-level root, symlink in source path; dataset replacement, split and client substitution, missing and corrupted input, symlink and FIFO input, sealed-copy integrity, private seal directory; interpreter digest and path replacement; in-process and cross-process dependency drift; run, attempt, worker identity; output escape and pre-existing destination; result record with UNKNOWN containment, missing artifact and containment mismatch.

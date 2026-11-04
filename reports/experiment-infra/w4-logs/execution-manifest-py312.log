@@ -20,6 +20,15 @@ test_dependency_version_change_between_creation_and_worker_is_rejected (tests.te
 test_interpreter_digest_replacement_is_rejected (tests.test_execution_manifest.InterpreterAndRuntimeTests.test_interpreter_digest_replacement_is_rejected) ... ok
 test_interpreter_path_replacement_is_rejected (tests.test_execution_manifest.InterpreterAndRuntimeTests.test_interpreter_path_replacement_is_rejected) ... ok
 test_runtime_drift_in_process_is_rejected (tests.test_execution_manifest.InterpreterAndRuntimeTests.test_runtime_drift_in_process_is_rejected) ... ok
+test_failed_seal_removes_only_files_it_created (tests.test_execution_manifest.ReviewRegressionTests.test_failed_seal_removes_only_files_it_created) ... ok
+test_ignored_file_makes_checkout_dirty (tests.test_execution_manifest.ReviewRegressionTests.test_ignored_file_makes_checkout_dirty) ... ok
+test_input_changed_during_read_is_detected (tests.test_execution_manifest.ReviewRegressionTests.test_input_changed_during_read_is_detected) ... ok
+test_pre_existing_sealed_file_survives_a_failed_seal (tests.test_execution_manifest.ReviewRegressionTests.test_pre_existing_sealed_file_survives_a_failed_seal) ... ok
+test_repo_local_clean_filter_is_refused_and_never_runs (tests.test_execution_manifest.ReviewRegressionTests.test_repo_local_clean_filter_is_refused_and_never_runs) ... ok
+test_repo_local_diff_driver_is_refused (tests.test_execution_manifest.ReviewRegressionTests.test_repo_local_diff_driver_is_refused) ... ok
+test_surrogate_code_points_cannot_alias_real_characters (tests.test_execution_manifest.ReviewRegressionTests.test_surrogate_code_points_cannot_alias_real_characters) ... ok
+test_symlink_in_parent_directory_of_input_is_rejected (tests.test_execution_manifest.ReviewRegressionTests.test_symlink_in_parent_directory_of_input_is_rejected) ... ok
+test_symlink_in_parent_directory_of_source_is_rejected (tests.test_execution_manifest.ReviewRegressionTests.test_symlink_in_parent_directory_of_source_is_rejected) ... ok
 test_builder_refuses_a_dirty_checkout (tests.test_execution_manifest.SourceBindingTests.test_builder_refuses_a_dirty_checkout) ... ok
 test_missing_source_file_is_rejected (tests.test_execution_manifest.SourceBindingTests.test_missing_source_file_is_rejected) ... ok
 test_new_commit_is_a_different_source (tests.test_execution_manifest.SourceBindingTests.test_new_commit_is_a_different_source) ... ok
@@ -35,7 +44,7 @@ test_result_record_is_unknown_without_verified_containment (tests.test_execution
 test_wrong_attempt_or_run_is_rejected (tests.test_execution_manifest.WorkerIdentityAndOutputTests.test_wrong_attempt_or_run_is_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 34 tests in 4.727s
+Ran 43 tests in 5.613s
 
 OK
 # exit code: 0
