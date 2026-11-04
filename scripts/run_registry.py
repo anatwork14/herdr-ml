@@ -456,6 +456,79 @@ def queue_mark_ambiguous(folder, intent_token, detail='', *, _store_home=None):
         db.close()
 
 
+# ENQUEUE_REFUSED is only read from history written before non-zero exits became
+# unknown; it is no longer accepted as a new outcome.
+ENQUEUE_EVENTS = ('ENQUEUE_ATTEMPTED', 'ENQUEUED', 'ENQUEUE_REFUSED', 'ENQUEUE_UNKNOWN')
+ENQUEUE_OUTCOMES = ('ENQUEUED', 'ENQUEUE_UNKNOWN')
+
+
+def _enqueue_pending(db, run_id):
+    """True when the last enqueue event for run_id is an attempt with no recorded outcome."""
+    last = db.execute('SELECT phase FROM queue_events WHERE run_id=? AND phase IN (?,?,?,?) '
+                      'ORDER BY seq DESC LIMIT 1', (run_id, *ENQUEUE_EVENTS)).fetchone()
+    return last is not None and last[0] == 'ENQUEUE_ATTEMPTED'
+
+
+def queue_enqueue_attempted(folder, intent_token, *, _store_home=None):
+    """Durably record, BEFORE `pueue enqueue`, that a BOUND task is about to be released.
+
+    Until an outcome is recorded, restart recovery treats the row as AMBIGUOUS.
+    """
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute("SELECT run_id, task_id FROM queue_binding WHERE intent_token=? AND run_folder=? "
+                         "AND phase='BOUND'", (intent_token, _folder_key(folder))).fetchone()
+        if row is None:
+            raise RegistryError('Only a BOUND task can be released to a worker')
+        if _enqueue_pending(db, row[0]):
+            raise RegistryError('An earlier enqueue has no recorded outcome; never retried')
+        _queue_event(db, row[0], 'ENQUEUE_ATTEMPTED', {'intent_token': intent_token, 'task_id': row[1]})
+        db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+def queue_enqueue_outcome(folder, intent_token, outcome, detail='', *, _store_home=None):
+    """Record the outcome of the one enqueue call. Returns the resulting queue phase.
+
+    outcome is ENQUEUED or ENQUEUE_UNKNOWN (timeout, OS error, any non-zero exit,
+    lost response). An unknown outcome on a BOUND row fences it AMBIGUOUS through
+    the normal fencing path; it is never retried, and an AMBIGUOUS row cannot be
+    released again (queue_enqueue_attempted requires BOUND).
+    """
+    if outcome not in ENQUEUE_OUTCOMES:
+        raise RegistryError('Unknown enqueue outcome %r' % outcome)
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase FROM queue_binding WHERE intent_token=? AND run_folder=?',
+                         (intent_token, _folder_key(folder))).fetchone()
+        if row is None or not _enqueue_pending(db, row[0]):
+            raise RegistryError('No pending enqueue attempt for this intent')
+        run_id, phase = row
+        _queue_event(db, run_id, outcome, {'intent_token': intent_token, 'detail': str(detail)[:1000]})
+        if outcome == 'ENQUEUE_UNKNOWN' and phase == 'BOUND':
+            _mark_ambiguous(db, run_id, 'BOUND', 'enqueue outcome unknown: %s' % str(detail)[:900])
+        phase = db.execute('SELECT phase FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+        db.execute('COMMIT')
+        return phase
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
 def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker_id, *,
                 _store_home=None, _fault=None):
     """Claim a bound task once. Issues a new attempt and a monotonic fence; never steals.
@@ -497,8 +570,64 @@ def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker
     return fence
 
 
+def queue_claim_idempotent(folder, run_id, manifest_sha256, queue_instance, task_id, worker_id, *,
+                           _store_home=None):
+    """Claim a bound task, or return the existing claim when this same claimant repeats it.
+
+    Returns (attempt_id, fence, replayed). A repeat by the same claimant process with
+    identical run, manifest, queue instance, task and worker reads the CLAIMED row and
+    writes nothing, so the attempt and fence never change. Any other caller, any field
+    mismatch, and every non-BOUND/non-CLAIMED phase (INTENT, AMBIGUOUS, RETRYABLE) is
+    refused. queue_claim keeps its single-shot behaviour for existing callers.
+    """
+    _validate_queue_args(run_id, _folder_project(folder), manifest_sha256, queue_instance)
+    run_ownership.validate_opaque_task(task_id)
+    run_ownership.validate_name('worker_id', worker_id)
+    claimant = _this_claimant()
+    if claimant is None:
+        raise RegistryError('Process identity unavailable; cannot bind queue claimant')
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase, manifest_sha256, queue_instance, task_id, worker_id, '
+                         'attempt_id, fence, claimant FROM queue_binding WHERE run_folder=?',
+                         (_folder_key(folder),)).fetchone()
+        if (row is None or row[0] != run_id or row[2] != manifest_sha256 or
+                row[3] != queue_instance or row[4] != task_id):
+            raise RegistryError('Queue task/run/manifest/project mismatch, stale replay, or ambiguous enqueue')
+        phase = row[1]
+        if phase == 'CLAIMED':
+            if row[5] != worker_id or row[8] != claimant:
+                raise RegistryError('Task already claimed by another worker or process; never stolen')
+            db.execute('COMMIT')
+            return row[6], row[7], True
+        if phase != 'BOUND':
+            raise RegistryError('Queue row is %s; only a BOUND task can be claimed' % phase)
+        attempt_id = run_ownership.new_attempt_id()
+        updated = db.execute(
+            "UPDATE queue_binding SET phase='CLAIMED', worker_id=?, attempt_id=?, claimant=?, fence=fence+1 "
+            "WHERE run_id=? AND phase='BOUND' AND run_folder=?",
+            (worker_id, attempt_id, claimant, run_id, _folder_key(folder))).rowcount
+        if updated != 1:
+            raise RegistryError('Queue row changed during claim')
+        fence = db.execute('SELECT fence FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
+        _queue_event(db, run_id, 'CLAIMED', {'task_id': task_id, 'worker_id': worker_id,
+                                             'attempt_id': attempt_id, 'fence': fence})
+        db.execute('COMMIT')
+        return attempt_id, fence, False
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
 def queue_recover(folder, *, _store_home=None):
-    """Restart recovery. Fences every intent without binding and every claim without local ownership.
+    """Restart recovery. Fences every intent without binding, every enqueue attempt without a
+    recorded outcome, and every claim without local ownership.
 
     Nothing here retries, resubmits or resumes work. Returns the resulting phase, or None.
     """
@@ -513,6 +642,8 @@ def queue_recover(folder, *, _store_home=None):
         run_id, phase, attempt_id, fence = row
         if phase == 'INTENT':
             _mark_ambiguous(db, run_id, 'INTENT', 'restart: intent without verified binding')
+        elif phase == 'BOUND' and _enqueue_pending(db, run_id):
+            _mark_ambiguous(db, run_id, 'BOUND', 'restart: enqueue attempted without recorded outcome')
         elif phase == 'CLAIMED' and not _local_claim_matches(folder, run_id, attempt_id, fence):
             _mark_ambiguous(db, run_id, 'CLAIMED', 'restart: claim without local ownership record')
         phase = db.execute('SELECT phase FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
@@ -539,7 +670,9 @@ def queue_resolve_ambiguous(folder, proof, *, _store_home=None):
             raise RegistryError('Only AMBIGUOUS queue rows can be resolved')
         run_id, intent_token, queue_instance, origin = row
         if origin != 'INTENT':
-            raise RegistryError('A claimed ambiguity needs containment-verified termination, not queue evidence')
+            # CLAIMED needs containment-verified termination; BOUND (enqueue outcome unknown) has no verifier.
+            raise RegistryError('Only an INTENT ambiguity can be resolved by queue evidence; a claimed or '
+                                'released ambiguity needs containment-verified termination')
         kind = run_ownership.require_queue_lookup(proof, intent_token=intent_token, queue_instance=queue_instance)
         if kind == run_ownership.QUEUE_LOOKUP_NO_TASK:
             db.execute("UPDATE queue_binding SET phase='RETRYABLE', resolution='NOT_SUBMITTED_VERIFIED' "

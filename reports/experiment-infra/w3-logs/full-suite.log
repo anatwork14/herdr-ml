@@ -1,0 +1,33 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w3-queue && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests
+.................................................ERROR: Refusing execution: queued or repeated state=QUEUED
+....ERROR: Invalid submission manifest JSON
+ERROR: Invalid submission manifest project or type
+ERROR: Invalid submission command
+ERROR: Invalid submission command
+.UNKNOWN run=test exit=0 logs=/tmp/tmpp0eia13f/.runtime/demo/runs/test
+.......UNKNOWN run=test exit=0 logs=/tmp/tmpbo_ydxo1/.runtime/demo/runs/test
+...............................................................................STARTING run=20261104T083349Z-25f2e588c137 folder=/tmp/tmp3_se7url/research/.runtime/demo/runs/20261104T083349Z-25f2e588c137
+UNKNOWN run=20261104T083349Z-25f2e588c137 exit=0 logs=/tmp/tmp3_se7url/research/.runtime/demo/runs/20261104T083349Z-25f2e588c137
+.STARTING run=20261104T083350Z-4b72c20f3c50 folder=/tmp/tmpdb35wzgl/research/.runtime/demo/runs/20261104T083350Z-4b72c20f3c50
+UNKNOWN run=20261104T083350Z-4b72c20f3c50 exit=9 logs=/tmp/tmpdb35wzgl/research/.runtime/demo/runs/20261104T083350Z-4b72c20f3c50
+..ERROR: Official run requires --approve-official
+.ERROR: Official run BLOCKED: Missing gate file
+.ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
+..STARTING run=20261104T083350Z-93f4e6b392c6 folder=/tmp/tmpct06qax9/research/.runtime/demo/runs/20261104T083350Z-93f4e6b392c6
+UNKNOWN run=20261104T083350Z-93f4e6b392c6 exit=0 logs=/tmp/tmpct06qax9/research/.runtime/demo/runs/20261104T083350Z-93f4e6b392c6
+.STARTING run=20261104T083350Z-ad59cdbd3151 folder=/tmp/tmp5mg6e3ys/research/.runtime/demo/runs/20261104T083350Z-ad59cdbd3151
+UNKNOWN run=20261104T083350Z-ad59cdbd3151 exit=0 logs=/tmp/tmp5mg6e3ys/research/.runtime/demo/runs/20261104T083350Z-ad59cdbd3151
+...STARTING run=20261104T083350Z-8e6fb0723182 folder=/tmp/tmppx6_f4ph/research/.runtime/demo/runs/20261104T083350Z-8e6fb0723182
+UNKNOWN run=20261104T083350Z-8e6fb0723182 exit=0 logs=/tmp/tmppx6_f4ph/research/.runtime/demo/runs/20261104T083350Z-8e6fb0723182
+ERROR: Refusing execution: queued or repeated state=UNKNOWN
+..................................................................ERROR: Refusing execution: queued or repeated state=RUNNING
+.ERROR: Execution already claimed; reconcile before retry
+.ERROR: Refusing execution: queued or repeated state=RUNNING
+.ERROR: Refusing execution: queued or repeated state=RUNNING
+..........
+----------------------------------------------------------------------
+Ran 230 tests in 44.659s
+
+OK
+run-exec	UNKNOWN	diagnostic
+# exit: 0
