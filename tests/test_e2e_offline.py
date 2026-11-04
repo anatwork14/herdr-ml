@@ -228,6 +228,25 @@ class FailClosedContainmentTests(E2EBase):
                 self.assertNotIn(name, text, '%s references %s' % (path.name, name))
 
 
+class SpawnRecordTests(E2EBase):
+    """The job is recorded before it is released, so a worker death in between leaves no orphan."""
+
+    @timeout(180)
+    def test_worker_killed_between_popen_and_record_leaves_no_orphan(self):
+        case = self.new_case(containment='simulator', with_anchor=True,
+                             crash_point='execute:spawned_unrecorded')
+        code, out, err = self.run_case(case)
+        self.assertEqual(code, h.EXIT_CRASH, out + err)
+        self.assertIn('CRASHED execute:spawned_unrecorded', out)
+        # The job was started but never recorded; held at the start gate, it exits on EOF.
+        self.assertEqual(self.job_identities(case), [])
+        self.assertIsNone(run_registry.inspect(case['folder'])['child'])
+        self.assertEqual(process_tree.wait_no_marked(self.marker), [],
+                         'unrecorded job outlived the worker')
+        self.assertFalse(Path(case['output']).exists())
+        # tearDown then asserts nothing recorded or marked is alive.
+
+
 class SimulatedVerifiedPathTests(E2EBase):
     """Item 2: with the TEST-ONLY simulator gate the chain reaches EXECUTE and ARTIFACT_SEAL (OFFLINE_TESTED)."""
 

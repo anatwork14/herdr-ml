@@ -4,7 +4,7 @@ Branch `feat/exp-phase6-e2e` from `feat/exp-phase5-recovery` at `8552182`.
 
 **No operational PASS is claimed.** Everything here is OFFLINE_TESTED or ISOLATED_CPU_VERIFIED on this host. **EXPERIMENT_RECOVERY_READY, CONTAINMENT_READY, APPROVAL_READY and QUEUE_READY all stay BLOCKED.** The production containment backend is still `UNAVAILABLE`. No production trust anchor exists. `PRODUCTION_DISPATCH_ENABLED` is still `False`. The researchctl queued path is still blocked, and its guard is unchanged.
 
-No file under `scripts/` was changed. The work adds `tests/support/e2e_harness.py` (test-only harness and worker) and `tests/test_e2e_offline.py` (19 tests, each with a SIGALRM timeout). The W2 simulator is imported only by the harness's simulator gate, and only inside the worker process. A test scans `scripts/` and confirms nothing there names `e2e_harness`, `containment_sim` or `tests/support`.
+The only change under `scripts/` is in `approval.py`: test-only anchors and state must now live under a `test_root` the test passes explicitly, instead of under `tempfile.gettempdir()` (which follows `TMPDIR`); production mode refuses a `test_root`. The work adds `tests/support/e2e_harness.py` (test-only harness and worker) and `tests/test_e2e_offline.py` (20 tests, each with a SIGALRM timeout). The W2 simulator is imported only by the harness's simulator gate, and only inside the worker process. A test scans `scripts/` and confirms nothing there names `e2e_harness`, `containment_sim` or `tests/support`.
 
 ## 1. Harness
 
@@ -32,9 +32,11 @@ There is no queue daemon. "External submission" appends one line to `submissions
 
 The run never reaches `COMPLETED`, `FAILED` or `INTERRUPTED`. `verified_finish` needs a `VerifiedProof`, and no verifier is registered.
 
-## 2. Fail-closed evidence (item 1)
+## 2. Production predicate refusal under the harness worker (item 1)
 
-`test_production_containment_refuses_before_execute` gives the worker a valid TEST-ONLY approval, so containment is the only barrier. Observed:
+**Scope.** What is tested here is the production predicate, not a production worker. The worker is the **test harness worker** in `tests/support/e2e_harness.py` (`ProductionContainmentGate.check`). It calls the production selector `containment_backend.get_backend().establish` and the production predicate `containment_backend.is_verified_for_execution`, and the predicate always refuses because `_VERIFIED_ISSUERS` is empty. **No production worker in `scripts/` has a containment gate yet.** The fail-closed property of a real queued or worker path is therefore **NOT_TESTED**, and stays NOT_TESTED until such a gate exists in `scripts/` and is tested.
+
+`test_production_containment_refuses_before_execute` gives the harness worker a valid TEST-ONLY approval, so the predicate is the only barrier. Observed:
 
 - The worker exits 3 and prints `REFUSED CONTAINMENT_CHECK CONTAINMENT_UNAVAILABLE`. The stage log is SUBMIT, INTENT, CLAIM PASS, then CONTAINMENT_CHECK REFUSED with `code: CONTAINMENT_UNAVAILABLE`, and the backend reason is `No production containment backend is configured`.
 - Nothing was executed:
@@ -51,7 +53,7 @@ The run never reaches `COMPLETED`, `FAILED` or `INTERRUPTED`. `verified_finish` 
 
 Mutations:
 
-- Making the harness gate pass when the backend is UNAVAILABLE makes the worker run the job (`0 != 3 : DONE`). Both `test_production_containment_refuses_before_execute` and `test_production_gate_and_dispatch_guards_stay_closed` fail.
+- Making the harness gate pass when the backend is UNAVAILABLE makes the harness worker run the job (`0 != 3 : DONE`). Both `test_production_containment_refuses_before_execute` and `test_production_gate_and_dispatch_guards_stay_closed` fail.
 - Making `containment_backend.is_verified_for_execution` return True for UNAVAILABLE fails the same 2 tests.
 - After restoring either one, all 3 tests in the class pass.
 
@@ -61,7 +63,7 @@ Mutations:
 - TEST-ONLY anchor in a temp directory: the approval verifies once, and a second use gives `APPROVAL_CONSUMED`.
 - Production code cannot set that anchor:
   - The same temp anchor loaded in production mode (`test_only` defaults to False, with or without uid allowlists) is refused with `TRUST_ANCHOR_INVALID`.
-  - `test_only=True` refuses a path outside the temp directory.
+  - `test_only=True` requires an explicit absolute `test_root` (not `/`) and refuses a path outside it. `TMPDIR` and `tempfile.gettempdir()` are not consulted: `test_test_only_anchor_outside_explicit_root_is_refused_even_when_tmpdir_points_there` points `TMPDIR` at an unlisted directory and the anchor, revocation state and consumption store there are all refused. Restoring the `gettempdir()` default makes that test fail.
   - `DEFAULT_TRUST_ANCHOR_DIR` is a constant, and an AST check finds no `environ` or `getenv` read in `approval.py`.
   - An AST scan of every `scripts/*.py` finds no `test_only=True`, and no call to `load_trust_anchor` or `provision_revocation_state` outside `approval.py`. `researchctl.py` does not import `approval`.
 
@@ -109,7 +111,7 @@ Total: 27/27 (9 boundaries × 3). Every local-row case ends with the queue `AMBI
 Each test records the identity (pid, boot id, start ticks, pid namespace) of two kinds of process:
 
 - the worker, read from `/proc` immediately after `Popen` and before it is waited on;
-- each job, published by the worker to `spawned.jsonl` right after spawn and before `record_child`.
+- each job, published by the worker to `spawned.jsonl` before the job is allowed to run. The worker launches the job through a start-gate shim that blocks on an inherited pipe; the worker records the job's pid and start ticks, then writes the release byte, and the shim execs the manifest argv (same pid and start time). If the worker dies before the release, the pipe's write end closes, the shim reads EOF and exits 125 without running the job. `test_worker_killed_between_popen_and_record_leaves_no_orphan` crashes the worker at the harness-only point `execute:spawned_unrecorded` (after `Popen`, before the record) and asserts no job identity was recorded, no output exists and no marked process remains, before and after teardown.
 
 `tearDown` asserts that no recorded identity is still alive. Any survivor is terminated by recorded identity only (pidfd, through `terminate_recorded`) and then reported as a failure. Teardown also asserts that `pgrep -f <marker>` is empty. After the full suite, `pgrep -af 'herdr-e2e-tes[t]-'` and `pgrep -af 'herdr-recovery-tes[t]-'` both exit 1.
 
@@ -117,12 +119,13 @@ Each test records the identity (pid, boot id, start ticks, pid namespace) of two
 
 | Item | Status |
 |---|---|
-| 1. Production containment fails closed before EXECUTE (`CONTAINMENT_UNAVAILABLE`) | ISOLATED_CPU_VERIFIED (real worker process; refusal and absence of execution observed) |
+| 1a. Production predicate `is_verified_for_execution` refuses (`CONTAINMENT_UNAVAILABLE`) when called by the test harness worker; nothing executes | OFFLINE_TESTED (harness worker in `tests/support/`, not a production worker) |
+| 1b. Production worker containment gate in `scripts/` (fail-closed property of a real queued or worker path) | BLOCKED: no such gate exists in `scripts/`; NOT_TESTED |
 | 2. Simulator path reaches EXECUTE and ARTIFACT_SEAL | OFFLINE_TESTED only (simulator gate is not containment; never operational) |
 | 3. Approval: unprovisioned refuses, TEST-ONLY anchor verifies, production cannot select it | OFFLINE_TESTED |
 | 4. Seal matches recorded output hash; tampering detected | OFFLINE_TESTED |
 | 5. Crash at 9 boundaries × 3, allowed terminal state, no resubmission, no leftovers | ISOLATED_CPU_VERIFIED (real crashed worker and job processes) |
-| 6. Every started process recorded by pid and start time; none remain | ISOLATED_CPU_VERIFIED |
+| 6. Every started process recorded by pid and start time before the job is released; none remain, including after a worker death between `Popen` and the record | ISOLATED_CPU_VERIFIED |
 | Live containment, production approval anchor, production queue dispatch | BLOCKED |
 | EXPERIMENT_RECOVERY_READY, CONTAINMENT_READY, APPROVAL_READY, QUEUE_READY | BLOCKED |
 
@@ -138,5 +141,5 @@ Each test records the identity (pid, boot id, start ticks, pid namespace) of two
 
 ## 9. Verification
 
-- Full suite: `/mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests` gave `Ran 453 tests`, `OK`, exit 0.
-- `git diff 8552182 -- tests/test_registry_p0.py tests/test_queue_protocol.py` is empty.
+- Full suite: `/mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests` gave `Ran 455 tests`, `OK`, exit 0.
+- `git diff 8552182 -- tests/test_registry_p0.py tests/test_queue_protocol.py` is empty (also empty against `cc3270e`).

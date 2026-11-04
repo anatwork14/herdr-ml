@@ -92,6 +92,22 @@ while not os.path.exists(os.environ['HERDR_E2E_GO']):
     time.sleep(0.01)
 ''' % JOB_WAIT_S
 
+# Start gate for the job. The worker launches the job through this shim, which blocks
+# on an inherited pipe until the worker has recorded the job's identity (pid + start
+# ticks) in spawned.jsonl, then execs the real argv (same pid and start time). If the
+# worker dies before releasing the gate, its write end closes, the shim reads EOF and
+# exits without ever running the job, so an unrecorded job cannot outlive the worker.
+GATE_SRC = r'''import os, sys
+fd = int(sys.argv[1])
+go = os.read(fd, 1)
+os.close(fd)
+if go != b'1':
+    os._exit(125)
+os.execvp(sys.argv[2], sys.argv[2:])
+'''
+# Harness-local crash points (not part of scripts/run_ownership.CRASH_POINTS).
+HARNESS_CRASH_POINTS = frozenset({'execute:spawned_unrecorded'})
+
 GIT = ['git', '-c', 'user.name=test-only', '-c', 'user.email=test-only@example.invalid',
        '-c', 'commit.gpgsign=false']
 
@@ -212,7 +228,7 @@ def build_case(base, marker, *, containment, with_anchor, crash_point=None):
         store_dir = base / 'consumed'
         store_dir.mkdir(mode=0o700)
         anchor = ap.load_trust_anchor(str(anchor_dir), repo_root=str(source), run_dir=str(folder),
-                                      test_only=True)
+                                      test_only=True, test_root=str(base))
         ap.provision_revocation_state(str(state_dir), anchor_id=ANCHOR_ID)
         now = _utc_now()
         approval = ap.issue_approval(
@@ -306,10 +322,14 @@ def load_approval_inputs(case, *, repo_root, run_dir):
         anchor = ap.load_trust_anchor(ap.DEFAULT_TRUST_ANCHOR_DIR, repo_root=repo_root, run_dir=run_dir,
                                       admin_uids=(0,), worker_uids=(os.getuid(),))
         raise AssertionError('unreachable on this host: production anchor loaded %r' % anchor.anchor_id)
-    anchor = ap.load_trust_anchor(case['anchor'], repo_root=repo_root, run_dir=run_dir, test_only=True)
+    # The test-only root is the case's own base directory, passed explicitly (never TMPDIR).
+    test_root = case['base']
+    anchor = ap.load_trust_anchor(case['anchor'], repo_root=repo_root, run_dir=run_dir, test_only=True,
+                                  test_root=test_root)
     state = ap.RevocationState(case['state'], repo_root=repo_root, run_dir=run_dir,
-                               anchor_id=anchor.anchor_id, test_only=True)
-    store = ap.ConsumptionStore(case['store'], repo_root=repo_root, run_dir=run_dir, test_only=True)
+                               anchor_id=anchor.anchor_id, test_only=True, test_root=test_root)
+    store = ap.ConsumptionStore(case['store'], repo_root=repo_root, run_dir=run_dir, test_only=True,
+                                test_root=test_root)
     return anchor, state, store
 
 
@@ -367,7 +387,7 @@ def worker_main(config_path, marker):
     if case['marker'] != marker:
         raise SystemExit('marker mismatch')
     crash = case['crash_point']
-    if crash is not None and crash not in run_ownership.CRASH_POINTS:
+    if crash is not None and crash not in run_ownership.CRASH_POINTS | HARNESS_CRASH_POINTS:
         raise SystemExit('unknown crash point %r' % crash)
 
     def hook(point):
@@ -438,10 +458,20 @@ def worker_main(config_path, marker):
                'HERDR_E2E_INPUT': plan['sealed_inputs']['dataset_content'],
                'HERDR_E2E_OUTPUT': plan['output_path'], 'HERDR_E2E_GO': case['go']}
         cwd = os.path.join(case['source'], manifest['command']['cwd'])
-        job = subprocess.Popen(argv, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True)
+        # The job is held at the start gate until its identity is recorded; only then released.
+        gate_read, gate_write = os.pipe()
+        try:
+            job = subprocess.Popen([sys.executable, '-I', '-c', GATE_SRC, str(gate_read)] + argv, cwd=cwd,
+                                   env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                   stderr=subprocess.DEVNULL, close_fds=True, pass_fds=(gate_read,),
+                                   start_new_session=True)
+        finally:
+            os.close(gate_read)
+        hook('execute:spawned_unrecorded')
         identity = run_recovery.read_identity(job.pid, role='leader')
         _append_line(case['spawned'], dict(identity, by='worker', what='job'))
+        os.write(gate_write, b'1')
+        os.close(gate_write)
         run_registry.record_child(folder, token, job.pid)
         run_registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
         run_recovery.record_descendants(folder, token, [identity], _fault=hook)
