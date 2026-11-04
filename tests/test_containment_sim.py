@@ -1,12 +1,18 @@
-"""Simulator mechanics: escalation, partial and failed cleanup, forks, escapes, crashes.
+"""Simulator mechanics: escalation, partial and failed cleanup, forks, crashes.
 
 Test-only. Every synthetic child is a Popen handle created by ReapingTestCase's
 registry and is reaped in tearDown. No cgroup, sudo or PID-based signal is used.
+
+Escapes in these tests are SELF-REPORTED by the harness (attempt_escape). They
+show that a declared escape is counted and blocks completion. They do not show
+that the simulator detects a real OS escape, because it cannot.
 """
 import signal
 from pathlib import Path
 import sys
+import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'support'))
 import containment_sim as sim  # noqa: E402
@@ -94,7 +100,7 @@ class InMemoryBoundaryTests(sim.ReapingTestCase):
         b.observation_fault = False
         self.assertTrue(c.complete().allowed)
 
-    def test_escape_attempt_is_counted_as_breach_not_success(self):
+    def test_self_reported_escape_is_breach_not_success(self):
         b = self.boundary()
         leader = b.spawn_leader()
         escaped = b.add_descendant(leader)
@@ -149,6 +155,66 @@ class InMemoryBoundaryTests(sim.ReapingTestCase):
         self.assertTrue(recovered.release(fresh).allowed)
         self.assertEqual(sim.Controller.recover(b).state, 'RELEASED')
 
+    def test_member_adopted_after_completion_blocks_release(self):
+        """Mutation M1: removing the occupancy re-check in release() must fail this test."""
+        b = self.boundary()
+        b.spawn_leader()
+        c = sim.Controller(b)
+        c.terminate(budget=1.0)
+        proof = c.verify()
+        self.assertTrue(c.complete().allowed)
+        b.adopt_orphan()  # a member becomes visible between completion and release
+        decision = c.release(proof)
+        self.assertFalse(decision.allowed)
+        self.assertIn('descendant', decision.reason)
+        self.assertFalse(b.released)
+        self.assertEqual(c.state, 'COMPLETED')
+        c.terminate(budget=1.0)
+        fresh = c.verify()
+        self.assertTrue(c.complete().allowed)
+        self.assertTrue(c.release(fresh).allowed)
+
+    def test_release_refused_from_any_state_other_than_completed(self):
+        """Mutation M6: removing the state check in release() must fail this test."""
+        b = self.boundary()
+        b.spawn_leader()
+        c = sim.Controller(b)
+        self.assertFalse(c.release(None).allowed)  # RUNNING
+        c.terminate(budget=1.0)
+        proof = c.verify()
+        self.assertEqual(c.state, 'PROOF_ISSUED')
+        refused = c.release(proof)  # a valid, empty proof, but completion never happened
+        self.assertFalse(refused.allowed)
+        self.assertIn('not completed', refused.reason)
+        self.assertIsNone(c.verify(interrupt=True))
+        self.assertEqual(c.state, 'UNKNOWN')
+        self.assertFalse(c.release(proof).allowed)
+        self.assertFalse(b.released)
+
+    def test_breach_recorded_after_verification_blocks_completion(self):
+        """Mutation M4: removing the breach check from completion must fail this test."""
+        b = self.boundary()
+        leader = b.spawn_leader()
+        c = sim.Controller(b)
+        c.terminate(budget=1.0)
+        proof = c.verify()
+        self.assertEqual(proof.verdict, contract.VERDICT_EMPTY)
+        b.attempt_escape(leader)  # self-reported; the member has already exited
+        decision = c.complete()
+        self.assertFalse(decision.allowed)
+        self.assertIn('escape', decision.reason)
+        self.assertFalse(c.release(proof).allowed)
+        self.assertFalse(b.released)
+
+    def test_hanging_child_startup_fails_the_test_instead_of_blocking(self):
+        registry = self.registry
+        with mock.patch.object(sim, 'CHILD_SRC', 'import time; time.sleep(30)'), \
+                mock.patch.object(sim, 'READY_TIMEOUT_S', 0.5):
+            started = time.monotonic()
+            with self.assertRaises(RuntimeError):
+                registry.spawn('sleep', seconds=30)
+            self.assertLess(time.monotonic() - started, 10)
+
     def test_signals_never_reach_non_members(self):
         b = self.boundary()
         b.spawn_leader()
@@ -196,11 +262,11 @@ class RealProcessBoundaryTests(sim.ReapingTestCase):
         unrelated.kill()
         unrelated.wait(timeout=5)
 
-    def test_escaped_detached_descendant_is_still_occupancy(self):
+    def test_self_reported_escape_keeps_detached_member_counted(self):
         b = sim.SimBoundary(self.registry, 'run-1', 'attempt-1')
         leader = b.spawn_leader(seconds=60)
         detached = b.add_descendant(leader, detached=True, seconds=60)
-        b.attempt_escape(detached)
+        b.attempt_escape(detached)  # self-reported; the OS state is not changed or observed
         self.assertEqual(b.occupancy(), 2)
         c = sim.Controller(b)
         c.terminate(grace=0.2, budget=5.0)

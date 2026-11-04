@@ -8,11 +8,16 @@ Popen handles held by the SpawnRegistry that created them, and members are
 addressed by synthetic IDs, never by PID, name or pattern.
 
 Proofs issued here are marked simulated=True and sealed with a per-process test
-key. Only the test verifier below accepts them, and the production verifier in
-scripts/containment_contract.py refuses them by design.
+key. Only a Verifier built by make_test_verifier() accepts them. The production
+verifier in scripts/containment_contract.py refuses them by design.
+
+Escape is SELF-REPORTED. attempt_escape() is a declaration by the test harness.
+The simulator does not observe any reparenting, cgroup write or namespace change.
+Occupancy counts only members the harness registered through this module.
 """
 import os
 import secrets
+import select
 import signal
 import subprocess
 import sys
@@ -30,7 +35,15 @@ import containment_contract as contract  # noqa: E402
 
 SIM_VERIFIER_ID = 'sim-test-verifier'
 SIM_KEY = secrets.token_bytes(32)  # generated per test process, never written to disk
-SIM_ANCHORS = {SIM_VERIFIER_ID: SIM_KEY}
+READY_TIMEOUT_S = 10.0
+
+
+def make_test_verifier(clock=time.time_ns) -> contract.Verifier:
+    """Test-only verifier. It trusts the simulator key and accepts simulated proofs."""
+    return contract.Verifier(anchors={SIM_VERIFIER_ID: SIM_KEY}, clock=clock, allow_simulated=True)
+
+
+SIM_VERIFIER = make_test_verifier()
 
 # Synthetic child: installs its SIGTERM disposition, reports ready on stdout,
 # then sleeps. The trailing marker argument makes every child identifiable in
@@ -65,13 +78,14 @@ class SpawnRegistry:
                                 stderr=subprocess.DEVNULL, start_new_session=detach, close_fds=True)
         self.procs.append(proc)
         try:
-            ready = proc.stdout.readline()
+            readable, _, _ = select.select([proc.stdout], [], [], READY_TIMEOUT_S)
+            ready = proc.stdout.readline() if readable else b''
         finally:
             proc.stdout.close()
         if ready != b'ready\n':
             proc.kill()
             proc.wait(timeout=5)
-            raise RuntimeError('synthetic child did not start')
+            raise RuntimeError('synthetic child did not report ready within %.0fs' % READY_TIMEOUT_S)
         return proc
 
     def reap_all(self, timeout: float = 5.0) -> List[int]:
@@ -180,8 +194,19 @@ class SimBoundary:
         self.members[member_id].forked_during_cancel = True
         return member_id
 
+    def adopt_orphan(self) -> str:
+        """Register a harness-started member with no parent, after any completion.
+
+        Models a process that becomes visible to the boundary in the window between
+        completion and release. It is registered by the harness, not discovered.
+        """
+        return self._start(None, False, False, 60.0)
+
     def attempt_escape(self, member_id: str) -> None:
-        """Record a reparent or detach attempt. It is an escape, never a success."""
+        """Record a SELF-REPORTED reparent or detach attempt. It is never a success.
+
+        The harness declares this. Nothing in the simulator observes the OS.
+        """
         member = self._member(member_id)
         member.escaped = True
         member.parent = None
@@ -253,21 +278,22 @@ class TerminationReport:
 class Controller:
     """Supervisor state machine. Its in-memory state is lost on crash; the boundary journal survives."""
 
-    def __init__(self, boundary: SimBoundary, *, state: str = 'RUNNING', clock=time.time_ns):
+    def __init__(self, boundary: SimBoundary, *, state: str = 'RUNNING',
+                 verifier: Optional[contract.Verifier] = None):
         self.boundary = boundary
         self.state = state
-        self.clock = clock
-        self.nonce: Optional[str] = None
+        self.verifier = verifier if verifier is not None else SIM_VERIFIER
+        self.expectation: Optional[contract.Expectation] = None
         self.last_proof: Optional[contract.ContainmentProof] = None
 
     @classmethod
-    def recover(cls, boundary: SimBoundary, *, clock=time.time_ns) -> 'Controller':
+    def recover(cls, boundary: SimBoundary, *, verifier: Optional[contract.Verifier] = None) -> 'Controller':
         """Rebuild supervisor state from the durable journal. Never yields a proof or release."""
         last = boundary.journal[-1]['event'] if boundary.journal else None
         state = 'RELEASED' if last == 'RELEASED' else 'UNKNOWN'
         boundary.journal.append({'event': 'RECOVERED', 'state': state,
                                  'run_id': boundary.run_id, 'attempt_id': boundary.attempt_id})
-        return cls(boundary, state=state, clock=clock)
+        return cls(boundary, state=state, verifier=verifier)
 
     def _log(self, event: str, **fields) -> None:
         entry = {'event': event, 'run_id': self.boundary.run_id, 'attempt_id': self.boundary.attempt_id}
@@ -277,6 +303,7 @@ class Controller:
     def _invalidate(self, reason: str) -> None:
         self.state = 'UNKNOWN'
         self.last_proof = None
+        self.expectation = None
         self._log('INVALIDATED', reason=reason)
 
     def observe_leader(self) -> str:
@@ -294,6 +321,7 @@ class Controller:
         boundary = self.boundary
         self.state = 'TERMINATING'
         self.last_proof = None
+        self.expectation = None
         boundary.cancelling = True
         self._log('TERMINATE_BEGIN')
         deadline = time.monotonic() + budget
@@ -339,12 +367,15 @@ class Controller:
     def verify(self, *, interrupt: bool = False) -> Optional[contract.ContainmentProof]:
         boundary = self.boundary
         boundary.epoch += 1
-        self.nonce = secrets.token_hex(16)
         self.last_proof = None
+        self.expectation = None
         if interrupt:
             self.state = 'UNKNOWN'
             self._log('VERIFY_INTERRUPTED', epoch=boundary.epoch)
             return None
+        # The challenge comes from the verifier, never from the simulator itself.
+        challenge = self.verifier.issue_challenge(run_id=boundary.run_id, attempt_id=boundary.attempt_id,
+                                                  boundary_id=boundary.boundary_id, epoch=boundary.epoch)
         try:
             occupancy = boundary.occupancy()
             if boundary.breaches:
@@ -356,17 +387,13 @@ class Controller:
             verdict = contract.VERDICT_UNKNOWN
         proof = contract.seal(contract.ContainmentProof(
             run_id=boundary.run_id, attempt_id=boundary.attempt_id, boundary_id=boundary.boundary_id,
-            verifier_id=SIM_VERIFIER_ID, observed_at_ns=self.clock(), nonce=self.nonce,
-            epoch=boundary.epoch, occupancy=occupancy, verdict=verdict, simulated=True), SIM_KEY)
+            verifier_id=SIM_VERIFIER_ID, observed_at_ns=self.verifier.now_ns(), nonce=challenge.nonce,
+            epoch=challenge.epoch, occupancy=occupancy, verdict=verdict, simulated=True), SIM_KEY)
+        self.expectation = challenge
         self.last_proof = proof
         self.state = 'PROOF_ISSUED'
         self._log('VERIFIED', verdict=verdict, occupancy=occupancy, epoch=boundary.epoch)
         return proof
-
-    def _expectation(self) -> contract.Expectation:
-        return contract.Expectation(run_id=self.boundary.run_id, attempt_id=self.boundary.attempt_id,
-                                    boundary_id=self.boundary.boundary_id, nonce=self.nonce or '',
-                                    epoch=self.boundary.epoch)
 
     def complete(self) -> contract.Decision:
         if self.state == 'RELEASED':
@@ -379,11 +406,10 @@ class Controller:
 
     def _completion_decision(self) -> contract.Decision:
         if self.boundary.breaches:
-            return contract.Decision(False, 'escape attempt recorded: boundary breached')
-        if self.last_proof is None:
+            return contract.Decision(False, 'self-reported escape recorded: boundary breached')
+        if self.last_proof is None or self.expectation is None:
             return contract.Decision(False, 'no verification proof: verification incomplete or interrupted')
-        check = contract.check_proof(self.last_proof, self._expectation(), anchors=SIM_ANCHORS,
-                                     now_ns=self.clock(), allow_simulated=True)
+        check = self.verifier.preview(self.last_proof, self.expectation)
         if not check.allowed:
             return check
         try:
@@ -399,27 +425,27 @@ class Controller:
             return contract.Decision(False, 'release refused: boundary not completed')
         if proof is None:
             return contract.Decision(False, 'release refused: no proof presented')
-        if proof != self.last_proof:
+        if proof != self.last_proof or self.expectation is None:
             return contract.Decision(False, 'release refused: proof is not the completed verification')
-        check = contract.check_proof(proof, self._expectation(), anchors=SIM_ANCHORS,
-                                     now_ns=self.clock(), allow_simulated=True)
+        if self.boundary.breaches:
+            return contract.Decision(False, 'release refused: self-reported escape recorded')
+        check = self.verifier.preview(proof, self.expectation)
         if not check.allowed:
             return check
+        # Re-observe immediately before release. Occupancy is never taken from the earlier check.
         try:
             occupancy = self.boundary.occupancy()
         except ObservationError:
             return contract.Decision(False, 'release refused: observation failed')
         if occupancy:
             return contract.Decision(False, 'release refused: %d descendant(s) remain' % occupancy)
+        consumed = self.verifier.verify_for_release(proof, self.expectation)
+        if not consumed.allowed:
+            return consumed
         self.boundary.close()
         self.state = 'RELEASED'
         self._log('RELEASED')
         return contract.Decision(True, 'released: boundary observed empty and verified')
-
-
-def sim_verify(proof: object, expectation: contract.Expectation, *, now_ns: int) -> contract.Decision:
-    """Test-only verifier. Accepts simulated proofs; the production verifier never does."""
-    return contract.check_proof(proof, expectation, anchors=SIM_ANCHORS, now_ns=now_ns, allow_simulated=True)
 
 
 class ReapingTestCase(unittest.TestCase):
