@@ -40,7 +40,6 @@ from pathlib import Path
 import secrets
 import stat
 import sys
-import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import execution_manifest as em  # noqa: E402
@@ -180,11 +179,27 @@ def _is_abs(path):
     return isinstance(path, (str, os.PathLike)) and os.path.isabs(os.fspath(path))
 
 
+# Test-mode capability. Private: never exported, compared by identity. Only the helper
+# the test support helper module may obtain it, through _grant_test_capability().
+TEST_CAPABILITY = object()
+_TEST_SUPPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+                                 'tests', 'support') + os.sep
+
+
+def _grant_test_capability():
+    """Return TEST_CAPABILITY only to a caller living in the test support directory."""
+    caller = os.path.realpath(sys._getframe(1).f_code.co_filename)
+    if not caller.startswith(_TEST_SUPPORT_DIR):
+        raise VerificationError(TRUST_ANCHOR_INVALID, 'test capability is available to the test support directory only')
+    return TEST_CAPABILITY
+
+
 def _test_root(test_root, code):
     """The directory a test-only anchor or state must live under.
 
-    It must be passed explicitly by the test; nothing is derived from the environment
-    (TMPDIR) or tempfile.gettempdir().
+    It must be passed explicitly by the test and live under a FIXED temp base: /tmp, or the
+    uid's runtime directory /run/user/<uid> when that exists. TMPDIR and tempfile.gettempdir()
+    are never read. A root that is, contains, or lies under HOME is refused.
     """
     if test_root is None:
         raise VerificationError(code, 'test-only mode requires an explicit test_root')
@@ -201,12 +216,15 @@ def _test_root(test_root, code):
             or stat.S_IMODE(info.st_mode) != 0o700):
         raise VerificationError(code, 'test_root must be a 0700 directory owned by the current uid')
     # Test-mode guard only, not a production control: production mode refuses test_root outright.
-    temp = os.path.realpath(tempfile.gettempdir())
-    if root == temp or not _within(root, temp):
-        raise VerificationError(code, 'test_root must be a directory under the system temporary directory')
     home = os.path.realpath(os.path.expanduser('~'))
-    if _within(home, root):  # root is HOME or an ancestor of HOME
-        raise VerificationError(code, 'test_root must not be or contain the home directory')
+    if _within(home, root) or _within(root, home):  # HOME, above HOME, or under HOME
+        raise VerificationError(code, 'test_root must not be, contain or lie under the home directory')
+    bases = [os.path.realpath('/tmp')]
+    runtime = '/run/user/%d' % os.geteuid()
+    if os.path.isdir(runtime):
+        bases.append(os.path.realpath(runtime))
+    if not any(root != base and _within(root, base) for base in bases):
+        raise VerificationError(code, 'test_root must be a directory under /tmp or the uid runtime directory')
     try:
         for entry in os.scandir(root):
             info = entry.stat(follow_symlinks=False)
@@ -399,8 +417,8 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_
     group- or other-accessible (files).
 
     test_only=True is for the test suite only: it requires the TEST-ONLY- label, a
-    directory under the test_root the test passes explicitly (never TMPDIR or
-    tempfile.gettempdir()), and skips ownership checks. test_root is refused in
+    directory under the test_root the test passes explicitly (under /tmp or the uid
+    runtime directory, never TMPDIR), and skips ownership checks. test_root is refused in
     production mode.
     """
     anchor_dir = _plain_path(anchor_dir, TRUST_ANCHOR_INVALID)
@@ -940,7 +958,7 @@ def _authorize(approval_bytes, anchor, *, revocation_bytes, revocation_state, ex
             'attempt_id': body['attempt_id'], 'manifest_sha256': body['manifest_sha256']}
 
 
-def _require_test_context(anchor, store, revocation_state):
+def _require_test_context(anchor, store, revocation_state, test_capability=None):
     """A test anchor is accepted only together with test-only state, and never the reverse.
 
     Test-only state can only be built with an explicit 0700 test_root owned by this uid.
@@ -949,10 +967,12 @@ def _require_test_context(anchor, store, revocation_state):
                   bool(getattr(revocation_state, '_test_only', False))}
     if len(test_flags) != 1:
         raise VerificationError(TRUST_ANCHOR_INVALID, 'test anchor needs an explicit test context')
+    if True in test_flags and test_capability is not TEST_CAPABILITY:
+        raise VerificationError(TRUST_ANCHOR_INVALID, 'test anchor needs the test capability')
 
 
 def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, store,
-                    now=None):
+                    now=None, test_capability=None):
     """Authorize and consume one attempt. Raises VerificationError on any failure.
 
     expected keys: worker_id, run_id, attempt_id, manifest_sha256, resource_class,
@@ -962,7 +982,7 @@ def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_stat
     ConsumptionStore.mark_launched. Launchers use consume_for_attempt instead.
     """
     now = now or _utcnow()
-    _require_test_context(anchor, store, revocation_state)
+    _require_test_context(anchor, store, revocation_state, test_capability)
     record = _authorize(approval_bytes, anchor, revocation_bytes=revocation_bytes,
                         revocation_state=revocation_state, expected=expected, now=now)
     store.claim(record['approval_id'], run_id=record['run_id'], attempt_id=record['attempt_id'],
@@ -978,9 +998,10 @@ class AttemptContext(object):
     """
 
     def __init__(self, *, store, anchor, revocation_state, revocations, worker_id, resource_class,
-                 scope, output):
+                 scope, output, test_capability=None):
         if not callable(revocations) or not em._is_id(worker_id) or not em._is_id(resource_class):
             raise VerificationError(APPROVAL_MALFORMED, 'attempt context')
+        self.test_capability = test_capability
         self.store = store
         self.anchor = anchor
         self.revocation_state = revocation_state
@@ -998,7 +1019,7 @@ def _checked_grant(run_id, attempt_id, approval, manifest_digest, now, ctx, *, w
         raise VerificationError(APPROVAL_MALFORMED, 'now must be timezone-aware')
     if not isinstance(approval, (bytes, bytearray)):
         raise VerificationError(APPROVAL_MALFORMED, 'approval must be canonical bytes')
-    _require_test_context(ctx.anchor, ctx.store, ctx.revocation_state)
+    _require_test_context(ctx.anchor, ctx.store, ctx.revocation_state, ctx.test_capability)
     expected = {'worker_id': ctx.worker_id, 'run_id': run_id, 'attempt_id': attempt_id,
                 'manifest_sha256': manifest_digest, 'resource_class': ctx.resource_class,
                 'scope': ctx.scope, 'output': ctx.output}
@@ -1152,15 +1173,17 @@ def verify_handoff(handoff_bytes, verifier, *, store, now, expected, mode='produ
     authorized only by a verifier signature (public key) AND by the consumption store's
     current record for the attempt, which the worker can read but never write.
 
-    mode is 'production' (the default) or 'test'. A test-only verifier is accepted only with
-    mode='test', and a production-mode call refuses it. Any other mode value is refused.
+    mode is 'production' (the default) or the private test capability object (identity
+    comparison). A test-only verifier is accepted only with the capability, and a production
+    call refuses it. Any other value, including the string 'test', is refused.
     """
-    if mode not in ('production', 'test'):
+    is_test = mode is TEST_CAPABILITY
+    if not is_test and mode != 'production':
         raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE, 'unknown mode')
     if not isinstance(verifier, HandoffVerifier) or verifier.algorithm != HANDOFF_ALGORITHM:
         raise VerificationError(HANDOFF_VERIFIER_UNPROVISIONED, 'no asymmetric verifier')
-    if getattr(verifier, 'test_only', False) != (mode == 'test') and not (
-            mode == 'test' and isinstance(verifier, UnprovisionedHandoffVerifier)):
+    if isinstance(verifier, TestOnlyHandoffVerifier) != is_test and not (
+            is_test and isinstance(verifier, UnprovisionedHandoffVerifier)):
         raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE,
                                 'test-only verifiers are accepted only with mode=test')
     body = parse_canonical(handoff_bytes, MAX_HANDOFF_BYTES, HANDOFF_MALFORMED, HANDOFF_NONCANONICAL,

@@ -20,7 +20,9 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import approval as ap  # noqa: E402
+from support.approval_test_mode import TEST_MODE  # noqa: E402
 import execution_manifest as em  # noqa: E402
 
 NOW = dt.datetime(2026, 11, 4, 10, 0, 0, tzinfo=dt.timezone.utc)
@@ -114,7 +116,8 @@ class ApprovalFixture(unittest.TestCase):
         return ap.verify_approval(approval, self.anchor,
                                   revocation_bytes=self.revocations if revocations is _DEFAULT else revocations,
                                   revocation_state=state or self.state, expected=expected,
-                                  store=store or self.store, now=now or NOW)
+                                  store=store or self.store, now=now or NOW,
+                                  test_capability=TEST_MODE)
 
     def assertCode(self, code, func, *args, **kwargs):
         with self.assertRaises(em.VerificationError) as ctx:

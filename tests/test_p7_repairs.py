@@ -8,6 +8,7 @@ import sys
 import tempfile
 import textwrap
 import time
+import types
 import unittest
 import uuid
 from unittest import mock
@@ -19,6 +20,7 @@ sys.path.insert(0, str(REPO / 'tests'))
 import approval as ap  # noqa: E402
 import containment_backend as cb  # noqa: E402
 import execution_boundary as eb  # noqa: E402
+import dispatch_guard  # noqa: E402
 import queue_adapter  # noqa: E402
 import researchctl  # noqa: E402
 import run_recovery  # noqa: E402
@@ -166,6 +168,88 @@ class TestRootGuardTests(unittest.TestCase):
         del home
 
 
+class FixedTempBaseTests(unittest.TestCase):
+    """R1 (repair 2): TMPDIR is never read; roots under HOME are refused."""
+
+    def test_tmpdir_pointing_at_home_does_not_admit_a_home_subdirectory(self):
+        home = os.path.realpath(os.path.expanduser('~'))
+        saved = tempfile.tempdir
+        try:
+            with mock.patch.dict(os.environ, {'TMPDIR': home}):
+                tempfile.tempdir = None  # force gettempdir() to re-read TMPDIR
+                self.assertEqual(os.path.realpath(tempfile.gettempdir()), home)
+                with tempfile.TemporaryDirectory(dir=home) as under_home:
+                    os.chmod(under_home, 0o700)
+                    with self.assertRaises(ap.VerificationError):
+                        ap._test_root(under_home, ap.TRUST_ANCHOR_INVALID)
+                with tempfile.TemporaryDirectory(dir='/tmp') as fresh:
+                    os.chmod(fresh, 0o700)
+                    self.assertEqual(ap._test_root(fresh, ap.TRUST_ANCHOR_INVALID), os.path.realpath(fresh))
+        finally:
+            tempfile.tempdir = saved
+
+
+class TestCapabilityTests(unittest.TestCase):
+    """R2 and R3 (repair 2): the isinstance guard and the test-mode capability token."""
+
+    def test_instance_attribute_cannot_make_a_production_verifier_look_like_a_test_verifier(self):
+        from support.approval_test_mode import TEST_MODE
+
+        class Accepting(ap.HandoffVerifier):
+            algorithm = ap.HANDOFF_ALGORITHM
+
+            def verify(self, key_id, domain, message, value_hex):
+                return True
+        prod = Accepting()
+        prod.test_only = True  # a forged flag
+        with self.assertRaises(ap.VerificationError) as ctx:  # not accepted as a test verifier
+            ap.verify_handoff(b'{}', prod, store=None, now=None, expected={}, mode=TEST_MODE)
+        self.assertEqual(ctx.exception.code, ap.HANDOFF_VERIFIER_NOT_SELECTABLE)
+        test_verifier = ap.TestOnlyHandoffVerifier('TEST-ONLY-handoff', ['k'])
+        test_verifier.test_only = False
+        with self.assertRaises(ap.VerificationError) as ctx:
+            ap.verify_handoff(b'{}', test_verifier, store=None, now=None, expected={})
+        self.assertEqual(ctx.exception.code, ap.HANDOFF_VERIFIER_NOT_SELECTABLE)
+
+    def test_string_test_mode_is_refused(self):
+        verifier = ap.TestOnlyHandoffVerifier('TEST-ONLY-handoff', ['k'])
+        with self.assertRaises(ap.VerificationError) as ctx:
+            ap.verify_handoff(b'{}', verifier, store=None, now=None, expected={}, mode='test')
+        self.assertEqual(ctx.exception.code, ap.HANDOFF_VERIFIER_NOT_SELECTABLE)
+        with self.assertRaises(ap.VerificationError) as ctx:
+            ap.verify_handoff(b'{}', ap.UnprovisionedHandoffVerifier(), store=None, now=None, expected={},
+                              mode='test')
+        self.assertEqual(ctx.exception.code, ap.HANDOFF_VERIFIER_NOT_SELECTABLE)
+
+    def test_test_anchor_without_the_capability_is_refused_by_verify_approval(self):
+        anchor = types.SimpleNamespace(test_only=True)
+        store = types.SimpleNamespace(_test_only=True)
+        state = types.SimpleNamespace(_test_only=True)
+        for capability in (None, 'test', True, object()):
+            with self.subTest(capability=capability), self.assertRaises(ap.VerificationError) as ctx:
+                ap.verify_approval(b'{}', anchor, revocation_bytes=None, revocation_state=state, expected={},
+                                   store=store, test_capability=capability)
+            self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
+
+    def test_capability_is_granted_only_to_tests_support(self):
+        with self.assertRaises(ap.VerificationError):
+            ap._grant_test_capability()  # called from tests/, not tests/support/
+        from support.approval_test_mode import TEST_MODE
+        self.assertIs(TEST_MODE, ap.TEST_CAPABILITY)
+
+    def test_no_script_other_than_approval_names_the_capability(self):
+        for path in sorted(SCRIPTS.rglob('*.py')):
+            if path.name == 'approval.py':
+                continue
+            text = path.read_text()
+            for name in ('TEST_CAPABILITY', '_grant_test_capability', 'approval_test_mode', "mode='test'",
+                         'mode="test"', 'test_capability'):
+                self.assertNotIn(name, text, '%s names %s' % (path.name, name))
+        support = REPO / 'tests' / 'support'
+        holders = [p.name for p in support.glob('*.py') if '_grant_test_capability' in p.read_text()]
+        self.assertEqual(holders, ['approval_test_mode.py'])
+
+
 class HandoffModeTests(unittest.TestCase):
     """R5."""
 
@@ -181,17 +265,25 @@ class DispatchDisabledTests(unittest.TestCase):
     """R6."""
 
     def test_constant_is_false(self):
+        self.assertIs(dispatch_guard.PRODUCTION_DISPATCH_ENABLED, False)
         self.assertIs(queue_adapter.PRODUCTION_DISPATCH_ENABLED, False)
 
     def test_import_time_check_refuses_when_flag_is_true(self):
-        code = ("import sys; sys.path.insert(0, %r); import queue_adapter; "
-                "queue_adapter.PRODUCTION_DISPATCH_ENABLED = True; import dispatch_guard" % str(SCRIPTS))
-        result = subprocess.run([sys.executable, '-I', '-c', code], capture_output=True, text=True, timeout=60)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('DispatchEnabled', result.stderr)
+        # Import-time enforcement: execute the module source with the flag flipped to True.
+        code = ("import sys; src = open(%r).read().replace('PRODUCTION_DISPATCH_ENABLED = False', "
+                "'PRODUCTION_DISPATCH_ENABLED = True', 1); exec(compile(src, 'dispatch_guard', 'exec'))"
+                % str(SCRIPTS / 'dispatch_guard.py'))
+        code_guard = ("import sys; sys.path.insert(0, %r); import dispatch_guard; "
+                      "dispatch_guard.PRODUCTION_DISPATCH_ENABLED = True; dispatch_guard.require_disabled()"
+                      % str(SCRIPTS))
+        for snippet in (code, code_guard):
+            result = subprocess.run([sys.executable, '-I', '-c', snippet], capture_output=True, text=True,
+                                    timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('DispatchEnabled', result.stderr)
 
     def test_boundary_and_researchctl_refuse_when_flag_is_true(self):
-        with mock.patch.object(queue_adapter, 'PRODUCTION_DISPATCH_ENABLED', True):
+        with mock.patch.object(dispatch_guard, 'PRODUCTION_DISPATCH_ENABLED', True):
             with self.assertRaises(eb.BoundaryRefusal) as ctx:
                 eb.launch(object())
             self.assertEqual(ctx.exception.code, eb.DISPATCH_ENABLED)

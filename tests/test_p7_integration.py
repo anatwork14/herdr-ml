@@ -23,6 +23,7 @@ SCRIPTS = REPO / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(REPO / 'tests'))
 import approval as ap  # noqa: E402
+from support.approval_test_mode import TEST_MODE  # noqa: E402
 import execution_boundary as eb  # noqa: E402
 import process_identity  # noqa: E402
 import researchctl  # noqa: E402
@@ -67,7 +68,8 @@ class AdapterFixture(teb.BoundaryFixture):
                                              sequence=1, approval_ids=(), manifest_sha256s=())
         self.ctx = ap.AttemptContext(store=self.store, anchor=self.anchor, revocation_state=self.rev_state,
                                      revocations=lambda: self.rev_bytes, worker_id='worker-1',
-                                     resource_class='cpu-diagnostic', scope=tac.SCOPE, output=tac.OUTPUT)
+                                     resource_class='cpu-diagnostic', scope=tac.SCOPE, output=tac.OUTPUT,
+                                     test_capability=TEST_MODE)
         self.approval = ap.issue_approval(
             self.anchor, 'approver-a', approval_id='appr-1', worker_id='worker-1', run_id='run-1',
             attempt_id=teb.ATTEMPT, manifest_sha256=self.digest, resource_class='cpu-diagnostic',
@@ -190,12 +192,13 @@ class TestAnchorContextTests(AdapterFixture):
                                          'attempt_id': teb.ATTEMPT, 'manifest_sha256': self.digest,
                                          'resource_class': 'cpu-diagnostic', 'scope': tac.SCOPE,
                                          'output': tac.OUTPUT},
-                               store=fake_store, now=self.now())
+                               store=fake_store, now=self.now(), test_capability=TEST_MODE)
         self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
         fake_store.claim.assert_not_called()
         bad_ctx = ap.AttemptContext(store=fake_store, anchor=self.anchor, revocation_state=self.rev_state,
                                     revocations=lambda: self.rev_bytes, worker_id='worker-1',
-                                    resource_class='cpu-diagnostic', scope=tac.SCOPE, output=tac.OUTPUT)
+                                    resource_class='cpu-diagnostic', scope=tac.SCOPE, output=tac.OUTPUT,
+                                    test_capability=TEST_MODE)
         with self.assertRaises(ap.VerificationError):
             ap.consume_for_attempt('run-1', teb.ATTEMPT, self.approval, self.digest, self.now(), ctx=bad_ctx)
         fake_store.claim.assert_not_called()

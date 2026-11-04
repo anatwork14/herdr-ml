@@ -18,8 +18,10 @@ import unittest
 REPO = Path(__file__).resolve().parents[1]
 SCRIPTS = REPO / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import approval as ap  # noqa: E402
 import execution_manifest as em  # noqa: E402
+from support.approval_test_mode import TEST_MODE  # noqa: E402
 
 NOW = dt.datetime(2026, 11, 4, 10, 0, 0, tzinfo=dt.timezone.utc)
 MANIFEST_SHA = 'a' * 64
@@ -129,7 +131,7 @@ class ConsistencyFixture(TimedCase):
         return ap.AttemptContext(store=store or self.store, anchor=self.anchor,
                                  revocation_state=self.state, revocations=lambda: self.rev_bytes,
                                  worker_id='worker-1', resource_class='cpu-diagnostic',
-                                 scope=SCOPE, output=OUTPUT)
+                                 scope=SCOPE, output=OUTPUT, test_capability=TEST_MODE)
 
     def consume(self, approval, *, attempt_id='attempt-1', now=NOW, fault=None, store=None,
                 manifest=MANIFEST_SHA):
@@ -484,14 +486,14 @@ class HandoffContractTests(ConsistencyFixture):
         # Caller-supplied JSON with a plausible signature value is not enough for the real refusal path
         # either: the test-only verifier accepts only its own fixed value.
         self.assertCode(ap.HANDOFF_SIGNATURE_INVALID, ap.verify_handoff, self.handoff(record, value='ab' * 32),
-                        self.verifier(), mode='test', store=self.store, now=NOW, expected=self.expected())
+                        self.verifier(), mode=TEST_MODE, store=self.store, now=NOW, expected=self.expected())
 
     def test_handoff_with_symmetric_algorithm_label_is_refused(self):
         record = self.consumed_record()
         body = json.loads(self.handoff(record))
         body['signature']['algorithm'] = 'HMAC-SHA256'
         self.assertCode(ap.HANDOFF_SIGNATURE_INVALID, ap.verify_handoff, em.canonical_bytes(body),
-                        self.verifier(), mode='test', store=self.store, now=NOW, expected=self.expected())
+                        self.verifier(), mode=TEST_MODE, store=self.store, now=NOW, expected=self.expected())
 
     def test_handoff_binds_manifest_run_attempt_worker_and_anchor(self):
         record = self.consumed_record()
@@ -499,47 +501,47 @@ class HandoffContractTests(ConsistencyFixture):
                           {'worker_id': 'worker-2'}, {'anchor_id': 'TEST-ONLY-other'}):
             with self.subTest(overrides=overrides):
                 data = self.handoff(record, **overrides)
-                self.assertCode(ap.HANDOFF_BINDING_MISMATCH, ap.verify_handoff, data, self.verifier(), mode='test',
+                self.assertCode(ap.HANDOFF_BINDING_MISMATCH, ap.verify_handoff, data, self.verifier(), mode=TEST_MODE,
                                 store=self.store, now=NOW, expected=self.expected())
-        self.assertEqual(ap.verify_handoff(self.handoff(record), self.verifier(), mode='test', store=self.store,
+        self.assertEqual(ap.verify_handoff(self.handoff(record), self.verifier(), mode=TEST_MODE, store=self.store,
                                            now=NOW, expected=self.expected())['attempt_id'], 'attempt-1')
 
     def test_handoff_for_wrong_consumption_record_is_refused(self):
         record = self.consumed_record()
         data = self.handoff(record, grant_sha256='c' * 64)
-        self.assertCode(ap.HANDOFF_CONSUMPTION_MISMATCH, ap.verify_handoff, data, self.verifier(), mode='test',
+        self.assertCode(ap.HANDOFF_CONSUMPTION_MISMATCH, ap.verify_handoff, data, self.verifier(), mode=TEST_MODE,
                         store=self.store, now=NOW, expected=self.expected())
 
     def test_handoff_without_consumption_is_refused(self):
         record = self.consumed_record()
         data = self.handoff(record, attempt_id='attempt-2')
-        self.assertCode(ap.HANDOFF_NOT_CONSUMED, ap.verify_handoff, data, self.verifier(), mode='test',
+        self.assertCode(ap.HANDOFF_NOT_CONSUMED, ap.verify_handoff, data, self.verifier(), mode=TEST_MODE,
                         store=self.store, now=NOW, expected=self.expected(attempt_id='attempt-2'))
 
     def test_handoff_after_fence_or_launch_is_refused(self):
         record = self.consumed_record()
         data = self.handoff(record)
         self.store.fence_unlaunched('run-1', 'attempt-1', reason='recovery-unlaunched')
-        self.assertCode(ap.HANDOFF_FENCED, ap.verify_handoff, data, self.verifier(), mode='test',
+        self.assertCode(ap.HANDOFF_FENCED, ap.verify_handoff, data, self.verifier(), mode=TEST_MODE,
                         store=self.store, now=NOW, expected=self.expected())
         other = self.consume(self.issue(approval_id='appr-2', attempt_id='attempt-2'), attempt_id='attempt-2')
         launched = self.handoff(other, attempt_id='attempt-2')
         self.store.mark_launched('run-1', 'attempt-2', approval_sha256=other['approval_sha256'])
-        self.assertCode(ap.HANDOFF_ALREADY_LAUNCHED, ap.verify_handoff, launched, self.verifier(), mode='test',
+        self.assertCode(ap.HANDOFF_ALREADY_LAUNCHED, ap.verify_handoff, launched, self.verifier(), mode=TEST_MODE,
                         store=self.store, now=NOW, expected=self.expected(attempt_id='attempt-2'))
 
     def test_handoff_expiry_and_clock_bounds(self):
         record = self.consumed_record()
         expired = self.handoff(record, expires_at=NOW + dt.timedelta(seconds=1))
-        self.assertCode(ap.HANDOFF_EXPIRED, ap.verify_handoff, expired, self.verifier(), mode='test',
+        self.assertCode(ap.HANDOFF_EXPIRED, ap.verify_handoff, expired, self.verifier(), mode=TEST_MODE,
                         store=self.store, now=NOW + dt.timedelta(seconds=1), expected=self.expected())
-        self.assertCode(ap.HANDOFF_NOT_YET_VALID, ap.verify_handoff, self.handoff(record), self.verifier(), mode='test',
+        self.assertCode(ap.HANDOFF_NOT_YET_VALID, ap.verify_handoff, self.handoff(record), self.verifier(), mode=TEST_MODE,
                         store=self.store, now=NOW - dt.timedelta(hours=1), expected=self.expected())
 
     def test_noncanonical_handoff_is_refused(self):
         record = self.consumed_record()
         pretty = json.dumps(json.loads(self.handoff(record)), indent=2, sort_keys=True).encode('ascii')
-        self.assertCode(ap.HANDOFF_NONCANONICAL, ap.verify_handoff, pretty, self.verifier(), mode='test',
+        self.assertCode(ap.HANDOFF_NONCANONICAL, ap.verify_handoff, pretty, self.verifier(), mode=TEST_MODE,
                         store=self.store, now=NOW, expected=self.expected())
 
     def test_test_only_verifier_is_not_selectable_in_production(self):

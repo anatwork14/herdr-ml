@@ -113,6 +113,12 @@ class OfflineAdapterTests(Base):
         with self.assertRaisesRegex(researchctl.ResearchError, 'Queued execution BLOCKED'):
             researchctl.require_supported_execution('diagnostic', 'gpu0', submission=True)
         self.assertNotIn('queue_adapter', (SCRIPTS / 'researchctl.py').read_text())
+        # The whole import chain, not only the source text: researchctl and dispatch_guard never
+        # load queue_adapter.
+        code = ("import sys; sys.path.insert(0, %r); import researchctl, dispatch_guard; "
+                "sys.exit(1 if 'queue_adapter' in sys.modules else 0)" % str(SCRIPTS))
+        result = subprocess.run([sys.executable, '-I', '-c', code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_claim_is_idempotent_for_the_same_claimant_and_writes_nothing(self):
         folder = self.folder()

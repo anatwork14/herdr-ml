@@ -74,3 +74,16 @@ three merges the suite was 542; 21 tests added in `tests/test_p7_integration.py`
 `pgrep` for the suite's markers (`herdr-e2e-test-`, `bnd-marker`, `gate-marker`) and for `pueued`: empty.
 `git diff 3e6ed54 -- tests/test_registry_p0.py tests/test_queue_protocol.py`: empty (no assert or `def test_`
 line changed). `PRODUCTION_DISPATCH_ENABLED` is unchanged and False.
+
+## Repairs round 2 (R1-R4)
+
+Tests are in `tests/test_p7_repairs.py` unless noted. Supersedes the R4/R5 rows above where they differ.
+
+| Id | Repair | Test |
+|---|---|---|
+| R1 LOW | `approval._test_root` no longer reads `tempfile.gettempdir()` or TMPDIR. The root must be under the fixed base `/tmp`, or `/run/user/<uid>` when that exists. Any root under HOME, equal to HOME, or above HOME is refused. Docstrings corrected. | `FixedTempBaseTests.test_tmpdir_pointing_at_home_does_not_admit_a_home_subdirectory` |
+| R2 INFO | The handoff mode guard uses `isinstance(verifier, TestOnlyHandoffVerifier)`, not an instance attribute. | `TestCapabilityTests.test_instance_attribute_cannot_make_a_production_verifier_look_like_a_test_verifier` |
+| R3 MEDIUM | Private `approval.TEST_CAPABILITY` token, returned by `_grant_test_capability()` only to a caller inside `tests/support`. `tests/support/approval_test_mode.py` (`TEST_MODE`) is the only holder. `verify_handoff(mode=...)` accepts the token (identity) or `'production'`; `verify_approval` and `AttemptContext` take `test_capability=` and a test anchor or test state is refused without it. The string `'test'` is refused. The 11 `verify_handoff` calls in `tests/test_approval_consistency.py` and all approval test calls pass `TEST_MODE`; no assertion changed. | `test_string_test_mode_is_refused`, `test_test_anchor_without_the_capability_is_refused_by_verify_approval`, `test_capability_is_granted_only_to_tests_support`, `test_no_script_other_than_approval_names_the_capability` |
+| R4 LOW | `PRODUCTION_DISPATCH_ENABLED` is defined in `scripts/dispatch_guard.py`; `queue_adapter` imports it from there. researchctl's import chain no longer reaches `queue_adapter`. `DispatchDisabledTests` now flips the flag in `dispatch_guard`; `test_queue_adapter` additionally checks `sys.modules` in a subprocess. | `OfflineAdapterTests.test_researchctl_queued_path_stays_blocked_and_does_not_use_adapter` (strengthened), `DispatchDisabledTests.*` |
+
+Verification, round 2 (Python 3.12, `env -u TMPDIR python3.12 -m unittest discover -s tests`): Ran 581, OK, exit 0. Marker and `pueued` pgrep empty. P0 diff vs 3e6ed54 for `tests/test_registry_p0.py` and `tests/test_queue_protocol.py`: empty. Mutation: restoring the `tempfile.gettempdir()` check made `FixedTempBaseTests` fail; restored. `PRODUCTION_DISPATCH_ENABLED` is False.

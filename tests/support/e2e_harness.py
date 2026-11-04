@@ -40,6 +40,7 @@ for _path in (str(SCRIPTS), str(TESTS)):
         sys.path.insert(0, _path)
 
 import approval as ap  # noqa: E402
+from support.approval_test_mode import TEST_MODE  # noqa: E402
 import containment_backend  # noqa: E402
 import execution_manifest as em  # noqa: E402
 import run_ownership  # noqa: E402
@@ -446,7 +447,7 @@ def worker_main(config_path, marker):
                           'manifest_sha256': digest, 'resource_class': manifest['resource_class'],
                           'scope': {'project': manifest['project'], 'operation': manifest['operation']},
                           'output': manifest['output']},
-                store=store)
+                store=store, test_capability=TEST_MODE)
         except em.VerificationError as exc:
             raise Refused('VALIDATION', exc.code, exc.detail)
         stage('VALIDATION', approval_id=record['approval_id'], anchor_id=record['anchor_id'])

@@ -38,6 +38,7 @@ import run_ownership  # noqa: E402
 import run_recovery  # noqa: E402
 import run_registry  # noqa: E402
 from support import e2e_harness as h  # noqa: E402
+from support.approval_test_mode import TEST_MODE  # noqa: E402
 from support import process_tree  # noqa: E402
 
 RegistryError = run_ownership.RegistryError
@@ -356,11 +357,11 @@ class ApprovalTrustAnchorTests(E2EBase):
         approval = Path(case['approval']).read_bytes()
         revocations = Path(case['revocations']).read_bytes()
         record = ap.verify_approval(approval, anchor, revocation_bytes=revocations, revocation_state=state,
-                                    expected=expected, store=store)
+                                    expected=expected, store=store, test_capability=TEST_MODE)
         self.assertEqual(record['anchor_id'], h.ANCHOR_ID)
         with self.assertRaises(em.VerificationError) as ctx:
             ap.verify_approval(approval, anchor, revocation_bytes=revocations, revocation_state=state,
-                               expected=expected, store=store)
+                               expected=expected, store=store, test_capability=TEST_MODE)
         self.assertEqual(ctx.exception.code, ap.APPROVAL_CONSUMED)
         # Production mode (test_only=False, the default) refuses the same temp anchor.
         for kwargs in ({}, {'admin_uids': (os.getuid(),), 'worker_uids': (os.getuid() + 1,)}):

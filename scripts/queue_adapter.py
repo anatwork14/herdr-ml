@@ -9,8 +9,10 @@ Scope and non-claims:
   only when their sha256 matches the pinned 4.0.4 release. Each verified binary is
   copied into <root>/bin (0700), the copy is re-verified, and only the copy is ever
   executed, so a writer to the original directory cannot swap it after the check.
-- Production dispatch is disabled. `researchctl` does not import this module and
-  its queued path stays BLOCKED by `require_supported_execution`.
+- Production dispatch is disabled. The flag PRODUCTION_DISPATCH_ENABLED is defined in
+  `dispatch_guard`; this module imports it from there. `researchctl` imports dispatch_guard
+  only, never this module, directly or indirectly, and its queued path stays BLOCKED by
+  `require_supported_execution`.
 - Nothing here proves containment, completion or provenance. Daemon observations
   are reported, never minted into a VerifiedProof.
 
@@ -53,8 +55,9 @@ PINNED_SHA256 = {
     'pueue': 'c1b10d7e4e62211075ddd0e1dc3e8cbfc5a43d662cb3be7402a28504e23fcb51',
     'pueued': '5afeff6adbafb909e8d54e2caff158e6966c2adffa2c09e60fd631cc51b60390',
 }
-# Production dispatch through any shared/default daemon is not implemented.
-PRODUCTION_DISPATCH_ENABLED = False
+# Production dispatch through any shared/default daemon is not implemented. The flag is defined
+# in dispatch_guard (which researchctl imports) and only re-exported here.
+from dispatch_guard import PRODUCTION_DISPATCH_ENABLED  # noqa: E402,F401
 LABEL_PREFIX = 'herdr-ml'
 _TASK_ID = re.compile(r'[0-9]{1,18}')
 

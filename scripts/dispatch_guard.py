@@ -1,14 +1,12 @@
 """Single check that production dispatch is still disabled.
 
-The flag is queue_adapter.PRODUCTION_DISPATCH_ENABLED. It must stay False; any other value
-(True, or a non-bool) makes every caller of require_disabled() refuse. Callers use this
-module rather than reading the flag themselves.
+The flag lives here: dispatch_guard.PRODUCTION_DISPATCH_ENABLED (queue_adapter re-exports it
+by import). It must stay False; any other value (True, or a non-bool) makes every caller of
+require_disabled() refuse. This module imports nothing from the queue adapter, so researchctl's
+import chain never reaches queue_adapter.
 """
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import queue_adapter  # noqa: E402
+# Production dispatch through any shared/default daemon is not implemented.
+PRODUCTION_DISPATCH_ENABLED = False
 
 
 class DispatchEnabled(Exception):
@@ -16,7 +14,7 @@ class DispatchEnabled(Exception):
 
 
 def require_disabled():
-    if queue_adapter.PRODUCTION_DISPATCH_ENABLED is not False:
+    if PRODUCTION_DISPATCH_ENABLED is not False:
         raise DispatchEnabled('production dispatch must remain disabled')
 
 
