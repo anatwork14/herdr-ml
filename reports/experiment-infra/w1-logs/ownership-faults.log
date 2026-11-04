@@ -1,7 +1,7 @@
 COMMAND: cd /mnt/ssd/genos2/workspace/herdr-ml-w1-ownership && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest tests.test_run_ownership_faults -v
 EXIT_CODE: 0
 PYTHON: Python 3.12.14
-BRANCH: feat/exp-w1-ownership  HEAD: 95bb577
+BRANCH: feat/exp-w1-ownership  HEAD: 043dbfe
 ----- raw output -----
 test_crash_after_leader_exit_before_verification_is_not_completed (tests.test_run_ownership_faults.ExecutionBoundaryFaults.test_crash_after_leader_exit_before_verification_is_not_completed) ... ERROR: Refusing execution: queued or repeated state=RUNNING
 ok
@@ -20,7 +20,7 @@ test_crash_during_local_claim_before_commit_is_fenced_not_retried (tests.test_ru
 test_crash_during_local_claim_for_local_run_leaves_marker_and_no_row (tests.test_run_ownership_faults.QueueBoundaryFaults.test_crash_during_local_claim_for_local_run_leaves_marker_and_no_row) ... ok
 
 ----------------------------------------------------------------------
-Ran 11 tests in 5.198s
+Ran 11 tests in 5.152s
 
 OK
 run-exec	UNKNOWN	diagnostic

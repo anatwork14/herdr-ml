@@ -1,10 +1,23 @@
 COMMAND: cd /mnt/ssd/genos2/workspace/herdr-ml-w1-ownership && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest tests.test_run_ownership -v
 EXIT_CODE: 0
 PYTHON: Python 3.12.14
-BRANCH: feat/exp-w1-ownership  HEAD: 95bb577
+BRANCH: feat/exp-w1-ownership  HEAD: 043dbfe
 ----- raw output -----
 test_state_machine_doc_names_every_state_phase_and_crash_point (tests.test_run_ownership.DocumentationConsistencyTests.test_state_machine_doc_names_every_state_phase_and_crash_point) ... ok
 test_unknown_crash_point_names_are_rejected_by_the_hook (tests.test_run_ownership.DocumentationConsistencyTests.test_unknown_crash_point_names_are_rejected_by_the_hook) ... ok
+test_hand_built_unregistered_and_rejected_proofs_are_refused (tests.test_run_ownership.ForgedAndUnregisteredProofTests.test_hand_built_unregistered_and_rejected_proofs_are_refused) ... ok
+test_no_verifier_is_registered_by_default (tests.test_run_ownership.ForgedAndUnregisteredProofTests.test_no_verifier_is_registered_by_default) ... ok
+test_registered_verifier_path_completes_and_binds_only_the_proven_task (tests.test_run_ownership.ForgedAndUnregisteredProofTests.test_registered_verifier_path_completes_and_binds_only_the_proven_task) ... ok
+test_well_shaped_dict_is_refused_for_completed (tests.test_run_ownership.ForgedAndUnregisteredProofTests.test_well_shaped_dict_is_refused_for_completed) ... ok
+test_well_shaped_dict_is_refused_for_fenced (tests.test_run_ownership.ForgedAndUnregisteredProofTests.test_well_shaped_dict_is_refused_for_fenced) ... ok
+test_well_shaped_dict_is_refused_for_queue_no_task_lookup (tests.test_run_ownership.ForgedAndUnregisteredProofTests.test_well_shaped_dict_is_refused_for_queue_no_task_lookup) ... ok
+test_well_shaped_dict_is_refused_for_queue_task_lookup (tests.test_run_ownership.ForgedAndUnregisteredProofTests.test_well_shaped_dict_is_refused_for_queue_task_lookup) ... ok
+test_advance_state_guard_refuses_regression_from_unknown_or_running (tests.test_run_ownership.GuardMutationTests.test_advance_state_guard_refuses_regression_from_unknown_or_running) ... ok
+test_claim_failure_after_queue_verification_fences_the_queue_row_in_process (tests.test_run_ownership.GuardMutationTests.test_claim_failure_after_queue_verification_fences_the_queue_row_in_process) ... ok
+test_insert_refuses_existing_row_with_named_error (tests.test_run_ownership.GuardMutationTests.test_insert_refuses_existing_row_with_named_error) ... ok
+test_queue_recover_requires_a_current_local_record (tests.test_run_ownership.GuardMutationTests.test_queue_recover_requires_a_current_local_record) ... ok
+test_record_child_requires_dispatching_state (tests.test_run_ownership.GuardMutationTests.test_record_child_requires_dispatching_state) ... ok
+test_supersede_refuses_completed_run (tests.test_run_ownership.GuardMutationTests.test_supersede_refuses_completed_run) ... ok
 test_canonical_identity_binds_every_field (tests.test_run_ownership.IdentityTests.test_canonical_identity_binds_every_field) ... ok
 test_identity_rejects_placeholder_and_malformed_fields (tests.test_run_ownership.IdentityTests.test_identity_rejects_placeholder_and_malformed_fields) ... ok
 test_token_round_trip_and_malformed_tokens_rejected (tests.test_run_ownership.IdentityTests.test_token_round_trip_and_malformed_tokens_rejected) ... ok
@@ -38,8 +51,14 @@ test_same_run_id_cannot_be_bound_by_a_second_project (tests.test_run_ownership.Q
 test_task_evidence_rebinds_intent_origin_but_never_a_claimed_ambiguity (tests.test_run_ownership.QueueBindingTests.test_task_evidence_rebinds_intent_origin_but_never_a_claimed_ambiguity) ... ok
 test_threads_racing_one_queued_local_claim_have_exactly_one_winner (tests.test_run_ownership.QueueBindingTests.test_threads_racing_one_queued_local_claim_have_exactly_one_winner) ... ok
 test_wrong_task_to_run_mappings_are_rejected (tests.test_run_ownership.QueueBindingTests.test_wrong_task_to_run_mappings_are_rejected) ... ok
+test_claim_with_another_project_is_refused_on_both_paths_and_creates_nothing (tests.test_run_ownership.RefusalHygieneTests.test_claim_with_another_project_is_refused_on_both_paths_and_creates_nothing) ... ok
+test_derived_successor_token_is_inert_after_supersede (tests.test_run_ownership.RefusalHygieneTests.test_derived_successor_token_is_inert_after_supersede) ... ok
+test_refused_mutators_never_create_a_registry_file (tests.test_run_ownership.RefusalHygieneTests.test_refused_mutators_never_create_a_registry_file) ... ok
+test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed (tests.test_run_ownership.TamperAndLegacyRowTests.test_legacy_row_with_injected_owner_attempt_and_fence_cannot_reach_completed) ... ok
+test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors (tests.test_run_ownership.TamperAndLegacyRowTests.test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors) ... ok
+test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish (tests.test_run_ownership.TamperAndLegacyRowTests.test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish) ... ok
 
 ----------------------------------------------------------------------
-Ran 35 tests in 4.569s
+Ran 54 tests in 7.425s
 
 OK
