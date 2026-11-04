@@ -99,7 +99,7 @@ Cleanup and isolation are not clean. The agent's exit before the stop was not ve
 - Cleanup: `/exit` sends exit 0; one identity poll (`GONE_OR_REUSED`) 3.35 s after the send, plus post-exit pane state; server stop exit 0; session deleted.
 - Production: stable identifiers identical before and after; `w1:p1` scroll 397 → 405 and focus moves reported as ephemeral, the scroll change accepted as unexplained transient metadata by the owner's authorization.
 
-**Verdict.** CORE_RECOVERY_READY is `PASS` on criteria (a)–(c), per the PLAN section 6 definition and the independent re-review at `5cd49b4`. Two deviations are recorded: exit was checked with one identity poll rather than the per-second polling of PLAN step 8, and the restore mechanism and launch attribution remain unproven. Crash recovery and the sidebar TUI were not tested. Manual Core release remains `BLOCKED` until an explicit owner release decision. The earlier reviews' findings are addressed in the corrected RESULT.md.
+**Verdict.** CORE_RECOVERY_READY is `PASS` on criteria (a)–(c), per the PLAN section 6 definition and the independent re-review at `5cd49b4`. Two deviations are recorded: exit was checked with one identity poll rather than the per-second polling of PLAN step 8, and the restore mechanism and launch attribution remain unproven. Crash recovery and the sidebar TUI were not tested. The owner approved a limited manual-only Manual Core release on 2026-11-04 (see the status below). The earlier reviews' findings are addressed in the corrected RESULT.md.
 
 ### Release decision
 
