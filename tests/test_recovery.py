@@ -31,6 +31,13 @@ import run_registry  # noqa: E402
 from support import process_tree  # noqa: E402
 
 RegistryError = run_ownership.RegistryError
+
+
+def owner_observed_gone():
+    """recovery_fence refuses a live owner; these tests record this process as owner and
+    model a gone owner by patching the observation only."""
+    return mock.patch.object(run_registry.process_identity, 'observe_process',
+                             return_value={'observation': 'NOT_VISIBLE', 'reason': 'test: owner treated as gone'})
 DIGEST = 'a' * 64
 QUEUE = 'd' * 64
 REPEATS = 3
@@ -364,7 +371,7 @@ class StaleWorkerTests(RecoveryBase):
             if point == 'recovery_fence:before_commit':
                 raise RuntimeError('injected')
 
-        with self.assertRaises(RuntimeError):
+        with self.assertRaises(RuntimeError), owner_observed_gone():
             run_registry.recovery_fence(case['folder'], (entry['owner_pid'], entry['owner_boot'],
                                                          entry['owner_start']), 'test', _fault=hook)
         after = run_registry.inspect(case['folder'])
@@ -744,8 +751,9 @@ class DescendantLineageTests(RecoveryBase):
             self.assertNotIn(outsider['pid'], recorded_pids)
         # Recovery after the owner is fenced terminates the recorded tree only.
         entry = run_registry.inspect(case['folder'])
-        run_registry.recovery_fence(case['folder'], (entry['owner_pid'], entry['owner_boot'],
-                                                     entry['owner_start']), 'test: owner treated as gone')
+        with owner_observed_gone():
+            run_registry.recovery_fence(case['folder'], (entry['owner_pid'], entry['owner_boot'],
+                                                         entry['owner_start']), 'test: owner treated as gone')
         report = run_recovery.recover(case['folder'], queued=False, grace_s=0.3)
         self.assertTrue(report['termination']['all_gone'])
         signalled = {e['identity']['pid'] for e in report['termination']['entries']}
@@ -780,8 +788,9 @@ class DescendantLineageTests(RecoveryBase):
         self.assertEqual(run_recovery.inspect_recovery(case['folder'])['descendants'], [])
         self.assertNotIn(sibling.pid, {i['pid'] for i in run_recovery.recorded_identities(case['folder'])})
         entry = run_registry.inspect(case['folder'])
-        run_registry.recovery_fence(case['folder'], (entry['owner_pid'], entry['owner_boot'],
-                                                     entry['owner_start']), 'test: owner treated as gone')
+        with owner_observed_gone():
+            run_registry.recovery_fence(case['folder'], (entry['owner_pid'], entry['owner_boot'],
+                                                         entry['owner_start']), 'test: owner treated as gone')
         report = run_recovery.recover(case['folder'], queued=False, grace_s=0.3)
         signalled = {e['identity']['pid'] for e in (report.get('termination') or {}).get('entries', [])}
         self.assertNotIn(sibling.pid, signalled)

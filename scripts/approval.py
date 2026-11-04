@@ -40,6 +40,7 @@ from pathlib import Path
 import secrets
 import stat
 import sys
+import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import execution_manifest as em  # noqa: E402
@@ -199,6 +200,20 @@ def _test_root(test_root, code):
     if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
             or stat.S_IMODE(info.st_mode) != 0o700):
         raise VerificationError(code, 'test_root must be a 0700 directory owned by the current uid')
+    # Test-mode guard only, not a production control: production mode refuses test_root outright.
+    temp = os.path.realpath(tempfile.gettempdir())
+    if root == temp or not _within(root, temp):
+        raise VerificationError(code, 'test_root must be a directory under the system temporary directory')
+    home = os.path.realpath(os.path.expanduser('~'))
+    if _within(home, root):  # root is HOME or an ancestor of HOME
+        raise VerificationError(code, 'test_root must not be or contain the home directory')
+    try:
+        for entry in os.scandir(root):
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid():
+                raise VerificationError(code, 'test_root holds a symlink or an entry owned by another uid')
+    except OSError as exc:
+        raise VerificationError(code, 'test_root is not listable') from exc
     return root
 
 
@@ -1130,15 +1145,24 @@ def select_handoff_verifier(*, test_only, injected=None):
     return injected
 
 
-def verify_handoff(handoff_bytes, verifier, *, store, now, expected):
+def verify_handoff(handoff_bytes, verifier, *, store, now, expected, mode='production'):
     """Worker-side check of a launch handoff. Returns the body when every check passes.
 
     expected keys: anchor_id, worker_id, run_id, attempt_id, manifest_sha256. The handoff is
     authorized only by a verifier signature (public key) AND by the consumption store's
     current record for the attempt, which the worker can read but never write.
+
+    mode is 'production' (the default) or 'test'. A test-only verifier is accepted only with
+    mode='test', and a production-mode call refuses it. Any other mode value is refused.
     """
+    if mode not in ('production', 'test'):
+        raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE, 'unknown mode')
     if not isinstance(verifier, HandoffVerifier) or verifier.algorithm != HANDOFF_ALGORITHM:
         raise VerificationError(HANDOFF_VERIFIER_UNPROVISIONED, 'no asymmetric verifier')
+    if getattr(verifier, 'test_only', False) != (mode == 'test') and not (
+            mode == 'test' and isinstance(verifier, UnprovisionedHandoffVerifier)):
+        raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE,
+                                'test-only verifiers are accepted only with mode=test')
     body = parse_canonical(handoff_bytes, MAX_HANDOFF_BYTES, HANDOFF_MALFORMED, HANDOFF_NONCANONICAL,
                            HANDOFF_MALFORMED, HANDOFF_MALFORMED)
     _keys(body, HANDOFF_KEYS, HANDOFF_MALFORMED)

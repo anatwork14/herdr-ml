@@ -49,6 +49,20 @@ the merged tree. No conflicts occurred.
 | LOW-3 docs | RECOVERY.md and `record_descendants` docstring say a session match counts only when the leader leads its own session (code already did). | none (docs) |
 | LOW-4 claimant namespaces | Claimant is now `pid:boot:start\|pid_ns\|mnt_ns`; `_claimant_liveness` uses `observe_process`, so another namespace yields UNKNOWN (recovery defers) instead of GONE. Legacy 3-field claimants keep old behaviour. | `ClaimantNamespaceTests.*` (3 tests) |
 
+## Review repairs (R1-R6)
+
+Applied on top of 30df5f6; each has a regression test in `tests/test_p7_repairs.py` that fails
+without the fix. The fix commit SHA is recorded in the last line of this section.
+
+| Id | Repair | Test |
+|---|---|---|
+| R1 MEDIUM | `recovery_fence` observes owner liveness (`process_identity.observe_process`) under the same `BEGIN IMMEDIATE` lock it writes under. A live or undeterminable owner refuses with `OwnerLive` (`OWNER_LIVE`) and writes nothing. `record_child` is unchanged (P0 tests still record `os.getpid()`). Three existing `tests/test_recovery.py` tests that fenced a live owner (this process) now patch the observation to model a gone owner; no assertion changed. | `OwnerLivenessFenceTests.test_live_owner_is_refused_by_recovery_fence_and_never_signalled` (child-process owner, `recover()` leaves it alive), `test_undeterminable_owner_is_refused` |
+| R2 MEDIUM | The boundary starts the job blocked at a start gate, runs `record_child` and the RUNNING advance, and only then releases the gate. On any record failure it aborts the gate, kills the child's process group, reaps it and refuses with `LAUNCH_RECORD_FAILED`; no output is written. | `GatedSpawnTests.test_record_failure_kills_child_and_leaves_no_output`, `test_child_is_blocked_until_identity_recorded` |
+| R3 MEDIUM | The boundary no longer spawns. It calls `backend.spawn_gated(...)`, a launcher the containment backend provides (`containment_backend.GatedChild`). The production backend raises `ContainmentUnavailable`, so the boundary refuses `CONTAINMENT_UNAVAILABLE`. The test double spawns only through `tests/support/gated_launcher.py`. | `GatedSpawnTests.test_production_backend_cannot_spawn_even_if_checks_1_to_5_pass`, `test_boundary_source_has_no_direct_spawn` |
+| R4 LOW | `approval._test_root` additionally requires the root to be under `tempfile.gettempdir()` (and not the temp dir itself), not equal to or an ancestor of `$HOME`, and to hold no symlink or foreign-owned entry. This is a TEST-MODE GUARD ONLY, not a production control: production mode refuses `test_root` outright. Deviation: strict "empty" could not be required because every existing fixture places its anchor and state directories inside the root; the guard instead refuses planted symlinks and foreign-owned entries. | `TestRootGuardTests.test_home_directory_root_is_refused_and_fresh_temp_root_accepted`, `test_home_itself_and_its_ancestors_are_refused` |
+| R5 LOW | `verify_handoff(..., mode='production')`. A `TestOnlyHandoffVerifier` is accepted only with `mode='test'`; production mode (the default) and unknown modes refuse with `HANDOFF_VERIFIER_NOT_SELECTABLE`. Existing handoff tests now pass `mode='test'`. | `HandoffModeTests.test_production_mode_refuses_test_only_verifier` |
+| R6 LOW | New `scripts/dispatch_guard.py` raises if `queue_adapter.PRODUCTION_DISPATCH_ENABLED` is not False, at import and via `require_disabled()`. The boundary (`DISPATCH_ENABLED`, check 0) and `researchctl.require_supported_execution` call it. The flag stays False; researchctl does not name the adapter module. | `DispatchDisabledTests.test_constant_is_false`, `test_import_time_check_refuses_when_flag_is_true`, `test_boundary_and_researchctl_refuse_when_flag_is_true` |
+
 ## Verification
 
 See the final section appended after the last run: full suite, markers, P0 diff.

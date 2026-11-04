@@ -17,11 +17,13 @@ from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[1] / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import containment_backend as cb  # noqa: E402
 import execution_boundary as eb  # noqa: E402
 import execution_manifest as em  # noqa: E402
 import run_ownership  # noqa: E402
 import run_registry as registry  # noqa: E402
+from support import gated_launcher  # noqa: E402
 
 GIT = ['git', '-c', 'user.name=test-only', '-c', 'user.email=test-only@example.invalid',
        '-c', 'commit.gpgsign=false']
@@ -49,6 +51,13 @@ class _VerifiedContainmentDouble:
         del command
         return cb.ContainmentResult(status=cb.ContainmentStatus.VERIFIED, reason='test double',
                                     proof=_TestProof(TEST_ISSUER, run_id))
+
+    def spawn_gated(self, command, *, cwd, env, run_id):
+        del run_id
+        # Test-only launcher: spawning is available only through tests/support.
+        child = gated_launcher.spawn_gated(command, cwd=cwd, env=env)
+        self.last_child = child.proc
+        return child
 
 
 class _GrantingGate:

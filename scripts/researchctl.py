@@ -27,6 +27,7 @@ REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
 # Explicit path enables direct execution and importlib-based test loading.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import run_ownership
+import dispatch_guard
 import run_registry
 import process_identity
 
@@ -254,6 +255,10 @@ def cmd_reconcile(args):
 
 
 def require_supported_execution(mode, queue, *, submission=False):
+    try:
+        dispatch_guard.require_disabled()
+    except dispatch_guard.DispatchEnabled:
+        raise ResearchError("Queued execution BLOCKED: production dispatch must remain disabled") from None
     if mode != "diagnostic":
         raise ResearchError("Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented")
     if (submission and queue != "local") or (not submission and queue is not None):

@@ -1174,6 +1174,14 @@ def supersede(folder, token, proof):
 RECOVERABLE_STATES = ('CLAIMED', 'DISPATCHING', 'RUNNING', 'UNKNOWN')
 
 
+OWNER_LIVE = 'OWNER_LIVE'
+
+
+class OwnerLive(RegistryError):
+    """recovery_fence refused: the recorded owner is live or cannot be observed."""
+    code = OWNER_LIVE
+
+
 def recovery_fence(folder, observed_owner, reason, *, _fault=None):
     """Owner-store recovery: revoke the authority of an owner observed gone. Returns the new fence.
 
@@ -1202,6 +1210,19 @@ def recovery_fence(folder, observed_owner, reason, *, _fault=None):
             raise RegistryError('Only an unfinished or unknown run can be recovery-fenced')
         if (row.get('owner_pid'), row.get('owner_boot'), row.get('owner_start')) != tuple(observed_owner):
             raise RegistryError('Run owner changed since it was observed; rerun recovery')
+        # Liveness is observed under the same write lock the fence is written under. A live or
+        # undeterminable owner refuses with OWNER_LIVE and nothing is written.
+        owner_ns = _optional_rows(db, "SELECT pid_namespace,mount_namespace FROM process_namespaces "
+                                      "WHERE role='owner'")
+        owner_ns = owner_ns[0] if owner_ns else {}
+        owner_identity = {'pid': row.get('owner_pid'), 'boot': row.get('owner_boot'),
+                          'start_ticks': row.get('owner_start'),
+                          'pid_namespace': owner_ns.get('pid_namespace'),
+                          'mount_namespace': owner_ns.get('mount_namespace')}
+        liveness = _observation_liveness(process_identity.observe_process(owner_identity,
+                                                                          row.get('owner_host')))
+        if liveness != 'GONE':
+            raise OwnerLive('%s: run owner is %s; refusing to fence' % (OWNER_LIVE, liveness))
         attempt_id, fence = row['attempt_id'], row['fence']
         new_fence = fence + 1
         new_digest = run_ownership.ExecutionIdentity(row['run_id'], row['project'], attempt_id,

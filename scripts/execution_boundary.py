@@ -52,6 +52,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import containment_backend  # noqa: E402
 import execution_manifest as em  # noqa: E402
 import run_ownership  # noqa: E402
+import dispatch_guard  # noqa: E402
 import run_registry  # noqa: E402
 
 IDENTITY_MISMATCH = 'IDENTITY_MISMATCH'
@@ -62,6 +63,8 @@ APPROVAL_UNAVAILABLE = 'APPROVAL_UNAVAILABLE'
 CONTAINMENT_UNAVAILABLE = 'CONTAINMENT_UNAVAILABLE'
 OUTPUT_DESTINATION_INVALID = 'OUTPUT_DESTINATION_INVALID'
 LAUNCH_FAILED = 'LAUNCH_FAILED'
+LAUNCH_RECORD_FAILED = 'LAUNCH_RECORD_FAILED'
+DISPATCH_ENABLED = 'DISPATCH_ENABLED'
 
 CHECK_CODES = (IDENTITY_MISMATCH, FENCE_STALE, QUEUE_NOT_ENABLED, MANIFEST_MISMATCH,
                APPROVAL_UNAVAILABLE, CONTAINMENT_UNAVAILABLE, OUTPUT_DESTINATION_INVALID)
@@ -285,18 +288,59 @@ def _write_output(target, data):
         os.close(fd)
 
 
-def _spawn_and_collect(request, folder, argv, cwd, target, launched=None, digest=None):
-    run_registry.advance(folder, request.fence_token, 'CLAIMED', 'DISPATCHING')
+def _reap_group(proc):
+    """Kill only the process group this boundary's launcher created for proc, then reap it."""
     try:
-        proc = subprocess.Popen(argv, cwd=cwd, env=dict(_CHILD_ENV), stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                start_new_session=True, close_fds=True)
-    except OSError as exc:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    try:
+        proc.wait(timeout=10)
+    except Exception:  # noqa: BLE001 - best effort; the caller already refuses
+        pass
+
+
+def _spawn_and_collect(request, folder, argv, cwd, target, backend, launched=None, digest=None):
+    run_registry.advance(folder, request.fence_token, 'CLAIMED', 'DISPATCHING')
+    spawn = getattr(backend, 'spawn_gated', None)
+    try:
+        if spawn is None:
+            raise containment_backend.ContainmentUnavailable('backend has no launcher')
+        gated = spawn(argv, cwd=cwd, env=dict(_CHILD_ENV), run_id=request.run_id)
+        proc = gated.proc
+    except containment_backend.ContainmentUnavailable:
+        run_registry.finish(folder, request.fence_token,
+                            {'state': 'UNKNOWN', 'detail': 'containment cannot spawn'})
+        _refuse(CONTAINMENT_UNAVAILABLE, 6, 'containment backend cannot spawn')
+    except Exception as exc:  # noqa: BLE001
         run_registry.finish(folder, request.fence_token,
                             {'state': 'UNKNOWN', 'detail': 'spawn failed: %s' % exc.__class__.__name__})
         _refuse(LAUNCH_FAILED, 8, 'spawn failed')
-    run_registry.record_child(folder, request.fence_token, proc.pid)
-    run_registry.advance(folder, request.fence_token, 'DISPATCHING', 'RUNNING')
+    # The child is blocked at its start gate. It runs only after its identity is recorded.
+    try:
+        run_registry.record_child(folder, request.fence_token, proc.pid)
+        run_registry.advance(folder, request.fence_token, 'DISPATCHING', 'RUNNING')
+    except BaseException as exc:
+        gated.abort()
+        _reap_group(proc)
+        try:
+            run_registry.finish(folder, request.fence_token,
+                                {'state': 'UNKNOWN', 'detail': 'child record failed: %s' % exc.__class__.__name__})
+        except Exception:  # noqa: BLE001 - the row stays for recovery
+            pass
+        if isinstance(exc, Exception):
+            _refuse(LAUNCH_RECORD_FAILED, 8, 'child identity could not be recorded; child killed')
+        raise
+    try:
+        gated.release()
+    except BaseException:
+        gated.abort()
+        _reap_group(proc)
+        raise
     if launched is not None:
         try:
             launched(request.run_id, request.attempt_id, digest)
@@ -333,6 +377,10 @@ def launch(request, *, approval_gate=None, approval_commit=None, containment=Non
     after checks 1-7 pass. containment defaults to containment_backend.get_backend(),
     which is UNAVAILABLE in production.
     """
+    try:
+        dispatch_guard.require_disabled()
+    except dispatch_guard.DispatchEnabled:
+        _refuse(DISPATCH_ENABLED, 0, 'production dispatch must stay disabled')
     if not isinstance(request, LaunchRequest):
         _refuse(IDENTITY_MISMATCH, 1, 'request must be a LaunchRequest')
     folder = os.path.realpath(request.run_folder)
@@ -349,5 +397,5 @@ def launch(request, *, approval_gate=None, approval_commit=None, containment=Non
     target = check_output(plan['output_path'], folder)
     commit = approval_commit if approval_commit is not None else fail_closed_approval_commit
     commit_approval(commit, request.run_id, request.attempt_id, row['manifest_sha256'])
-    return _spawn_and_collect(request, folder, argv, cwd, target, approval_launched,
+    return _spawn_and_collect(request, folder, argv, cwd, target, backend, approval_launched,
                               row['manifest_sha256'])

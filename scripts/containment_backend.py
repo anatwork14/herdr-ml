@@ -7,6 +7,7 @@ must never trust a caller-constructed result or caller-supplied data as proof.
 A future backend needs independently reviewed implementation and isolated E2E
 proof before a private verification capability is registered and connected.
 """
+import os
 from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Protocol
@@ -59,6 +60,37 @@ def is_verified_for_execution(result: object) -> bool:
     return any(issuer is trusted for trusted in _VERIFIED_ISSUERS)
 
 
+class ContainmentUnavailable(Exception):
+    """The backend cannot provide the requested capability (for example spawn)."""
+
+
+class GatedChild:
+    """A started child that is blocked at its start gate until release().
+
+    The execution boundary records the child's identity while it is blocked, then calls
+    release(). abort() closes the gate without releasing, so the job never runs. This class
+    only holds the gate's write end; whoever builds it supplies the blocked child.
+    """
+
+    def __init__(self, proc, gate_write_fd):
+        self.proc = proc
+        self._gate = gate_write_fd
+
+    def release(self):
+        gate, self._gate = self._gate, None
+        if gate is None:
+            raise ValueError('start gate already closed')
+        try:
+            os.write(gate, b'1')
+        finally:
+            os.close(gate)
+
+    def abort(self):
+        gate, self._gate = self._gate, None
+        if gate is not None:
+            os.close(gate)
+
+
 class ContainmentBackend(Protocol):
     """Interface for a backend that owns the complete workload boundary."""
 
@@ -73,6 +105,14 @@ class ContainmentBackend(Protocol):
 
     def release(self, proof: object, expectation: Expectation) -> Decision:
         """Release the boundary's resources only with a verified empty proof."""
+        ...
+
+    def spawn_gated(self, command: List[str], *, cwd: str, env: dict, run_id: str) -> GatedChild:
+        """Start command blocked at a start gate, inside this backend's boundary.
+
+        The execution boundary has no spawn of its own: the launcher is the backend's.
+        Returns a GatedChild whose process has not yet run the job.
+        """
         ...
 
 
@@ -93,6 +133,10 @@ class UnavailableContainmentBackend:
             status=ContainmentStatus.UNAVAILABLE,
             reason="No production containment backend is configured",
         )
+
+    def spawn_gated(self, command: List[str], *, cwd: str, env: dict, run_id: str) -> GatedChild:
+        del command, cwd, env, run_id
+        raise ContainmentUnavailable("No production containment backend can spawn")
 
     def release(self, proof: object, expectation: Expectation) -> Decision:
         # Fail closed: this backend never established a boundary, so nothing
