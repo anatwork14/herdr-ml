@@ -1,7 +1,7 @@
 COMMAND: cd /mnt/ssd/genos2/workspace/herdr-ml-w1-ownership && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -v
-EXIT_CODE: 1
+EXIT_CODE: 0
 PYTHON: Python 3.12.14
-BRANCH: feat/exp-w1-ownership  HEAD: 043dbfe
+BRANCH: feat/exp-w1-ownership  HEAD: 3002ac0
 ----- raw output -----
 test_boolean_integer_fields_are_rejected (test_artifact_tree.ArtifactTreeTests.test_boolean_integer_fields_are_rejected) ... ok
 test_changes_additions_and_removals_detected (test_artifact_tree.ArtifactTreeTests.test_changes_additions_and_removals_detected) ... ok
@@ -62,7 +62,7 @@ ERROR: Invalid submission manifest project or type
 ERROR: Invalid submission command
 ERROR: Invalid submission command
 ok
-test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpikcw0h9r/.runtime/demo/runs/test
+test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement (test_p0_ownership.CancellationTests.test_manifest_parsing_uses_exactly_hashed_bytes_despite_replacement) ... UNKNOWN run=test exit=0 logs=/tmp/tmpzbbcfz56/.runtime/demo/runs/test
 ok
 test_normal_leader_exit_stops_same_group_descendant (test_p0_ownership.CancellationTests.test_normal_leader_exit_stops_same_group_descendant) ... ok
 test_post_spawn_status_failure_kills_group_and_stays_uncertain (test_p0_ownership.CancellationTests.test_post_spawn_status_failure_kills_group_and_stays_uncertain) ... ok
@@ -70,7 +70,7 @@ test_sighup_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_
 test_sigquit_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigquit_stops_stubborn_descendant) ... ok
 test_sigterm_stops_stubborn_descendant (test_p0_ownership.CancellationTests.test_sigterm_stops_stubborn_descendant) ... ok
 test_status_reports_legacy_claim_and_corrupt_registry_unknown (test_p0_ownership.CancellationTests.test_status_reports_legacy_claim_and_corrupt_registry_unknown) ... ok
-test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmpabtcdv0y/.runtime/demo/runs/test
+test_twenty_workers_have_one_owner (test_p0_ownership.OwnershipTests.test_twenty_workers_have_one_owner) ... UNKNOWN run=test exit=0 logs=/tmp/tmp65zcae5k/.runtime/demo/runs/test
 ok
 test_absent_pid_is_only_not_visible (test_process_identity.IdentityTests.test_absent_pid_is_only_not_visible) ... ok
 test_live_current_process_matches (test_process_identity.IdentityTests.test_live_current_process_matches) ... ok
@@ -108,83 +108,19 @@ test_store_is_mode_0600_and_ignores_home_environment (test_queue_protocol.QueueP
 test_store_symlink_is_not_followed (test_queue_protocol.QueueProtocolTests.test_store_symlink_is_not_followed) ... ok
 test_task_id_unique_in_same_queue_and_namespaced_across_daemons (test_queue_protocol.QueueProtocolTests.test_task_id_unique_in_same_queue_and_namespaced_across_daemons) ... ok
 test_wrong_run_digest_task_and_worker_replay_fail_closed (test_queue_protocol.QueueProtocolTests.test_wrong_run_digest_task_and_worker_replay_fail_closed) ... ok
-test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) ... Process Process-38:
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
-    self.run()
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 96, in crash_at_phase
-    token = registry.claim(Path(folder), 'run', 'project', 'a' * 64, 'SUBMITTED')
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
-
-  test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='CLAIMED') ... FAIL
-Process Process-39:
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
-    self.run()
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 96, in crash_at_phase
-    token = registry.claim(Path(folder), 'run', 'project', 'a' * 64, 'SUBMITTED')
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
-  test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='DISPATCHING') ... FAIL
-Process Process-40:
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
-    self.run()
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 96, in crash_at_phase
-    token = registry.claim(Path(folder), 'run', 'project', 'a' * 64, 'SUBMITTED')
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
-  test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='RUNNING') ... FAIL
-Process Process-41:
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
-    self.run()
-  File "/mnt/ssd/genos2/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/multiprocessing/process.py", line 108, in run
-    self._target(*self._args, **self._kwargs)
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 96, in crash_at_phase
-    token = registry.claim(Path(folder), 'run', 'project', 'a' * 64, 'SUBMITTED')
-            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
-  test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='UNCOMMITTED_RESULT') ... FAIL
+test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) ... ok
 test_legacy_and_new_workers_cannot_both_claim (test_registry_p0.MixedVersionTests.test_legacy_and_new_workers_cannot_both_claim) ... ok
-test_abandoned_claim_is_never_reclaimed_on_retry (test_registry_p0.RegistryTests.test_abandoned_claim_is_never_reclaimed_on_retry) ... ERROR
+test_abandoned_claim_is_never_reclaimed_on_retry (test_registry_p0.RegistryTests.test_abandoned_claim_is_never_reclaimed_on_retry) ... ok
 test_existing_legacy_claim_fails_closed (test_registry_p0.RegistryTests.test_existing_legacy_claim_fails_closed) ... ok
-test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registry_p0.RegistryTests.test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown) ... ERROR
-test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ERROR
-test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ERROR
-test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... FAIL
-test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T073528Z-b8d33cb53440 folder=/tmp/tmpdjtfly7u/research/.runtime/demo/runs/20261104T073528Z-b8d33cb53440
-UNKNOWN run=20261104T073528Z-b8d33cb53440 exit=0 logs=/tmp/tmpdjtfly7u/research/.runtime/demo/runs/20261104T073528Z-b8d33cb53440
+test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registry_p0.RegistryTests.test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown) ... ok
+test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal) ... ok
+test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete) ... ok
+test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim) ... ok
+test_diagnostic_success_writes_evidence (test_researchctl.ResearchCtlTests.test_diagnostic_success_writes_evidence) ... STARTING run=20261104T075037Z-b74b3624260a folder=/tmp/tmppasw1ygt/research/.runtime/demo/runs/20261104T075037Z-b74b3624260a
+UNKNOWN run=20261104T075037Z-b74b3624260a exit=0 logs=/tmp/tmppasw1ygt/research/.runtime/demo/runs/20261104T075037Z-b74b3624260a
 ok
-test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T073528Z-3a50f1620900 folder=/tmp/tmpmj8rqtky/research/.runtime/demo/runs/20261104T073528Z-3a50f1620900
-UNKNOWN run=20261104T073528Z-3a50f1620900 exit=9 logs=/tmp/tmpmj8rqtky/research/.runtime/demo/runs/20261104T073528Z-3a50f1620900
+test_failed_run_keeps_logs (test_researchctl.ResearchCtlTests.test_failed_run_keeps_logs) ... STARTING run=20261104T075037Z-86e2d9e9054f folder=/tmp/tmpfhx70wwu/research/.runtime/demo/runs/20261104T075037Z-86e2d9e9054f
+UNKNOWN run=20261104T075037Z-86e2d9e9054f exit=9 logs=/tmp/tmpfhx70wwu/research/.runtime/demo/runs/20261104T075037Z-86e2d9e9054f
 ok
 test_gate_path_escape_rejected (test_researchctl.ResearchCtlTests.test_gate_path_escape_rejected) ... ok
 test_missing_explicit_official_approval_blocks (test_researchctl.ResearchCtlTests.test_missing_explicit_official_approval_blocks) ... ERROR: Official run requires --approve-official
@@ -194,16 +130,16 @@ ok
 test_official_requires_pinned_clean_git_even_with_gates (test_researchctl.ResearchCtlTests.test_official_requires_pinned_clean_git_even_with_gates) ... ERROR: Official or invalid execution BLOCKED: authenticated approval and immutable provenance not implemented
 ok
 test_reconcile_never_accepts_unrecognized_registry_state (test_researchctl.ResearchCtlTests.test_reconcile_never_accepts_unrecognized_registry_state) ... ok
-test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T073528Z-b3afc1e15835 folder=/tmp/tmpofvm_9zz/research/.runtime/demo/runs/20261104T073528Z-b3afc1e15835
-UNKNOWN run=20261104T073528Z-b3afc1e15835 exit=0 logs=/tmp/tmpofvm_9zz/research/.runtime/demo/runs/20261104T073528Z-b3afc1e15835
+test_reconcile_reports_read_only_process_identity_without_reclaim (test_researchctl.ResearchCtlTests.test_reconcile_reports_read_only_process_identity_without_reclaim) ... STARTING run=20261104T075037Z-797fed365bec folder=/tmp/tmpkbvtnfg4/research/.runtime/demo/runs/20261104T075037Z-797fed365bec
+UNKNOWN run=20261104T075037Z-797fed365bec exit=0 logs=/tmp/tmpkbvtnfg4/research/.runtime/demo/runs/20261104T075037Z-797fed365bec
 ok
-test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T073529Z-78073b9f549f folder=/tmp/tmpd2kobawe/research/.runtime/demo/runs/20261104T073529Z-78073b9f549f
-UNKNOWN run=20261104T073529Z-78073b9f549f exit=0 logs=/tmp/tmpd2kobawe/research/.runtime/demo/runs/20261104T073529Z-78073b9f549f
+test_registry_is_authoritative_over_stale_or_missing_json (test_researchctl.ResearchCtlTests.test_registry_is_authoritative_over_stale_or_missing_json) ... STARTING run=20261104T075037Z-e4edc179762e folder=/tmp/tmpzw0gl31n/research/.runtime/demo/runs/20261104T075037Z-e4edc179762e
+UNKNOWN run=20261104T075037Z-e4edc179762e exit=0 logs=/tmp/tmpzw0gl31n/research/.runtime/demo/runs/20261104T075037Z-e4edc179762e
 ok
 test_status_reports_non_object_json_as_unknown_per_run (test_researchctl.ResearchCtlTests.test_status_reports_non_object_json_as_unknown_per_run) ... ok
 test_valid_gate_schema_checks_local_evidence (test_researchctl.ResearchCtlTests.test_valid_gate_schema_checks_local_evidence) ... ok
-test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T073529Z-cfc57fdfef4d folder=/tmp/tmpgxf4wo67/research/.runtime/demo/runs/20261104T073529Z-cfc57fdfef4d
-UNKNOWN run=20261104T073529Z-cfc57fdfef4d exit=0 logs=/tmp/tmpgxf4wo67/research/.runtime/demo/runs/20261104T073529Z-cfc57fdfef4d
+test_worker_cannot_rerun_a_completed_run (test_researchctl.ResearchCtlTests.test_worker_cannot_rerun_a_completed_run) ... STARTING run=20261104T075038Z-b5c9e9b2cd1e folder=/tmp/tmpyf69kgdx/research/.runtime/demo/runs/20261104T075038Z-b5c9e9b2cd1e
+UNKNOWN run=20261104T075038Z-b5c9e9b2cd1e exit=0 logs=/tmp/tmpyf69kgdx/research/.runtime/demo/runs/20261104T075038Z-b5c9e9b2cd1e
 ERROR: Refusing execution: queued or repeated state=UNKNOWN
 ok
 test_state_machine_doc_names_every_state_phase_and_crash_point (test_run_ownership.DocumentationConsistencyTests.test_state_machine_doc_names_every_state_phase_and_crash_point) ... ok
@@ -278,116 +214,8 @@ test_crash_during_local_claim_for_local_run_leaves_marker_and_no_row (test_run_o
 test_matching_and_changed_interpreter_identity (test_runtime_identity.RuntimeIdentityTests.test_matching_and_changed_interpreter_identity) ... ok
 test_spoofed_argv0_is_blocked (test_runtime_identity.RuntimeIdentityTests.test_spoofed_argv0_is_blocked) ... ok
 
-======================================================================
-ERROR: test_abandoned_claim_is_never_reclaimed_on_retry (test_registry_p0.RegistryTests.test_abandoned_claim_is_never_reclaimed_on_retry)
 ----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 73, in test_abandoned_claim_is_never_reclaimed_on_retry
-    token = self.claim()
-            ^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 30, in claim
-    return registry.claim(self.folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
+Ran 185 tests in 23.089s
 
-======================================================================
-ERROR: test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown (test_registry_p0.RegistryTests.test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 34, in test_owner_and_child_namespaces_are_recorded_and_legacy_is_unknown
-    token = self.claim()
-            ^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 30, in claim
-    return registry.claim(self.folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
-
-======================================================================
-ERROR: test_result_and_completion_are_atomic_and_terminal (test_registry_p0.RegistryTests.test_result_and_completion_are_atomic_and_terminal)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 80, in test_result_and_completion_are_atomic_and_terminal
-    token = self.claim()
-            ^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 30, in claim
-    return registry.claim(self.folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
-
-======================================================================
-ERROR: test_stale_token_cannot_change_or_complete (test_registry_p0.RegistryTests.test_stale_token_cannot_change_or_complete)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 64, in test_stale_token_cannot_change_or_complete
-    token = self.claim()
-            ^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 30, in claim
-    return registry.claim(self.folder, 'run', 'project', 'a' * 64, 'SUBMITTED')
-           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 562, in claim
-    if project != _folder_project(folder):
-                  ^^^^^^^^^^^^^^^^^^^^^^^
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/scripts/run_registry.py", line 248, in _folder_project
-    raise RegistryError('Queue binding requires a standard run folder')
-run_ownership.RegistryError: Queue binding requires a standard run folder
-
-======================================================================
-FAIL: test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='CLAIMED')
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 120, in test_crashes_keep_claim_and_never_report_false_completion
-    self.assertTrue(ready.wait(10))
-AssertionError: False is not true
-
-======================================================================
-FAIL: test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='DISPATCHING')
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 120, in test_crashes_keep_claim_and_never_report_false_completion
-    self.assertTrue(ready.wait(10))
-AssertionError: False is not true
-
-======================================================================
-FAIL: test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='RUNNING')
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 120, in test_crashes_keep_claim_and_never_report_false_completion
-    self.assertTrue(ready.wait(10))
-AssertionError: False is not true
-
-======================================================================
-FAIL: test_crashes_keep_claim_and_never_report_false_completion (test_registry_p0.CrashTests.test_crashes_keep_claim_and_never_report_false_completion) (phase='UNCOMMITTED_RESULT')
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 120, in test_crashes_keep_claim_and_never_report_false_completion
-    self.assertTrue(ready.wait(10))
-AssertionError: False is not true
-
-======================================================================
-FAIL: test_twenty_workers_one_claim (test_registry_p0.RegistryTests.test_twenty_workers_one_claim)
-----------------------------------------------------------------------
-Traceback (most recent call last):
-  File "/mnt/ssd/genos2/workspace/herdr-ml-w1-ownership/tests/test_registry_p0.py", line 61, in test_twenty_workers_one_claim
-    self.assertEqual(sum(item[0] == 'won' for item in results), 1)
-AssertionError: 0 != 1
-
-----------------------------------------------------------------------
-Ran 185 tests in 62.277s
-
-FAILED (failures=5, errors=4)
+OK
 run-exec	UNKNOWN	diagnostic

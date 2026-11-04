@@ -1,7 +1,7 @@
 COMMAND: cd /mnt/ssd/genos2/workspace/herdr-ml-w1-ownership && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest tests.test_run_ownership -v
 EXIT_CODE: 0
 PYTHON: Python 3.12.14
-BRANCH: feat/exp-w1-ownership  HEAD: 043dbfe
+BRANCH: feat/exp-w1-ownership  HEAD: 3002ac0
 ----- raw output -----
 test_state_machine_doc_names_every_state_phase_and_crash_point (tests.test_run_ownership.DocumentationConsistencyTests.test_state_machine_doc_names_every_state_phase_and_crash_point) ... ok
 test_unknown_crash_point_names_are_rejected_by_the_hook (tests.test_run_ownership.DocumentationConsistencyTests.test_unknown_crash_point_names_are_rejected_by_the_hook) ... ok
@@ -59,6 +59,6 @@ test_legacy_schema_refusals_are_registry_errors_not_sqlite_errors (tests.test_ru
 test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish (tests.test_run_ownership.TamperAndLegacyRowTests.test_tampered_identity_refuses_record_child_advance_finish_and_verified_finish) ... ok
 
 ----------------------------------------------------------------------
-Ran 54 tests in 7.425s
+Ran 54 tests in 7.595s
 
 OK
