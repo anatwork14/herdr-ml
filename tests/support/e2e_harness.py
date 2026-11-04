@@ -29,6 +29,7 @@ from pathlib import Path
 import secrets
 import subprocess
 import sys
+import time
 
 SUPPORT = Path(__file__).resolve().parent
 TESTS = SUPPORT.parent
@@ -470,11 +471,33 @@ def worker_main(config_path, marker):
         hook('execute:spawned_unrecorded')
         identity = run_recovery.read_identity(job.pid, role='leader')
         _append_line(case['spawned'], dict(identity, by='worker', what='job'))
-        os.write(gate_write, b'1')
-        os.close(gate_write)
-        run_registry.record_child(folder, token, job.pid)
-        run_registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
-        run_recovery.record_descendants(folder, token, [identity], _fault=hook)
+        released = []
+
+        def release_gate():
+            if not released:
+                released.append(True)
+                os.write(gate_write, b'1')
+
+        def hook_after_descendants_commit(point):
+            # The descendants are durably recorded once this point is reached, so the job may
+            # run from here; an injected crash at this point then leaves a recorded live job.
+            if point == 'descendants:after_commit':
+                release_gate()
+                # Let the released job write its output (bounded), so the state at an injected
+                # crash here is deterministic: job alive, output written.
+                wait_until = time.monotonic() + 10
+                while not os.path.exists(plan['output_path']) and time.monotonic() < wait_until:
+                    time.sleep(0.01)
+            hook(point)
+
+        try:
+            run_registry.record_child(folder, token, job.pid)
+            run_registry.advance(folder, token, 'DISPATCHING', 'RUNNING')
+            run_recovery.record_descendants(folder, token, [identity], _fault=hook_after_descendants_commit)
+            # Release the gate only after the child and its descendants are recorded.
+            release_gate()
+        finally:
+            os.close(gate_write)
         Path(case['go']).touch()
         exit_code = job.wait(timeout=JOB_WAIT_S + 30)
         stage('EXECUTE', exit_code=exit_code, pid=identity['pid'], start_ticks=identity['start_ticks'])

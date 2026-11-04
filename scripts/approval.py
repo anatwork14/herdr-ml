@@ -192,6 +192,13 @@ def _test_root(test_root, code):
     root = os.path.realpath(os.fspath(test_root))
     if root == os.sep:
         raise VerificationError(code, 'test_root cannot be the filesystem root')
+    try:
+        info = os.lstat(root)
+    except OSError as exc:
+        raise VerificationError(code, 'test_root is not readable') from exc
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise VerificationError(code, 'test_root must be a 0700 directory owned by the current uid')
     return root
 
 
@@ -697,6 +704,19 @@ class ConsumptionStore(object):
         """The validated attempt claim, or None. Read-only."""
         return self._read(_claim_name('attempt', run_id, attempt_id), attempt=True)
 
+    def preflight(self, approval_id, *, run_id, attempt_id, record):
+        """Read-only: raise exactly what claim() would raise before writing, else return."""
+        if not (em._is_id(approval_id) and em._is_id(run_id) and em._is_id(attempt_id)):
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'identifiers')
+        if not _grant_ok(record) or record['approval_id'] != approval_id or record['run_id'] != run_id \
+                or record['attempt_id'] != attempt_id:
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'grant does not match the claim key')
+        if self._read(_claim_name('approval', approval_id, run_id, attempt_id), attempt=False) is not None:
+            raise VerificationError(APPROVAL_CONSUMED, 'approval already consumed')
+        existing = self._read(_claim_name('attempt', run_id, attempt_id), attempt=True)
+        if existing is not None:
+            raise self._refuse_existing(existing, record)
+
     def claim(self, approval_id, *, run_id, attempt_id, record, _fault=None):
         """Consume the approval for exactly this attempt. Refusals write nothing."""
         if not (em._is_id(approval_id) and em._is_id(run_id) and em._is_id(attempt_id)):
@@ -753,8 +773,11 @@ class ConsumptionStore(object):
 
 # ---------------------------------------------------------------- revocations
 
-def load_revocations(anchor, data, *, now, state):
-    """Authenticate a revocation list and advance the recorded sequence."""
+def load_revocations(anchor, data, *, now, state, write=True):
+    """Authenticate a revocation list and advance the recorded sequence.
+
+    write=False checks the sequence for rollback but records nothing.
+    """
     if state.anchor_id != anchor.anchor_id:
         raise VerificationError(REVOCATION_STATE_ANCHOR_MISMATCH, 'sequence state belongs to another anchor')
     if data is None:
@@ -785,7 +808,10 @@ def load_revocations(anchor, data, *, now, state):
     message = canonical_bytes({k: v for k, v in body.items() if k != 'signature'})
     if not anchor.verifier.verify(anchor.revoker, DOMAIN_REVOCATION, message, signature['value']):
         raise VerificationError(REVOCATION_UNAUTHENTICATED, 'signature invalid')
-    state.advance(body['sequence'])
+    if write:
+        state.advance(body['sequence'])
+    elif body['sequence'] < state.last():
+        raise VerificationError(REVOCATION_ROLLBACK, 'list sequence is below the recorded sequence')
     return set(ids), set(digests)
 
 
@@ -830,7 +856,8 @@ def _sign(anchor, signer_id, domain, body):
     return anchor.verifier.sign(signer_id, domain, canonical_bytes(body))
 
 
-def _authorize(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, now):
+def _authorize(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, now,
+               write=True):
     """Every check on an approval except the consumption claim. Raises VerificationError."""
     body = parse_canonical(approval_bytes, MAX_APPROVAL_BYTES, APPROVAL_MALFORMED,
                            APPROVAL_NONCANONICAL, APPROVAL_MALFORMED, APPROVAL_MALFORMED)
@@ -876,7 +903,7 @@ def _authorize(approval_bytes, anchor, *, revocation_bytes, revocation_state, ex
     if now >= expires:
         raise VerificationError(APPROVAL_EXPIRED)
     revoked_ids, revoked_digests = load_revocations(anchor, revocation_bytes, now=now,
-                                                    state=revocation_state)
+                                                    state=revocation_state, write=write)
     if body['approval_id'] in revoked_ids or body['manifest_sha256'] in revoked_digests:
         raise VerificationError(APPROVAL_REVOKED)
     if body['run_id'] != expected['run_id']:
@@ -898,6 +925,17 @@ def _authorize(approval_bytes, anchor, *, revocation_bytes, revocation_state, ex
             'attempt_id': body['attempt_id'], 'manifest_sha256': body['manifest_sha256']}
 
 
+def _require_test_context(anchor, store, revocation_state):
+    """A test anchor is accepted only together with test-only state, and never the reverse.
+
+    Test-only state can only be built with an explicit 0700 test_root owned by this uid.
+    """
+    test_flags = {bool(anchor.test_only), bool(getattr(store, '_test_only', False)),
+                  bool(getattr(revocation_state, '_test_only', False))}
+    if len(test_flags) != 1:
+        raise VerificationError(TRUST_ANCHOR_INVALID, 'test anchor needs an explicit test context')
+
+
 def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, store,
                     now=None):
     """Authorize and consume one attempt. Raises VerificationError on any failure.
@@ -909,6 +947,7 @@ def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_stat
     ConsumptionStore.mark_launched. Launchers use consume_for_attempt instead.
     """
     now = now or _utcnow()
+    _require_test_context(anchor, store, revocation_state)
     record = _authorize(approval_bytes, anchor, revocation_bytes=revocation_bytes,
                         revocation_state=revocation_state, expected=expected, now=now)
     store.claim(record['approval_id'], run_id=record['run_id'], attempt_id=record['attempt_id'],
@@ -937,6 +976,31 @@ class AttemptContext(object):
         self.output = dict(output)
 
 
+def _checked_grant(run_id, attempt_id, approval, manifest_digest, now, ctx, *, write):
+    if not (em._is_id(run_id) and em._is_id(attempt_id) and _is_hex(manifest_digest)):
+        raise VerificationError(APPROVAL_MALFORMED, 'run, attempt or manifest digest')
+    if not isinstance(now, dt.datetime) or now.tzinfo is None:
+        raise VerificationError(APPROVAL_MALFORMED, 'now must be timezone-aware')
+    if not isinstance(approval, (bytes, bytearray)):
+        raise VerificationError(APPROVAL_MALFORMED, 'approval must be canonical bytes')
+    _require_test_context(ctx.anchor, ctx.store, ctx.revocation_state)
+    expected = {'worker_id': ctx.worker_id, 'run_id': run_id, 'attempt_id': attempt_id,
+                'manifest_sha256': manifest_digest, 'resource_class': ctx.resource_class,
+                'scope': ctx.scope, 'output': ctx.output}
+    return _authorize(bytes(approval), ctx.anchor, revocation_bytes=ctx.revocations(),
+                      revocation_state=ctx.revocation_state, expected=expected, now=now, write=write)
+
+
+def verify_for_attempt(run_id, attempt_id, approval, manifest_digest, now, *, ctx):
+    """Non-consuming twin of consume_for_attempt: the same checks, and nothing is written.
+
+    Also refuses when the attempt or the approval is already claimed. Returns the grant record.
+    """
+    record = _checked_grant(run_id, attempt_id, approval, manifest_digest, now, ctx, write=False)
+    ctx.store.preflight(record['approval_id'], run_id=run_id, attempt_id=attempt_id, record=record)
+    return record
+
+
 def consume_for_attempt(run_id, attempt_id, approval, manifest_digest, now, *, ctx, _fault=None):
     """W1 boundary call, made last, once all other checks have passed.
 
@@ -946,20 +1010,57 @@ def consume_for_attempt(run_id, attempt_id, approval, manifest_digest, now, *, c
     On success the attempt is 'consumed_not_launched' until mark_launched runs. If a crash
     leaves it there, recovery must call fence_unlaunched; the attempt is never re-used.
     """
-    if not (em._is_id(run_id) and em._is_id(attempt_id) and _is_hex(manifest_digest)):
-        raise VerificationError(APPROVAL_MALFORMED, 'run, attempt or manifest digest')
-    if not isinstance(now, dt.datetime) or now.tzinfo is None:
-        raise VerificationError(APPROVAL_MALFORMED, 'now must be timezone-aware')
-    if not isinstance(approval, (bytes, bytearray)):
-        raise VerificationError(APPROVAL_MALFORMED, 'approval must be canonical bytes')
-    expected = {'worker_id': ctx.worker_id, 'run_id': run_id, 'attempt_id': attempt_id,
-                'manifest_sha256': manifest_digest, 'resource_class': ctx.resource_class,
-                'scope': ctx.scope, 'output': ctx.output}
-    record = _authorize(bytes(approval), ctx.anchor, revocation_bytes=ctx.revocations(),
-                        revocation_state=ctx.revocation_state, expected=expected, now=now)
+    record = _checked_grant(run_id, attempt_id, approval, manifest_digest, now, ctx, write=True)
     ctx.store.claim(record['approval_id'], run_id=run_id, attempt_id=attempt_id, record=record,
                     _fault=_fault)
     return record
+
+
+# ---------------------------------------------------------------- boundary adapter
+
+class BoundaryApprovalAdapter(object):
+    """Adapts the approval checks to the worker boundary's gate/commit/launched callables.
+
+    decisions is the boundary's ApprovalDecision enum, passed in by the caller so this module
+    does not import the boundary. gate() is non-consuming (verify_for_attempt, no writes).
+    commit() is the only consumption point (consume_for_attempt) and returns True only when
+    that call succeeded; any refusal or fault returns False so the boundary does not spawn.
+    launched() records mark_launched after the child was started and recorded.
+    The default boundary hooks stay fail-closed; nothing builds this adapter implicitly.
+    """
+
+    def __init__(self, *, ctx, approval, decisions, clock=None):
+        self._ctx = ctx
+        self._approval = bytes(approval)
+        self._decisions = decisions
+        self._clock = clock or _utcnow
+        self._record = None
+
+    def gate(self, run_id, attempt_id, manifest_digest):
+        try:
+            verify_for_attempt(run_id, attempt_id, self._approval, manifest_digest, self._clock(),
+                               ctx=self._ctx)
+        except Exception:  # fail closed
+            return self._decisions.UNAVAILABLE
+        return self._decisions.GRANTED
+
+    def commit(self, run_id, attempt_id, manifest_digest):
+        try:
+            record = consume_for_attempt(run_id, attempt_id, self._approval, manifest_digest,
+                                         self._clock(), ctx=self._ctx)
+        except Exception:  # fail closed
+            return False
+        if not isinstance(record, dict) or not record.get('approval_sha256'):
+            return False
+        self._record = record
+        return True
+
+    def launched(self, run_id, attempt_id, manifest_digest):
+        del manifest_digest
+        if self._record is None:
+            raise VerificationError(ATTEMPT_NOT_CONSUMED, 'nothing was consumed by this adapter')
+        self._ctx.store.mark_launched(run_id, attempt_id,
+                                      approval_sha256=self._record['approval_sha256'])
 
 
 # ---------------------------------------------------------------- launch handoff

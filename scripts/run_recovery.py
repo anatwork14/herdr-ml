@@ -268,8 +268,10 @@ def record_descendants(folder, token, identities, *, _fault=None):
     """Record descendant identities under the current owner token (DISPATCHING or RUNNING).
 
     Each identity must belong to the recorded leader: be the leader itself, have
-    a parent chain reaching the leader, or share the leader's session id when the
-    leader is a session leader (checked against /proc now, under the registry write lock). One outsider
+    a parent chain reaching the leader, or share the leader's session id. A session
+    match counts only when the leader leads its own session (its pid equals its session
+    id); otherwise the session id is shared with unrelated processes and proves nothing
+    (checked against /proc now, under the registry write lock). One outsider
     refuses the whole call and nothing is recorded, so recovery never signals it.
 
     The registry write lock is held across the recovery-store commit, so recovery

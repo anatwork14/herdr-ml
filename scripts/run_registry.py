@@ -343,7 +343,8 @@ def _this_claimant():
     boot, start = _identity()
     if not boot or not start:
         return None
-    return '%d:%s:%s' % (os.getpid(), boot, start)
+    pid_ns, mount_ns = _namespaces(os.getpid())
+    return '%d:%s:%s|%s|%s' % (os.getpid(), boot, start, pid_ns or '', mount_ns or '')
 
 
 def _record_submitter(db, run_id, role):
@@ -998,15 +999,26 @@ def _child_recorded(db):
     return bool(_optional_rows(db, 'SELECT 1 AS present FROM child_identity WHERE id=1'))
 
 
+CHILD_NOT_OWN_CHILD = 'CHILD_NOT_OWN_CHILD'
+
+
 def record_child(folder, token, pid):
     """Record forensic identity; this is not evidence of containment."""
     attempt_id, fence = _decode_owner(token)
+    if type(pid) is not int or pid <= 0:
+        raise RegistryError(CHILD_NOT_OWN_CHILD + ': invalid pid')
     try:
         boot = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
         stat = Path('/proc/%d/stat' % pid).read_text()
-        start = stat[stat.rfind(')') + 2:].split()[19]
-    except (OSError, IndexError):
-        boot, start = None, None
+        fields = stat[stat.rfind(')') + 2:].split()
+        start = fields[19]
+        parent = int(fields[1])
+    except (OSError, IndexError, ValueError):
+        raise RegistryError(CHILD_NOT_OWN_CHILD + ': pid is gone or unreadable') from None
+    # Only this process (the recorder itself) or its own not-yet-reaped child may be recorded.
+    # A reaped pid vanishes from /proc or is reused by a process that is not our child.
+    if pid != os.getpid() and parent != os.getpid():
+        raise RegistryError(CHILD_NOT_OWN_CHILD + ': pid is not a child of this process')
     db = _connect(folder, create=False)
     try:
         db.execute('BEGIN IMMEDIATE')
@@ -1235,8 +1247,21 @@ def _observation_liveness(seen):
 
 
 def _claimant_liveness(claimant):
-    """Liveness of a queue claimant 'pid:boot:start' (no namespaces recorded; same-namespace host only)."""
+    """Liveness of a queue claimant.
+
+    Current claimants are 'pid:boot:start|pid_namespace|mount_namespace'. They are observed with
+    process_identity.observe_process, so an observer in another namespace sees UNKNOWN (recovery
+    defers) instead of a live claimant looking GONE. Legacy 'pid:boot:start' claimants carry no
+    namespaces and are only meaningful to a same-namespace observer.
+    """
     try:
+        if '|' in claimant:
+            head, pid_ns, mount_ns = claimant.split('|')
+            pid_text, boot, start = head.split(':')
+            seen = process_identity.observe_process(
+                {'pid': int(pid_text), 'boot': boot, 'start_ticks': start,
+                 'pid_namespace': pid_ns, 'mount_namespace': mount_ns}, socket.gethostname())
+            return _observation_liveness(seen)
         pid_text, boot, start = claimant.split(':')
         pid = int(pid_text)
         if pid <= 0 or not process_identity._boot_valid(boot) or not process_identity._ticks_valid(start):

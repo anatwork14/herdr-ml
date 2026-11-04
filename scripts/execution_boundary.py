@@ -285,7 +285,7 @@ def _write_output(target, data):
         os.close(fd)
 
 
-def _spawn_and_collect(request, folder, argv, cwd, target):
+def _spawn_and_collect(request, folder, argv, cwd, target, launched=None, digest=None):
     run_registry.advance(folder, request.fence_token, 'CLAIMED', 'DISPATCHING')
     try:
         proc = subprocess.Popen(argv, cwd=cwd, env=dict(_CHILD_ENV), stdin=subprocess.DEVNULL,
@@ -297,6 +297,11 @@ def _spawn_and_collect(request, folder, argv, cwd, target):
         _refuse(LAUNCH_FAILED, 8, 'spawn failed')
     run_registry.record_child(folder, request.fence_token, proc.pid)
     run_registry.advance(folder, request.fence_token, 'DISPATCHING', 'RUNNING')
+    if launched is not None:
+        try:
+            launched(request.run_id, request.attempt_id, digest)
+        except Exception:  # the attempt stays consumed_not_launched; recovery fences it
+            pass
     timed_out = False
     try:
         stdout, _stderr = proc.communicate(timeout=request.timeout_s)
@@ -318,7 +323,8 @@ def _spawn_and_collect(request, folder, argv, cwd, target):
 
 # ---------------------------------------------------------------- entry point
 
-def launch(request, *, approval_gate=None, approval_commit=None, containment=None):
+def launch(request, *, approval_gate=None, approval_commit=None, containment=None,
+           approval_launched=None):
     """Run checks 1-7 in order. Launch only if all pass. Raises BoundaryRefusal otherwise.
 
     approval_gate defaults to fail_closed_approval_gate (non-consuming check).
@@ -343,4 +349,5 @@ def launch(request, *, approval_gate=None, approval_commit=None, containment=Non
     target = check_output(plan['output_path'], folder)
     commit = approval_commit if approval_commit is not None else fail_closed_approval_commit
     commit_approval(commit, request.run_id, request.attempt_id, row['manifest_sha256'])
-    return _spawn_and_collect(request, folder, argv, cwd, target)
+    return _spawn_and_collect(request, folder, argv, cwd, target, approval_launched,
+                              row['manifest_sha256'])

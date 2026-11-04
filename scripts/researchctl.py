@@ -35,6 +35,50 @@ class ResearchError(Exception):
     pass
 
 
+# Start gate. The child is a shim that blocks on an inherited pipe until the parent has recorded
+# the child's identity, then execs the real argv (same pid and start time). If the parent dies
+# or fails before releasing the gate, the pipe closes, the shim reads EOF and exits without ever
+# running the job, so an unrecorded job cannot outlive the worker.
+GATE_SRC = r'''import os, sys
+fd = int(sys.argv[1])
+go = os.read(fd, 1)
+os.close(fd)
+if go != b'1':
+    os._exit(125)
+try:
+    os.execvp(sys.argv[2], sys.argv[2:])
+except OSError as exc:
+    sys.stderr.write(str(exc) + "\n")
+    os._exit(127)
+'''
+
+
+def start_gated(argv, *, cwd, stdout, stderr, recorded):
+    """Spawn argv behind the start gate, call recorded(child), and only then release the job.
+
+    recorded must persist the child's identity. If it raises, the gate is closed without
+    release (the job never runs) and the exception propagates; the caller reaps the child.
+    This helper is used only on execution paths that are currently disabled.
+    """
+    gate_read, gate_write = os.pipe()
+    try:
+        child = subprocess.Popen([sys.executable, "-I", "-c", GATE_SRC, str(gate_read)] + list(argv),
+                                 cwd=cwd, stdin=subprocess.DEVNULL, stdout=stdout, stderr=stderr,
+                                 shell=False, start_new_session=True, close_fds=True,
+                                 pass_fds=(gate_read,))
+    except BaseException:
+        os.close(gate_write)
+        raise
+    finally:
+        os.close(gate_read)
+    try:
+        recorded(child)
+        os.write(gate_write, b"1")
+    finally:
+        os.close(gate_write)
+    return child
+
+
 def now():
     return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
 
@@ -362,11 +406,14 @@ def execute(project_id, run_id, *, _fault=None):
                 if interrupted:
                     code = 128 + interruption_signal
                 else:
-                    child = subprocess.Popen(submission["argv"], cwd=checkout,
-                                             stdin=subprocess.DEVNULL, stdout=stdout,
-                                             stderr=stderr, shell=False, start_new_session=True)
-                    group_owned = True
-                    run_registry.record_child(folder, token, child.pid)
+                    def record_spawned(spawned):
+                        nonlocal child, group_owned
+                        child = spawned
+                        group_owned = True
+                        run_registry.record_child(folder, token, spawned.pid)
+
+                    start_gated(submission["argv"], cwd=checkout, stdout=stdout, stderr=stderr,
+                                recorded=record_spawned)
                     run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
                     atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
                     run_ownership.fault(_fault, "execute:child_running")
