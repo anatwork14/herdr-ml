@@ -61,7 +61,7 @@ Also in `reports/herdr-live/gates/run2/`:
 
 Round 1 also created and removed a worktree (`round1/t4-wt.json`); that round's git output was printed, not saved.
 
-### CORE_RECOVERY_READY — PENDING_INDEPENDENT_REVIEW (candidate for PASS)
+### CORE_RECOVERY_READY — PASS (criteria a–c; see the consolidated run below)
 
 The defined behaviors are: (a) detach and reattach of agent output, (b) restoration of an agent to its prior session, and (c) process survival across detach. Cycle 2 tested these on the Claude agent's own terminal.
 
@@ -92,7 +92,14 @@ The defined behaviors are: (a) detach and reattach of agent output, (b) restorat
 
 Cleanup and isolation are not clean. The agent's exit before the stop was not verified: the `/exit` send outputs and exit codes were not saved. The zero-process count was taken after the stop. The default session's production pane `w1:p1` `scroll.max_offset_from_bottom` changed 1235 → 1239, and that change is unexplained. Stable inventories are otherwise identical, and two production files are hash-verified.
 
-**Verdict.** CORE_RECOVERY_READY is `PENDING_INDEPENDENT_REVIEW`. It is a candidate for PASS, but the limits above, especially the single outdated-integration restore, the absent detach-window output, the unverified pre-stop exit and the unexplained production scroll change, need review before any PASS. Two independent reviews of the final cycle (at `4322889` and `24bd1d1`) did not clear it; the corrections are at `2dfcbb3`. The closure plan is in `reports/herdr-live/recovery-closure/PLAN.md`.
+**Consolidated run (`reports/herdr-live/recovery-closure/r2/`, `2e17f9d` evidence, corrected `5cd49b4`).** Named session `mlrec-close-r2`, one agent start, isolated v11 config.
+- (a) Detach and reattach with output produced during the detached window: the observer frames show the answer at 23.930–24.600 s, inside the window (17.313–28.579 s); reattach shows the completed output (viewport snapshot, not a stream).
+- (b) Clean named-server restart without an operator `--resume`: same session `75971b1d-…`, restored argv `claude --resume 75971b1d-…`, named server as grandparent; recall after the restart returned the token after the marker.
+- (c) Process survival across detach: the claude pid kept its identity from 17.8 s through 24.8 s and answered a prompt sent while detached.
+- Cleanup: `/exit` sends exit 0; one identity poll (`GONE_OR_REUSED`) 3.35 s after the send, plus post-exit pane state; server stop exit 0; session deleted.
+- Production: stable identifiers identical before and after; `w1:p1` scroll 397 → 405 and focus moves reported as ephemeral, the scroll change accepted as unexplained transient metadata by the owner's authorization.
+
+**Verdict.** CORE_RECOVERY_READY is `PASS` on criteria (a)–(c), per the PLAN section 6 definition and the independent re-review at `5cd49b4`. Two deviations are recorded: exit was checked with one identity poll rather than the per-second polling of PLAN step 8, and the restore mechanism and launch attribution remain unproven. Crash recovery and the sidebar TUI were not tested. Manual Core release remains `BLOCKED` until an explicit owner release decision. The earlier reviews' findings are addressed in the corrected RESULT.md.
 
 ### Release decision
 
@@ -102,8 +109,8 @@ Cleanup and isolation are not clean. The agent's exit before the stop was not ve
 | MULTI_AGENT_READY | PASS (live) | `round1/t2-*-prompt.json`; trust-dialog states unsaved |
 | TERMINAL_AND_LOGS_READY | PASS (live) | `gates/run2/logs/gate.log`, `steps/pane-read.out`, `steps/pane-get.out` |
 | GIT_WORKTREE_READY | PASS (live) | `gates/run2/steps/worktree-create.out`, `wt-head.out`, `isolation-check.out`, `worktree-remove.out`, `branch-after.out` |
-| CORE_RECOVERY_READY | PENDING_INDEPENDENT_REVIEW | see (a)–(c), the final-cycle paragraph and the limits |
-| Manual Core release | BLOCKED | four gates PASS on saved evidence; CORE_RECOVERY is PENDING and its closure criteria are in `reports/herdr-live/recovery-closure/PLAN.md` |
+| CORE_RECOVERY_READY | PASS (criteria a–c; reviewed at `5cd49b4`) | consolidated run `reports/herdr-live/recovery-closure/r2/RESULT.md`; deviations: one exit identity poll instead of per-second polling (PLAN step 8), not re-run; limits: crash recovery, sidebar TUI and launch attribution untested or unproven |
+| Manual Core release | BLOCKED | awaiting an explicit owner release decision; the four live gates and CORE_RECOVERY_READY are PASS on saved evidence |
 
 Experiment-infrastructure holds (`RUN_OWNERSHIP`, `CONTAINMENT`, `QUEUE`, `PROVENANCE`, `APPROVAL`, `EXPERIMENT_RECOVERY`) are unchanged and remain BLOCKED per `2026-11-03-manual-core-continuation.md`.
 

@@ -33,7 +33,8 @@ Recommended gate verdict for CORE_RECOVERY_READY: **PENDING_INDEPENDENT_REVIEW**
 
 Notes on the timeline:
 - The prompt text contains the done marker, so the marker's first appearance (21.5 s) is the prompt echo, not the answer. The answer begins at frame 15 (23.930 s).
-- The number check (1 to 40) is taken from the transcript, `run/43-recall-transcript.txt` lines 17–56, which shows the full sequence and the marker. The frame-level check is not used as evidence of the numbers.
+- The number check (1 to 40) is taken from the transcript, `run/43-recall-transcript.txt` lines 16–56, which shows the full sequence and the marker. The frame-level check is not used as evidence of the numbers.
+- `run/20-observer-answer-check.txt` is the earlier frame check. Its `has_40` and `contains_DONE_line` flags conflict with the decoded text in `run/19-observer-timeline.txt`, so it is superseded and not used as evidence.
 - The detached interval before the prompt was about four seconds (17.313 to 21.523) with no prompt sent.
 - The token is not in the reattach capture. The attach capture shows the current viewport; the token is earlier in the transcript.
 
@@ -59,7 +60,7 @@ Notes on the timeline:
 
 - Pre-exit identity: pid 2095038, state S, pgrp 2095038, start time 475618827, no children (`run/44-pre-exit-identity.txt`). Agent and pane state captured (`run/45-*`, `run/46-*`).
 - `/exit` sent with `pane send-text w1:p1 "/exit"` (sent at 02:46:44.207 per `run/47-exit-sent.txt`) and `pane send-keys w1:p1 enter`, both exit 0 (`run/48-*`, `run/49-*`).
-- Identity check: one poll, taken 3.35 s after the send at 02:46:47.558, reported `GONE_OR_REUSED` (`run/50-exit-polls.txt`). `run/51-exit-result.txt` shows `elapsed=0s` because the loop's timer started after the first check, not from the send. This single poll does not distinguish "gone" from "reused pid". It is not the per-second polling the plan specified (PLAN.md section 1, step 8), and it was not run.
+- Identity check: one poll, taken 3.35 s after the send at 02:46:47.558, reported `GONE_OR_REUSED` (`run/50-exit-polls.txt`). `run/51-exit-result.txt` shows `elapsed=0s` because the script's timer starts when the loop begins, which is just before the first check, so it does not measure time from the send. The script was not saved in the repository; its logic is the loop described here. This single poll does not distinguish "gone" from "reused pid". It is not the per-second polling the plan specified (PLAN.md section 1, step 8), and it was not run.
 - Post-exit corroboration: `agent get close-agent` returns `agent_not_found` (`run/52-*`); the pane's foreground process is `bash` (`run/54-post-exit-process-info.json`, `run/55-post-exit-summary.txt`).
 - The restored claude process is not a child of the test shell, so its own exit code is not available.
 - Server stop: exit 0 (`run/57-stop2.exit`); pid 2095038 absent after the stop (`run/58-post-stop-check.txt`). Session delete: `deleted: true`; only `default` running (`run/59-session-delete.json`, `run/60-sessions-after-delete.json`).
@@ -73,6 +74,11 @@ Notes on the timeline:
   - Default `w1:p1` `scroll.max_offset_from_bottom`: 397 → 405. This repeats the historical pattern (1235 → 1239 in `integration-upgrade/final/`). The account owner's authorization for this run states the historical change is accepted as unexplained transient metadata; that authorization is in the conversation record, not in a repository file. This run does not establish whether the change was caused by the test, and it is not evidence of proven isolation.
 - Production hash check: both files OK before and after (`baseline/prod-hashes.txt`, `post/prod-hashes.txt`).
 - The production pane's content was not read (no `pane read` against the default session); metadata commands only.
+
+## Deviations from PLAN.md
+
+- **Exit polling (PLAN.md section 1, step 8):** the plan specified per-second identity polling for up to 60 s. This run did one identity poll, 3.35 s after the send, and then stopped the server. The section 6 criterion for "exit before stop" (send codes saved; process identity gone before stop) is met by this evidence, but the step 8 procedure was not followed. This was not corrected before the stop because no agent is running to re-test it; a repeat would require a new agent start.
+- **Scroll change acceptance:** the owner's authorization for this run (conversation record, 2026-11-04) states the historical `w1:p1` scroll change "is accepted as unexplained transient metadata, not as evidence of proven isolation". The acceptance is recorded here by quoting that authorization; it is not a separate repository file.
 
 ## Limits and untested items
 
