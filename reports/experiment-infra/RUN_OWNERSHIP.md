@@ -153,3 +153,11 @@ Logs: `reports/experiment-infra/w1-logs/`. Each file records the exact command a
 - `ownership-faults.log`: `tests/test_run_ownership_faults.py`.
 
 Concurrency tests: the local claim race uses 10 threads, the queued claim race uses 8 threads, and the P0 cross-process race uses 20 processes. Gate: OFFLINE_TESTED, backed by `w1-logs/full-suite.log` (185 tests OK). Live integration remains BLOCKED. The gate matrix files were not edited in this phase.
+
+## 11. Phase 5 recovery additions
+
+Specified in `reports/experiment-infra/RECOVERY.md` (implementation `scripts/run_recovery.py`, tests `tests/test_recovery.py`).
+
+- New run-local state `RECOVERY_FENCED`: restart recovery revoked the authority of an owner observed gone (`recovery_fence`, fence+1, identity hash recomputed). It is not proof of termination, is terminal for every mutator, never becomes `COMPLETED`, and the `run_id` is never reclaimed.
+- New queue transition: BOUND with no local claim becomes AMBIGUOUS (origin BOUND) through `queue_fence_unlaunched`, run only by recovery.
+- New named crash points: `queue_bind_task:after_commit`, `finish:after_commit`, `descendants:after_commit`, `release:begin`, `recovery_fence:before_commit`.

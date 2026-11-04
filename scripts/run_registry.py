@@ -433,6 +433,7 @@ def queue_bind_task(folder, intent_token, task_id, *, _store_home=None, _fault=N
         raise
     finally:
         db.close()
+    run_ownership.fault(_fault, 'queue_bind_task:after_commit')
 
 
 def queue_mark_ambiguous(folder, intent_token, detail='', *, _store_home=None):
@@ -944,6 +945,7 @@ def finish(folder, token, result, *, _fault=None):
         raise
     finally:
         db.close()
+    run_ownership.fault(_fault, 'finish:after_commit')
 
 
 def verified_finish(folder, token, proof, result):
@@ -1005,6 +1007,97 @@ def supersede(folder, token, proof):
                    (new_token, 'FENCED', json.dumps({'previous_fence': fence, 'fence': new_fence},
                                                     sort_keys=True)))
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+RECOVERABLE_STATES = ('CLAIMED', 'DISPATCHING', 'RUNNING', 'UNKNOWN')
+
+
+def recovery_fence(folder, observed_owner, reason, *, _fault=None):
+    """Owner-store recovery: revoke the authority of an owner observed gone. Returns the new fence.
+
+    No token is presented: the presented owner is the one recovery observed as gone,
+    and observed_owner = (owner_pid, owner_boot, owner_start) must still equal the row
+    under the write lock (compare-and-set), so a row claimed or changed after the
+    observation is never fenced by mistake. The row moves to RECOVERY_FENCED with
+    fence+1 and a recomputed identity hash; every stale token then fails _owner_row,
+    and the successor token is inert because no mutator accepts RECOVERY_FENCED.
+
+    RECOVERY_FENCED does not claim that the workload terminated, never becomes
+    COMPLETED, and never makes the run_id claimable again.
+    """
+    if not isinstance(reason, str) or not reason:
+        raise RegistryError('Recovery fencing requires a reason')
+    db = _connect(folder, create=False)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        rows = _dict_rows(db, 'SELECT * FROM run WHERE id=1')
+        if not rows:
+            raise RegistryError('No run record to fence')
+        row = rows[0]
+        if run_ownership.classify_row(row) != 'CURRENT':
+            raise RegistryError('Run identity fails verification; already fenced as legacy')
+        if row['state'] not in RECOVERABLE_STATES:
+            raise RegistryError('Only an unfinished or unknown run can be recovery-fenced')
+        if (row.get('owner_pid'), row.get('owner_boot'), row.get('owner_start')) != tuple(observed_owner):
+            raise RegistryError('Run owner changed since it was observed; rerun recovery')
+        attempt_id, fence = row['attempt_id'], row['fence']
+        new_fence = fence + 1
+        new_digest = run_ownership.ExecutionIdentity(row['run_id'], row['project'], attempt_id,
+                                                     row['manifest_sha256'], row['worker_id'], new_fence,
+                                                     row['queue_task_id']).validate().sha256()
+        new_token = run_ownership.encode_token(attempt_id, new_fence)
+        updated = db.execute("UPDATE run SET state='RECOVERY_FENCED', owner=?, fence=?, identity_sha256=? "
+                             "WHERE id=1 AND owner=? AND attempt_id=? AND fence=? AND state=?",
+                             (new_token, new_fence, new_digest, row['owner'], attempt_id, fence,
+                              row['state'])).rowcount
+        if updated != 1:
+            raise RegistryError('Run changed during recovery fencing')
+        db.execute('INSERT INTO events(owner,state,detail) VALUES (?,?,?)',
+                   (new_token, 'RECOVERY_FENCED',
+                    json.dumps({'previous_fence': fence, 'fence': new_fence, 'previous_state': row['state'],
+                                'reason': reason[:1000]}, sort_keys=True)))
+        run_ownership.fault(_fault, 'recovery_fence:before_commit')
+        db.execute('COMMIT')
+        return new_fence
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
+    except BaseException:
+        _rollback_or_unreadable(db)
+        raise
+    finally:
+        db.close()
+
+
+def queue_fence_unlaunched(folder, *, _store_home=None):
+    """Recovery: fence a BOUND queue row that has no local claim AMBIGUOUS (origin BOUND).
+
+    Run only when no submitter or worker for this run is active. The bound task may
+    still be in the external queue, so the row is never re-released, re-claimed or
+    resubmitted; AMBIGUOUS from BOUND has no resolution path. Returns the phase.
+    """
+    db = _queue_connect(folder, _store_home)
+    try:
+        db.execute('BEGIN IMMEDIATE')
+        row = db.execute('SELECT run_id, phase FROM queue_binding WHERE run_folder=?',
+                         (_folder_key(folder),)).fetchone()
+        if row is None:
+            db.execute('COMMIT')
+            return None
+        run_id, phase = row
+        if phase == 'BOUND' and inspect(folder) is None:
+            _mark_ambiguous(db, run_id, 'BOUND', 'recovery: bound task without a launched child')
+            phase = 'AMBIGUOUS'
+        db.execute('COMMIT')
+        return phase
     except sqlite3.Error as exc:
         _safe_rollback(db)
         raise _unreadable() from exc

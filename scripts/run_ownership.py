@@ -25,7 +25,10 @@ STALE_TOKEN = 'Stale owner or malformed fencing token'
 # Run-local states (run.state). UNKNOWN is the ambiguous/unknown-outcome state:
 # a leader exit without verified whole-workload termination.
 LOCAL_STATES = ('CLAIMED', 'DISPATCHING', 'RUNNING', 'UNKNOWN', 'FENCED',
-                'COMPLETED', 'FAILED', 'INTERRUPTED')
+                'COMPLETED', 'FAILED', 'INTERRUPTED', 'RECOVERY_FENCED')
+# RECOVERY_FENCED (Phase 5): restart recovery revoked a dead owner's authority.
+# It is NOT evidence that the workload terminated, it is terminal for every
+# mutator, it never becomes COMPLETED and the run_id is never reclaimed.
 VERIFIED_OUTCOMES = ('COMPLETED', 'FAILED', 'INTERRUPTED')
 
 # Queue index phases (queue_binding.phase).
@@ -42,16 +45,22 @@ CRASH_POINTS = frozenset({
     'queue_intent:before_commit',
     'queue_intent:after_commit',
     'queue_bind_task:before_commit',
+    'queue_bind_task:after_commit',
     'queue_claim:after_commit',
     'claim:before_commit',
     'claim:after_commit',
     'advance:before_commit',
     'finish:before_commit',
+    'finish:after_commit',
     'schema:after_run_table',
     'execute:claimed',
     'execute:child_running',
     'execute:leader_exited',
     'execute:before_release',
+    # Phase 5 recovery boundaries (scripts/run_recovery.py).
+    'descendants:after_commit',
+    'release:begin',
+    'recovery_fence:before_commit',
 })
 
 _HEX64 = re.compile(r'[0-9a-f]{64}')
