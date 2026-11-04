@@ -110,7 +110,7 @@ Cleanup and isolation are not clean. The agent's exit before the stop was not ve
 | TERMINAL_AND_LOGS_READY | PASS (live) | `gates/run2/logs/gate.log`, `steps/pane-read.out`, `steps/pane-get.out` |
 | GIT_WORKTREE_READY | PASS (live) | `gates/run2/steps/worktree-create.out`, `wt-head.out`, `isolation-check.out`, `worktree-remove.out`, `branch-after.out` |
 | CORE_RECOVERY_READY | PASS (criteria a–c; reviewed at `5cd49b4`) | consolidated run `reports/herdr-live/recovery-closure/r2/RESULT.md`; deviations: one exit identity poll instead of per-second polling (PLAN step 8), not re-run; limits: crash recovery, sidebar TUI and launch attribution untested or unproven |
-| Manual Core release | BLOCKED | awaiting an explicit owner release decision; the four live gates and CORE_RECOVERY_READY are PASS on saved evidence |
+| Manual Core release | APPROVED — limited manual-only release (owner decision 2026-11-04, reviewed head `88a37f3`) | all five gates PASS with the limits above; scope, excluded capabilities, SHAs and deviations: `reports/reviews/2026-11-04-manual-core-owner-decision.md`; independent reviews: `reports/herdr-live/recovery-closure/review/independent-reviews.md` |
 
 Experiment-infrastructure holds (`RUN_OWNERSHIP`, `CONTAINMENT`, `QUEUE`, `PROVENANCE`, `APPROVAL`, `EXPERIMENT_RECOVERY`) are unchanged and remain BLOCKED per `2026-11-03-manual-core-continuation.md`.
 
@@ -129,4 +129,4 @@ Experiment-infrastructure holds (`RUN_OWNERSHIP`, `CONTAINMENT`, `QUEUE`, `PROVE
   - MEDIUM, GIT gate partly supported: confirmed; the re-run now saves the git and worktree outputs.
   - LOW items (MULTI_AGENT round-1 states, HERDR_WORKSPACE pane-run output, baseline timing, wording) are reflected above.
 
-**Pending:** a fresh review of this revision, covering the re-run gate evidence, the reworded cycle-2 claims, and the CORE_RECOVERY candidate. CORE_RECOVERY stays PENDING until that review.
+**Status (2026-11-04).** The re-run gate evidence and the cycle-2 wording were reviewed in the earlier rounds. CORE_RECOVERY_READY was reviewed at `5cd49b4` and is PASS on criteria (a)–(c). The owner approved a limited manual-only Manual Core release on this basis, with the deviations recorded in `reports/reviews/2026-11-04-manual-core-owner-decision.md`. Experiment-infrastructure holds remain BLOCKED.
