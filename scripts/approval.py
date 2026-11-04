@@ -16,8 +16,8 @@ state, the revocation sequence state or the revocation list.
 Ownership checks use explicit uid allowlists supplied by the caller:
 admin_uids (owners permitted for trust material) and worker_uids (uids the
 worker runs as; these must not own any trust material). The verifier's own uid
-is not special. Production mode requires both sets. Test-only mode skips
-ownership checks and requires a TEST-ONLY label and a temp-directory anchor.
+is not special. Both sets are always required. There is no test mode: tests
+supply verifiers through the public protocols and anchors through the loader.
 
 The stdlib provides HMAC-SHA256 only. A symmetric MAC proves that the holder of
 the signer's key produced the approval, so the verifier is as trusted as the
@@ -59,7 +59,6 @@ DOMAIN_REVOCATION = b'herdr-ml-revocation-list-v1\n'
 # environment override, so a worker cannot redirect verification.
 DEFAULT_TRUST_ANCHOR_DIR = '/etc/herdr-ml/trust/execution-approval'
 REVOCATION_STATE_FILE = 'revocation-sequence.json'
-TEST_ONLY_PREFIX = 'TEST-ONLY-'
 MIN_KEY_BYTES = 32
 MAX_KEY_BYTES = 4096
 MAX_ANCHOR_BYTES = 64 * 1024
@@ -179,62 +178,6 @@ def _is_abs(path):
     return isinstance(path, (str, os.PathLike)) and os.path.isabs(os.fspath(path))
 
 
-# Test-mode capability. Private: never exported, compared by identity. Only the helper
-# the test support helper module may obtain it, through _grant_test_capability().
-TEST_CAPABILITY = object()
-_TEST_SUPPORT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
-                                 'tests', 'support') + os.sep
-
-
-def _grant_test_capability():
-    """Return TEST_CAPABILITY only to a caller living in the test support directory."""
-    caller = os.path.realpath(sys._getframe(1).f_code.co_filename)
-    if not caller.startswith(_TEST_SUPPORT_DIR):
-        raise VerificationError(TRUST_ANCHOR_INVALID, 'test capability is available to the test support directory only')
-    return TEST_CAPABILITY
-
-
-def _test_root(test_root, code):
-    """The directory a test-only anchor or state must live under.
-
-    It must be passed explicitly by the test and live under a FIXED temp base: /tmp, or the
-    uid's runtime directory /run/user/<uid> when that exists. TMPDIR and tempfile.gettempdir()
-    are never read. A root that is, contains, or lies under HOME is refused.
-    """
-    if test_root is None:
-        raise VerificationError(code, 'test-only mode requires an explicit test_root')
-    if not _is_abs(test_root):
-        raise VerificationError(code, 'test_root must be absolute')
-    root = os.path.realpath(os.fspath(test_root))
-    if root == os.sep:
-        raise VerificationError(code, 'test_root cannot be the filesystem root')
-    try:
-        info = os.lstat(root)
-    except OSError as exc:
-        raise VerificationError(code, 'test_root is not readable') from exc
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid()
-            or stat.S_IMODE(info.st_mode) != 0o700):
-        raise VerificationError(code, 'test_root must be a 0700 directory owned by the current uid')
-    # Test-mode guard only, not a production control: production mode refuses test_root outright.
-    home = os.path.realpath(os.path.expanduser('~'))
-    if _within(home, root) or _within(root, home):  # HOME, above HOME, or under HOME
-        raise VerificationError(code, 'test_root must not be, contain or lie under the home directory')
-    bases = [os.path.realpath('/tmp')]
-    runtime = '/run/user/%d' % os.geteuid()
-    if os.path.isdir(runtime):
-        bases.append(os.path.realpath(runtime))
-    if not any(root != base and _within(root, base) for base in bases):
-        raise VerificationError(code, 'test_root must be a directory under /tmp or the uid runtime directory')
-    try:
-        for entry in os.scandir(root):
-            info = entry.stat(follow_symlinks=False)
-            if stat.S_ISLNK(info.st_mode) or info.st_uid != os.geteuid():
-                raise VerificationError(code, 'test_root holds a symlink or an entry owned by another uid')
-    except OSError as exc:
-        raise VerificationError(code, 'test_root is not listable') from exc
-    return root
-
-
 def _within(path, base):
     return path == base or path.startswith(base.rstrip(os.sep) + os.sep)
 
@@ -276,7 +219,7 @@ def _check_owner(info, path, admin, workers, code):
                                 % (info.st_uid, path))
 
 
-def _check_directory(path, *, admin, workers, test_only, code):
+def _check_directory(path, *, admin, workers, code):
     try:
         info = os.lstat(path)
     except OSError as exc:
@@ -285,8 +228,7 @@ def _check_directory(path, *, admin, workers, test_only, code):
         raise VerificationError(code, 'must be a plain directory')
     if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise VerificationError(code, 'group- or other-writable directory')
-    if not test_only:
-        _check_owner(info, path, admin, workers, code)
+    _check_owner(info, path, admin, workers, code)
     return info
 
 
@@ -294,14 +236,14 @@ def _check_ancestors(real, *, admin, workers, code=TRUST_ANCHOR_INVALID):
     """Every directory from real up to the filesystem root must pass _check_directory."""
     current = real
     while True:
-        _check_directory(current, admin=admin, workers=workers, test_only=False, code=code)
+        _check_directory(current, admin=admin, workers=workers, code=code)
         parent = os.path.dirname(current)
         if parent == current:
             return
         current = parent
 
 
-def _check_file(path, *, admin, workers, test_only, code):
+def _check_file(path, *, admin, workers, code):
     try:
         info = os.lstat(path)
     except FileNotFoundError as exc:
@@ -312,8 +254,7 @@ def _check_file(path, *, admin, workers, test_only, code):
         raise VerificationError(code, 'must be a regular file')
     if info.st_mode & 0o077:
         raise VerificationError(code, 'readable or writable by group or others')
-    if not test_only:
-        _check_owner(info, path, admin, workers, code)
+    _check_owner(info, path, admin, workers, code)
     return info
 
 
@@ -388,38 +329,31 @@ class UnprovisionedAsymmetricVerifier(SignatureVerifier):
 
 
 class TrustAnchor(object):
-    def __init__(self, anchor_id, workers, signers, revoker, verifier, test_only=False):
+    def __init__(self, anchor_id, workers, signers, revoker, verifier):
         self.anchor_id = anchor_id
         self.workers = frozenset(workers)
         self.signers = frozenset(signers)
         self.revoker = revoker
         self.verifier = verifier
-        self.test_only = test_only
 
 
 # ---------------------------------------------------------------- trust anchor loading
 
-def _load_key(path, *, admin, workers, test_only):
-    _check_file(path, admin=admin, workers=workers, test_only=test_only, code=TRUST_ANCHOR_INVALID)
+def _load_key(path, *, admin, workers):
+    _check_file(path, admin=admin, workers=workers, code=TRUST_ANCHOR_INVALID)
     key = read_bounded(path, MAX_KEY_BYTES, missing=TRUST_ANCHOR_INVALID, unsafe=TRUST_ANCHOR_INVALID)
     if len(key) < MIN_KEY_BYTES:
         raise VerificationError(TRUST_ANCHOR_INVALID, 'key too short')
     return key
 
 
-def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_uids=None,
-                      worker_uids=None, test_root=None):
+def load_trust_anchor(anchor_dir, *, repo_root, run_dir, admin_uids=None, worker_uids=None):
     """Load an operator-provisioned anchor.
 
-    Production mode requires admin_uids and worker_uids. Every directory from the anchor
-    up to the root, the anchor.json file and each key file must be owned by an admin uid
-    that is not a worker uid, and must not be group- or other-writable (directories) or
-    group- or other-accessible (files).
-
-    test_only=True is for the test suite only: it requires the TEST-ONLY- label, a
-    directory under the test_root the test passes explicitly (under /tmp or the uid
-    runtime directory, never TMPDIR), and skips ownership checks. test_root is refused in
-    production mode.
+    admin_uids and worker_uids are required. Every directory from the anchor up to the
+    root, the anchor.json file and each key file must be owned by an admin uid that is not
+    a worker uid, and must not be group- or other-writable (directories) or group- or
+    other-accessible (files). There is no other mode.
     """
     anchor_dir = _plain_path(anchor_dir, TRUST_ANCHOR_INVALID)
     try:
@@ -432,18 +366,11 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_
         raise VerificationError(TRUST_ANCHOR_INVALID, 'anchor must be a plain directory')
     real = os.path.realpath(anchor_dir)
     _check_location(real, repo_root, run_dir)
-    if test_only:
-        admin, workers = (), ()
-        if not _within(real, _test_root(test_root, TRUST_ANCHOR_INVALID)):
-            raise VerificationError(TRUST_ANCHOR_INVALID, 'test-only anchors must live under test_root')
-    else:
-        if test_root is not None:
-            raise VerificationError(TRUST_ANCHOR_INVALID, 'test_root is only valid in test-only mode')
-        admin, workers = _uid_sets(admin_uids, worker_uids, TRUST_ANCHOR_INVALID)
-        _check_ancestors(real, admin=admin, workers=workers)
-    _check_directory(real, admin=admin, workers=workers, test_only=test_only, code=TRUST_ANCHOR_INVALID)
+    admin, workers = _uid_sets(admin_uids, worker_uids, TRUST_ANCHOR_INVALID)
+    _check_ancestors(real, admin=admin, workers=workers)
+    _check_directory(real, admin=admin, workers=workers, code=TRUST_ANCHOR_INVALID)
     anchor_file = os.path.join(real, 'anchor.json')
-    _check_file(anchor_file, admin=admin, workers=workers, test_only=test_only, code=TRUST_ANCHOR_INVALID)
+    _check_file(anchor_file, admin=admin, workers=workers, code=TRUST_ANCHOR_INVALID)
     document = parse_canonical(
         read_bounded(anchor_file, MAX_ANCHOR_BYTES, missing=TRUST_ANCHOR_INVALID, unsafe=TRUST_ANCHOR_INVALID),
         MAX_ANCHOR_BYTES, TRUST_ANCHOR_INVALID, TRUST_ANCHOR_INVALID, TRUST_ANCHOR_INVALID,
@@ -456,8 +383,6 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_
     anchor_id = document['anchor_id']
     if not em._is_id(anchor_id):
         raise VerificationError(TRUST_ANCHOR_INVALID, 'anchor id')
-    if test_only != anchor_id.startswith(TEST_ONLY_PREFIX):
-        raise VerificationError(TRUST_ANCHOR_INVALID, 'test-only label must match test_only mode')
     workers_listed = document['workers']
     signers = document['signers']
     if (not isinstance(workers_listed, list) or not workers_listed
@@ -472,28 +397,19 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, test_only=False, admin_
         raise VerificationError(TRUST_ANCHOR_INVALID, 'revoker must be a listed signer')
     keys = {}
     for signer, filename in signers.items():
-        keys[signer] = _load_key(os.path.join(real, filename), admin=admin, workers=workers,
-                                 test_only=test_only)
+        keys[signer] = _load_key(os.path.join(real, filename), admin=admin, workers=workers)
     return TrustAnchor(anchor_id, workers_listed, signers, document['revoker'],
-                       HmacSha256Verifier(keys), test_only=test_only)
+                       HmacSha256Verifier(keys))
 
 
 # ---------------------------------------------------------------- state directories
 
-def _open_state_dir(directory, *, repo_root, run_dir, admin_uids, worker_uids, test_only, code,
-                    test_root=None):
+def _open_state_dir(directory, *, repo_root, run_dir, admin_uids, worker_uids, code):
     real = _plain_path(directory, code)
     _check_location(real, repo_root, run_dir, code)
-    if test_only:
-        admin, workers = (), ()
-        if not _within(real, _test_root(test_root, code)):
-            raise VerificationError(code, 'test-only state must live under test_root')
-    else:
-        if test_root is not None:
-            raise VerificationError(code, 'test_root is only valid in test-only mode')
-        admin, workers = _uid_sets(admin_uids, worker_uids, code)
-        _check_ancestors(real, admin=admin, workers=workers, code=code)
-    _check_directory(real, admin=admin, workers=workers, test_only=test_only, code=code)
+    admin, workers = _uid_sets(admin_uids, worker_uids, code)
+    _check_ancestors(real, admin=admin, workers=workers, code=code)
+    _check_directory(real, admin=admin, workers=workers, code=code)
     return real, admin, workers
 
 
@@ -504,14 +420,11 @@ class RevocationState(object):
     closed. A list with a lower sequence than the recorded one is refused.
     """
 
-    def __init__(self, directory, *, repo_root, run_dir, anchor_id, admin_uids=None, worker_uids=None,
-                 test_only=False, test_root=None):
+    def __init__(self, directory, *, repo_root, run_dir, anchor_id, admin_uids=None, worker_uids=None):
         self.directory, self._admin, self._workers = _open_state_dir(
             directory, repo_root=repo_root, run_dir=run_dir, admin_uids=admin_uids,
-            worker_uids=worker_uids, test_only=test_only, code=REVOCATION_STATE_INVALID,
-            test_root=test_root)
+            worker_uids=worker_uids, code=REVOCATION_STATE_INVALID)
         self.anchor_id = anchor_id
-        self._test_only = test_only
 
     def _path(self):
         return os.path.join(self.directory, REVOCATION_STATE_FILE)
@@ -522,7 +435,7 @@ class RevocationState(object):
             os.lstat(path)
         except FileNotFoundError as exc:
             raise VerificationError(REVOCATION_STATE_MISSING, 'revocation sequence not provisioned') from exc
-        _check_file(path, admin=self._admin, workers=self._workers, test_only=self._test_only,
+        _check_file(path, admin=self._admin, workers=self._workers,
                     code=REVOCATION_STATE_INVALID)
         document = parse_canonical(
             read_bounded(path, MAX_STATE_BYTES, missing=REVOCATION_STATE_MISSING,
@@ -617,13 +530,10 @@ class ConsumptionStore(object):
     Every state change is an atomic replace of the attempt claim file.
     """
 
-    def __init__(self, directory, *, repo_root, run_dir, admin_uids=None, worker_uids=None,
-                 test_only=False, test_root=None):
+    def __init__(self, directory, *, repo_root, run_dir, admin_uids=None, worker_uids=None):
         self.directory, self._admin, self._workers = _open_state_dir(
             directory, repo_root=repo_root, run_dir=run_dir, admin_uids=admin_uids,
-            worker_uids=worker_uids, test_only=test_only, code=CONSUMPTION_STORE_INVALID,
-            test_root=test_root)
-        self._test_only = test_only
+            worker_uids=worker_uids, code=CONSUMPTION_STORE_INVALID)
 
     def _read(self, name, *, attempt):
         """None when absent. Any irregular, unsafe or malformed claim refuses; nothing is written."""
@@ -634,7 +544,7 @@ class ConsumptionStore(object):
             return None
         except OSError as exc:
             raise VerificationError(CONSUMPTION_STORE_INVALID, 'claim unreadable') from exc
-        _check_file(path, admin=self._admin, workers=self._workers, test_only=self._test_only,
+        _check_file(path, admin=self._admin, workers=self._workers,
                     code=CONSUMPTION_STORE_INVALID)
         document = parse_canonical(
             read_bounded(path, MAX_CLAIM_BYTES, missing=CONSUMPTION_STORE_INVALID,
@@ -669,7 +579,7 @@ class ConsumptionStore(object):
                          | getattr(os, 'O_CLOEXEC', 0), 0o600)
         except FileExistsError as exc:
             # An existing claim must still be a private, administrator-owned file.
-            _check_file(path, admin=self._admin, workers=self._workers, test_only=self._test_only,
+            _check_file(path, admin=self._admin, workers=self._workers,
                         code=CONSUMPTION_STORE_INVALID)
             raise VerificationError(refusal, 'already claimed') from exc
         except OSError as exc:
@@ -958,21 +868,8 @@ def _authorize(approval_bytes, anchor, *, revocation_bytes, revocation_state, ex
             'attempt_id': body['attempt_id'], 'manifest_sha256': body['manifest_sha256']}
 
 
-def _require_test_context(anchor, store, revocation_state, test_capability=None):
-    """A test anchor is accepted only together with test-only state, and never the reverse.
-
-    Test-only state can only be built with an explicit 0700 test_root owned by this uid.
-    """
-    test_flags = {bool(anchor.test_only), bool(getattr(store, '_test_only', False)),
-                  bool(getattr(revocation_state, '_test_only', False))}
-    if len(test_flags) != 1:
-        raise VerificationError(TRUST_ANCHOR_INVALID, 'test anchor needs an explicit test context')
-    if True in test_flags and test_capability is not TEST_CAPABILITY:
-        raise VerificationError(TRUST_ANCHOR_INVALID, 'test anchor needs the test capability')
-
-
 def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, store,
-                    now=None, test_capability=None):
+                    now=None):
     """Authorize and consume one attempt. Raises VerificationError on any failure.
 
     expected keys: worker_id, run_id, attempt_id, manifest_sha256, resource_class,
@@ -982,7 +879,6 @@ def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_stat
     ConsumptionStore.mark_launched. Launchers use consume_for_attempt instead.
     """
     now = now or _utcnow()
-    _require_test_context(anchor, store, revocation_state, test_capability)
     record = _authorize(approval_bytes, anchor, revocation_bytes=revocation_bytes,
                         revocation_state=revocation_state, expected=expected, now=now)
     store.claim(record['approval_id'], run_id=record['run_id'], attempt_id=record['attempt_id'],
@@ -998,10 +894,9 @@ class AttemptContext(object):
     """
 
     def __init__(self, *, store, anchor, revocation_state, revocations, worker_id, resource_class,
-                 scope, output, test_capability=None):
+                 scope, output):
         if not callable(revocations) or not em._is_id(worker_id) or not em._is_id(resource_class):
             raise VerificationError(APPROVAL_MALFORMED, 'attempt context')
-        self.test_capability = test_capability
         self.store = store
         self.anchor = anchor
         self.revocation_state = revocation_state
@@ -1019,7 +914,6 @@ def _checked_grant(run_id, attempt_id, approval, manifest_digest, now, ctx, *, w
         raise VerificationError(APPROVAL_MALFORMED, 'now must be timezone-aware')
     if not isinstance(approval, (bytes, bytearray)):
         raise VerificationError(APPROVAL_MALFORMED, 'approval must be canonical bytes')
-    _require_test_context(ctx.anchor, ctx.store, ctx.revocation_state, ctx.test_capability)
     expected = {'worker_id': ctx.worker_id, 'run_id': run_id, 'attempt_id': attempt_id,
                 'manifest_sha256': manifest_digest, 'resource_class': ctx.resource_class,
                 'scope': ctx.scope, 'output': ctx.output}
@@ -1119,7 +1013,6 @@ class HandoffVerifier(abc.ABC):
     is not a handoff verifier, whatever it holds.
     """
     algorithm = None
-    test_only = False
 
     @abc.abstractmethod
     def verify(self, key_id, domain, message, value_hex):
@@ -1135,57 +1028,27 @@ class UnprovisionedHandoffVerifier(HandoffVerifier):
                                 'no asymmetric handoff anchor is provisioned; refusing')
 
 
-class TestOnlyHandoffVerifier(HandoffVerifier):
-    """Test-only stand-in that exercises the binding checks without cryptography.
-
-    It accepts one fixed value for listed key ids. It requires a TEST-ONLY- label and is
-    refused by select_handoff_verifier in production mode.
-    """
-    algorithm = HANDOFF_ALGORITHM
-    test_only = True
-
-    def __init__(self, label, key_ids):
-        if not isinstance(label, str) or not label.startswith(TEST_ONLY_PREFIX):
-            raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE, 'test-only verifier needs a TEST-ONLY label')
-        self.label = label
-        self._key_ids = frozenset(key_ids)
-
-    def verify(self, key_id, domain, message, value_hex):
-        return key_id in self._key_ids and domain == DOMAIN_HANDOFF and value_hex == 'test-only-accept'
-
-
-def select_handoff_verifier(*, test_only, injected=None):
-    """Production selects only a non-test verifier, and none is provisioned today."""
+def select_handoff_verifier(injected=None):
+    """The unprovisioned verifier unless an asymmetric HandoffVerifier is injected."""
     if injected is None:
         return UnprovisionedHandoffVerifier()
     if not isinstance(injected, HandoffVerifier) or injected.algorithm != HANDOFF_ALGORITHM:
         raise VerificationError(HANDOFF_VERIFIER_UNPROVISIONED, 'verifier must be asymmetric')
-    if injected.test_only != test_only:
-        raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE,
-                                'test-only verifiers are not selectable in production mode')
     return injected
 
 
-def verify_handoff(handoff_bytes, verifier, *, store, now, expected, mode='production'):
+def verify_handoff(handoff_bytes, verifier, *, store, now, expected):
     """Worker-side check of a launch handoff. Returns the body when every check passes.
 
     expected keys: anchor_id, worker_id, run_id, attempt_id, manifest_sha256. The handoff is
     authorized only by a verifier signature (public key) AND by the consumption store's
     current record for the attempt, which the worker can read but never write.
 
-    mode is 'production' (the default) or the private test capability object (identity
-    comparison). A test-only verifier is accepted only with the capability, and a production
-    call refuses it. Any other value, including the string 'test', is refused.
+    The verifier is the public HandoffVerifier protocol with algorithm HANDOFF_ALGORITHM.
+    There is no test mode: a verifier is accepted only on its signature decisions.
     """
-    is_test = mode is TEST_CAPABILITY
-    if not is_test and mode != 'production':
-        raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE, 'unknown mode')
     if not isinstance(verifier, HandoffVerifier) or verifier.algorithm != HANDOFF_ALGORITHM:
         raise VerificationError(HANDOFF_VERIFIER_UNPROVISIONED, 'no asymmetric verifier')
-    if isinstance(verifier, TestOnlyHandoffVerifier) != is_test and not (
-            is_test and isinstance(verifier, UnprovisionedHandoffVerifier)):
-        raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE,
-                                'test-only verifiers are accepted only with mode=test')
     body = parse_canonical(handoff_bytes, MAX_HANDOFF_BYTES, HANDOFF_MALFORMED, HANDOFF_NONCANONICAL,
                            HANDOFF_MALFORMED, HANDOFF_MALFORMED)
     _keys(body, HANDOFF_KEYS, HANDOFF_MALFORMED)

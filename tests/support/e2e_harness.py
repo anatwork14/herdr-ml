@@ -40,7 +40,7 @@ for _path in (str(SCRIPTS), str(TESTS)):
         sys.path.insert(0, _path)
 
 import approval as ap  # noqa: E402
-from support.approval_test_mode import TEST_MODE  # noqa: E402
+import support.approval_fixtures as fx  # noqa: E402
 import containment_backend  # noqa: E402
 import execution_manifest as em  # noqa: E402
 import run_ownership  # noqa: E402
@@ -230,7 +230,7 @@ def build_case(base, marker, *, containment, with_anchor, crash_point=None):
         store_dir = base / 'consumed'
         store_dir.mkdir(mode=0o700)
         anchor = ap.load_trust_anchor(str(anchor_dir), repo_root=str(source), run_dir=str(folder),
-                                      test_only=True, test_root=str(base))
+                                      **fx.PRODUCTION_UIDS)
         ap.provision_revocation_state(str(state_dir), anchor_id=ANCHOR_ID)
         now = _utc_now()
         approval = ap.issue_approval(
@@ -324,14 +324,13 @@ def load_approval_inputs(case, *, repo_root, run_dir):
         anchor = ap.load_trust_anchor(ap.DEFAULT_TRUST_ANCHOR_DIR, repo_root=repo_root, run_dir=run_dir,
                                       admin_uids=(0,), worker_uids=(os.getuid(),))
         raise AssertionError('unreachable on this host: production anchor loaded %r' % anchor.anchor_id)
-    # The test-only root is the case's own base directory, passed explicitly (never TMPDIR).
-    test_root = case['base']
-    anchor = ap.load_trust_anchor(case['anchor'], repo_root=repo_root, run_dir=run_dir, test_only=True,
-                                  test_root=test_root)
+    # The production loader and stores, with explicit uid allowlists and no special directory.
+    anchor = ap.load_trust_anchor(case['anchor'], repo_root=repo_root, run_dir=run_dir,
+                                  **fx.PRODUCTION_UIDS)
     state = ap.RevocationState(case['state'], repo_root=repo_root, run_dir=run_dir,
-                               anchor_id=anchor.anchor_id, test_only=True, test_root=test_root)
-    store = ap.ConsumptionStore(case['store'], repo_root=repo_root, run_dir=run_dir, test_only=True,
-                                test_root=test_root)
+                               anchor_id=anchor.anchor_id, **fx.PRODUCTION_UIDS)
+    store = ap.ConsumptionStore(case['store'], repo_root=repo_root, run_dir=run_dir,
+                                **fx.PRODUCTION_UIDS)
     return anchor, state, store
 
 
@@ -447,7 +446,7 @@ def worker_main(config_path, marker):
                           'manifest_sha256': digest, 'resource_class': manifest['resource_class'],
                           'scope': {'project': manifest['project'], 'operation': manifest['operation']},
                           'output': manifest['output']},
-                store=store, test_capability=TEST_MODE)
+                store=store)
         except em.VerificationError as exc:
             raise Refused('VALIDATION', exc.code, exc.detail)
         stage('VALIDATION', approval_id=record['approval_id'], anchor_id=record['anchor_id'])

@@ -92,7 +92,7 @@ Canonical JSON (sorted keys, no whitespace, ASCII). Signature covers `DOMAIN_HAN
 6. `now` is within the window (`HANDOFF_NOT_YET_VALID`, `HANDOFF_EXPIRED`).
 7. The store's current attempt claim exists (`HANDOFF_NOT_CONSUMED`), is not fenced (`HANDOFF_FENCED`), is `consumed_not_launched` (`HANDOFF_ALREADY_LAUNCHED`), and its approval and grant digests match (`HANDOFF_CONSUMPTION_MISMATCH`).
 
-The default verifier is `UnprovisionedHandoffVerifier`. It refuses every handoff. `select_handoff_verifier(test_only=False, injected=...)` refuses a test-only verifier in production mode (`HANDOFF_VERIFIER_NOT_SELECTABLE`). The HMAC verifier is not a `HandoffVerifier`, so it cannot authorize a handoff.
+The default verifier is `UnprovisionedHandoffVerifier`. It refuses every handoff. `select_handoff_verifier(injected=None)` returns it unless an asymmetric `HandoffVerifier` is injected. (Superseded: the test-only verifier and its production-mode refusal were removed, see below.) The HMAC verifier is not a `HandoffVerifier`, so it cannot authorize a handoff.
 
 ## 7. What the verifier can and cannot prove
 
@@ -130,3 +130,11 @@ The worker must be able to read the store (to call `read_attempt`) but must not 
 - Orphan `.tmp` state files from a crash at `launch:before_replace` or `fence:before_replace` are left in place. They are ignored by the store and can be removed by an operator.
 - Integration into `scripts/researchctl.py` is not done. The launcher-side call site is `consume_for_attempt`, after the W1 checks.
 - The worker-side reader of `verify_handoff` and the real signing service are not implemented.
+
+## Test-only acceptance removed from production code (HIGH repair)
+
+`scripts/approval.py` no longer holds any test-only acceptance path. Removed: `TEST_CAPABILITY`, `_grant_test_capability` and its frame check, `test_only` on `TrustAnchor`, the loader, the stores and `HandoffVerifier`, `TestOnlyHandoffVerifier` and the `isinstance` checks against it, `verify_handoff(mode=...)`, `test_capability=` on `verify_approval` and `AttemptContext`, `_require_test_context`, `_test_root`, `test_root` and the fixed-temp-base exception, and the `TEST-ONLY-` label rule. Every anchor, state directory and store now goes through the production ownership, location and ancestor checks with explicit `admin_uids` and `worker_uids`.
+
+Tests build their inputs in `tests/support/approval_fixtures.py`: a private 0700 base inside the checkout (git-ignored `.test-tmp/`, because the production loader refuses world-writable ancestors such as `/tmp`), explicit uid allowlists (current uid and root as admin, a disjoint worker uid), a stand-in `repo_root` argument, and `FixedAcceptHandoffVerifier`, an ordinary implementation of the public `HandoffVerifier` protocol. `tests/test_approval_ast_guard.py` AST-parses every module under `scripts/` and fails on the names `TEST_CAPABILITY`, `test_only`, `TestOnlyHandoffVerifier` (and related helper names), `mode='test'`, any import of `tests` or `support`, and `getattr`/`vars`/`setattr`/`gc`/`sys.modules['approval']` on the approval module from other scripts.
+
+Residual: in-process code added to `scripts/` stays outside the threat model; it can already import and call anything. The AST guard detects only the named patterns. A caller-supplied `HandoffVerifier` is trusted for its signature decision by design.

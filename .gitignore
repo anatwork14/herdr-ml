@@ -21,3 +21,4 @@ logs/
 *.pt
 *.pth
 .DS_Store
+.test-tmp/

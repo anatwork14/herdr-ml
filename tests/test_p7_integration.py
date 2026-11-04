@@ -23,7 +23,7 @@ SCRIPTS = REPO / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(REPO / 'tests'))
 import approval as ap  # noqa: E402
-from support.approval_test_mode import TEST_MODE  # noqa: E402
+import support.approval_fixtures as fx  # noqa: E402
 import execution_boundary as eb  # noqa: E402
 import process_identity  # noqa: E402
 import researchctl  # noqa: E402
@@ -53,14 +53,16 @@ class AdapterFixture(teb.BoundaryFixture):
     def setUp(self):
         super().setUp()
         self.claim_local()
-        self.run_dir = self.temp / 'approval-run'
+        self.ap_temp_dir, ap_temp = fx.make_temp_dir()
+        self.addCleanup(self.ap_temp_dir.cleanup)
+        self.run_dir = ap_temp / 'approval-run'
         self.run_dir.mkdir()
-        self.store_dir = self.temp / 'consumed'
+        self.store_dir = ap_temp / 'consumed'
         self.store_dir.mkdir(mode=0o700)
-        self.state_dir = self.temp / 'state'
+        self.state_dir = ap_temp / 'state'
         self.state_dir.mkdir(mode=0o700)
-        opts = {'repo_root': REPO, 'run_dir': self.run_dir, 'test_only': True, 'test_root': str(self.temp)}
-        self.anchor = ap.load_trust_anchor(str(tac.write_anchor(self.temp / 'TEST-ONLY-trust')), **opts)
+        opts = fx.loader_options(self.run_dir)
+        self.anchor = ap.load_trust_anchor(str(tac.write_anchor(ap_temp / 'TEST-ONLY-trust')), **opts)
         ap.provision_revocation_state(str(self.state_dir), anchor_id=tac.ANCHOR_ID)
         self.rev_state = ap.RevocationState(str(self.state_dir), anchor_id=tac.ANCHOR_ID, **opts)
         self.store = ap.ConsumptionStore(str(self.store_dir), **opts)
@@ -68,8 +70,7 @@ class AdapterFixture(teb.BoundaryFixture):
                                              sequence=1, approval_ids=(), manifest_sha256s=())
         self.ctx = ap.AttemptContext(store=self.store, anchor=self.anchor, revocation_state=self.rev_state,
                                      revocations=lambda: self.rev_bytes, worker_id='worker-1',
-                                     resource_class='cpu-diagnostic', scope=tac.SCOPE, output=tac.OUTPUT,
-                                     test_capability=TEST_MODE)
+                                     resource_class='cpu-diagnostic', scope=tac.SCOPE, output=tac.OUTPUT)
         self.approval = ap.issue_approval(
             self.anchor, 'approver-a', approval_id='appr-1', worker_id='worker-1', run_id='run-1',
             attempt_id=teb.ATTEMPT, manifest_sha256=self.digest, resource_class='cpu-diagnostic',
@@ -152,56 +153,6 @@ class ApprovalAdapterTests(AdapterFixture):
         self.assertIs(eb.fail_closed_approval_gate('run-1', teb.ATTEMPT, self.digest),
                       eb.ApprovalDecision.UNAVAILABLE)
         self.assertIs(eb.fail_closed_approval_commit('run-1', teb.ATTEMPT, self.digest), False)
-
-
-class TestAnchorContextTests(AdapterFixture):
-    """LOW-1: test anchors need an explicit, private, owned test context."""
-
-    def opts(self, root):
-        return {'repo_root': REPO, 'run_dir': self.run_dir, 'test_only': True, 'test_root': str(root)}
-
-    def test_test_root_must_be_0700_owned_directory(self):
-        loose = self.temp / 'loose'
-        loose.mkdir()
-        os.chmod(loose, 0o755)
-        trust = tac.write_anchor(loose / 'TEST-ONLY-trust')
-        with self.assertRaises(ap.VerificationError) as ctx:
-            ap.load_trust_anchor(str(trust), **self.opts(loose))
-        self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
-        os.chmod(loose, 0o700)
-        ap.load_trust_anchor(str(trust), **self.opts(loose))
-        for bad in ('/', str(trust / 'anchor.json'), str(self.temp / 'missing')):
-            with self.subTest(root=bad), self.assertRaises(ap.VerificationError):
-                ap.load_trust_anchor(str(trust), **self.opts(bad))
-
-    def test_state_directories_also_require_a_private_test_root(self):
-        loose = self.temp / 'loose2'
-        loose.mkdir()
-        os.chmod(loose, 0o755)
-        state = loose / 'state'
-        state.mkdir(mode=0o700)
-        with self.assertRaises(ap.VerificationError):
-            ap.ConsumptionStore(str(state), **self.opts(loose))
-
-    def test_test_anchor_with_non_test_state_is_refused_before_any_claim(self):
-        fake_store = types.SimpleNamespace(_test_only=False, claim=mock.Mock())
-        with self.assertRaises(ap.VerificationError) as ctx:
-            ap.verify_approval(self.approval, self.anchor, revocation_bytes=self.rev_bytes,
-                               revocation_state=self.rev_state,
-                               expected={'worker_id': 'worker-1', 'run_id': 'run-1',
-                                         'attempt_id': teb.ATTEMPT, 'manifest_sha256': self.digest,
-                                         'resource_class': 'cpu-diagnostic', 'scope': tac.SCOPE,
-                                         'output': tac.OUTPUT},
-                               store=fake_store, now=self.now(), test_capability=TEST_MODE)
-        self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
-        fake_store.claim.assert_not_called()
-        bad_ctx = ap.AttemptContext(store=fake_store, anchor=self.anchor, revocation_state=self.rev_state,
-                                    revocations=lambda: self.rev_bytes, worker_id='worker-1',
-                                    resource_class='cpu-diagnostic', scope=tac.SCOPE, output=tac.OUTPUT,
-                                    test_capability=TEST_MODE)
-        with self.assertRaises(ap.VerificationError):
-            ap.consume_for_attempt('run-1', teb.ATTEMPT, self.approval, self.digest, self.now(), ctx=bad_ctx)
-        fake_store.claim.assert_not_called()
 
 
 class RecordChildTests(teb.BoundaryFixture):

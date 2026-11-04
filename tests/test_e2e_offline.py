@@ -38,7 +38,7 @@ import run_ownership  # noqa: E402
 import run_recovery  # noqa: E402
 import run_registry  # noqa: E402
 from support import e2e_harness as h  # noqa: E402
-from support.approval_test_mode import TEST_MODE  # noqa: E402
+import support.approval_fixtures as fx  # noqa: E402
 from support import process_tree  # noqa: E402
 
 RegistryError = run_ownership.RegistryError
@@ -85,9 +85,8 @@ def timeout(seconds):
 
 class E2EBase(unittest.TestCase):
     def setUp(self):
-        temp = tempfile.TemporaryDirectory()
+        temp, self.root = fx.make_temp_dir()
         self.addCleanup(temp.cleanup)
-        self.root = Path(os.path.realpath(temp.name))
         self.marker = MARKER_PREFIX + uuid.uuid4().hex
         self.started = []    # identities (pid + start ticks) of every process this test caused
         self.handles = []
@@ -349,28 +348,28 @@ class ApprovalTrustAnchorTests(E2EBase):
         case = self.new_case(containment='simulator', with_anchor=True)
         source, folder = case['source'], case['folder']
         anchor, state, store = h.load_approval_inputs(case, repo_root=source, run_dir=folder)
-        self.assertTrue(anchor.test_only)
-        self.assertTrue(anchor.anchor_id.startswith(ap.TEST_ONLY_PREFIX))
+        self.assertEqual(anchor.anchor_id, h.ANCHOR_ID)
         expected = {'worker_id': h.WORKER_ID, 'run_id': h.RUN_ID, 'attempt_id': h.ATTEMPT_LABEL,
                     'manifest_sha256': case['manifest_sha256'], 'resource_class': 'cpu-diagnostic',
                     'scope': {'project': h.PROJECT, 'operation': 'diagnostic-execution'}, 'output': h.OUTPUT}
         approval = Path(case['approval']).read_bytes()
         revocations = Path(case['revocations']).read_bytes()
         record = ap.verify_approval(approval, anchor, revocation_bytes=revocations, revocation_state=state,
-                                    expected=expected, store=store, test_capability=TEST_MODE)
+                                    expected=expected, store=store)
         self.assertEqual(record['anchor_id'], h.ANCHOR_ID)
         with self.assertRaises(em.VerificationError) as ctx:
             ap.verify_approval(approval, anchor, revocation_bytes=revocations, revocation_state=state,
-                               expected=expected, store=store, test_capability=TEST_MODE)
+                               expected=expected, store=store)
         self.assertEqual(ctx.exception.code, ap.APPROVAL_CONSUMED)
-        # Production mode (test_only=False, the default) refuses the same temp anchor.
-        for kwargs in ({}, {'admin_uids': (os.getuid(),), 'worker_uids': (os.getuid() + 1,)}):
+        # Production refuses the same anchor without allowlists, and when its owner is not an admin.
+        for kwargs in ({}, {'admin_uids': (os.getuid() + 1,), 'worker_uids': (os.getuid(),)}):
             with self.assertRaises(em.VerificationError) as ctx:
                 ap.load_trust_anchor(case['anchor'], repo_root=source, run_dir=folder, **kwargs)
             self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
-        # test_only mode refuses an anchor outside the temp directory.
+        # The default location is not provisioned here.
         with self.assertRaises(em.VerificationError) as ctx:
-            ap.load_trust_anchor(ap.DEFAULT_TRUST_ANCHOR_DIR, repo_root=source, run_dir=folder, test_only=True)
+            ap.load_trust_anchor(ap.DEFAULT_TRUST_ANCHOR_DIR, repo_root=source, run_dir=folder,
+                                 **fx.PRODUCTION_UIDS)
         self.assertIn(ctx.exception.code, (ap.TRUST_ANCHOR_UNPROVISIONED, ap.TRUST_ANCHOR_INVALID))
 
     @timeout(30)
@@ -384,17 +383,13 @@ class ApprovalTrustAnchorTests(E2EBase):
                      or (isinstance(n, ast.Name) and n.id in ('environ', 'getenv'))]
         self.assertEqual(env_reads, [])
         load = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'load_trust_anchor')
-        defaults = dict(zip([a.arg for a in load.args.kwonlyargs], load.args.kw_defaults))
-        self.assertIsInstance(defaults['test_only'], ast.Constant)
-        self.assertIs(defaults['test_only'].value, False)
-        # No production script passes test_only=True or names a TEST-ONLY anchor, and only the
+        self.assertEqual([a.arg for a in load.args.kwonlyargs],
+                         ['repo_root', 'run_dir', 'admin_uids', 'worker_uids'])
+        # No production script names a TEST-ONLY anchor, and only the
         # approval module itself calls the anchor loader (researchctl does not import approval).
         for path in sorted(SCRIPTS.glob('*.py')):
             module = ast.parse(path.read_text())
             for node in ast.walk(module):
-                if isinstance(node, ast.keyword) and node.arg == 'test_only':
-                    self.assertFalse(isinstance(node.value, ast.Constant) and node.value.value is True,
-                                     '%s passes test_only=True' % path.name)
                 if isinstance(node, ast.Call):
                     name = getattr(node.func, 'attr', getattr(node.func, 'id', None))
                     if name in ('load_trust_anchor', 'provision_revocation_state'):

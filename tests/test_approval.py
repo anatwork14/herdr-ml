@@ -22,7 +22,7 @@ SCRIPTS = REPO / 'scripts'
 sys.path.insert(0, str(SCRIPTS))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import approval as ap  # noqa: E402
-from support.approval_test_mode import TEST_MODE  # noqa: E402
+import support.approval_fixtures as fx  # noqa: E402
 import execution_manifest as em  # noqa: E402
 
 NOW = dt.datetime(2026, 11, 4, 10, 0, 0, tzinfo=dt.timezone.utc)
@@ -36,6 +36,7 @@ def write_anchor(directory, *, anchor_id=ANCHOR_ID, workers=('worker-1', 'worker
                  revoker='revoker-b', key_bytes=32, anchor_mode=0o600):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    os.chmod(directory, 0o700)
     signers = dict(DEFAULT_SIGNERS if signers is None else signers)
     for filename in set(signers.values()):
         key = directory / filename
@@ -52,9 +53,8 @@ def write_anchor(directory, *, anchor_id=ANCHOR_ID, workers=('worker-1', 'worker
 
 class ApprovalFixture(unittest.TestCase):
     def setUp(self):
-        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir, self.temp = fx.make_temp_dir()
         self.addCleanup(self.temp_dir.cleanup)
-        self.temp = Path(os.path.realpath(self.temp_dir.name))
         self.run_dir = self.temp / 'run'
         self.run_dir.mkdir()
         self.store_dir = self.temp / 'consumed'
@@ -74,12 +74,10 @@ class ApprovalFixture(unittest.TestCase):
         self.revocations = self.revocation_list(sequence=1)
 
     def _fixture_options(self, kwargs, **extra):
-        """The explicit test_root is passed only in test-only mode (production mode refuses it)."""
-        options = {'repo_root': REPO, 'run_dir': self.run_dir, 'test_only': True}
+        """Production loader options: explicit uid allowlists, stand-in repository root."""
+        options = fx.loader_options(self.run_dir)
         options.update(extra)
         options.update(kwargs)
-        if options['test_only']:
-            options.setdefault('test_root', str(self.temp))
         return options
 
     def load(self, directory, **kwargs):
@@ -116,8 +114,7 @@ class ApprovalFixture(unittest.TestCase):
         return ap.verify_approval(approval, self.anchor,
                                   revocation_bytes=self.revocations if revocations is _DEFAULT else revocations,
                                   revocation_state=state or self.state, expected=expected,
-                                  store=store or self.store, now=now or NOW,
-                                  test_capability=TEST_MODE)
+                                  store=store or self.store, now=now or NOW)
 
     def assertCode(self, code, func, *args, **kwargs):
         with self.assertRaises(em.VerificationError) as ctx:
@@ -227,8 +224,7 @@ class SignatureAndSelfIssueTests(ApprovalFixture):
         worker_key = secrets.token_bytes(32)
         self_anchor = ap.TrustAnchor(ANCHOR_ID, workers=['worker-1'], signers=['worker-1'],
                                      revoker='worker-1',
-                                     verifier=ap.HmacSha256Verifier({'worker-1': worker_key}),
-                                     test_only=True)
+                                     verifier=ap.HmacSha256Verifier({'worker-1': worker_key}))
         approval = self.issue(anchor=self_anchor, signer='worker-1')
         self.assertCode(ap.APPROVAL_SELF_ISSUED, self.verify, approval)
 
@@ -352,55 +348,13 @@ class TrustAnchorProvisioningTests(ApprovalFixture):
 
     def test_relative_anchor_path_is_refused(self):
         self.assertCode(ap.TRUST_ANCHOR_INVALID, ap.load_trust_anchor, 'relative/anchor',
-                        repo_root=REPO, run_dir=self.run_dir, test_only=True, test_root=str(self.temp))
+                        repo_root=REPO, run_dir=self.run_dir, **fx.PRODUCTION_UIDS)
 
-    def test_test_only_anchor_outside_explicit_root_is_refused_even_when_tmpdir_points_there(self):
-        # The test-only root is pinned to what the caller passes; TMPDIR and
-        # tempfile.gettempdir() are never consulted.
-        unlisted = self.temp / 'unlisted'
-        unlisted.mkdir(mode=0o700)
-        listed = self.temp / 'listed'
-        listed.mkdir(mode=0o700)
-        anchor = write_anchor(unlisted / 'TEST-ONLY-elsewhere')
-        state = unlisted / 'state'
-        state.mkdir(mode=0o700)
-        ap.provision_revocation_state(str(state), anchor_id=ANCHOR_ID)
-        saved_env, saved_tempdir = os.environ.get('TMPDIR'), tempfile.tempdir
-        os.environ['TMPDIR'] = str(unlisted)
-        tempfile.tempdir = None
-        try:
-            self.assertEqual(os.path.realpath(tempfile.gettempdir()), str(unlisted))
-            for root in (None, str(listed)):
-                self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, anchor, test_root=root)
-                self.assertCode(ap.REVOCATION_STATE_INVALID, self.open_state, state, test_root=root)
-                self.assertCode(ap.CONSUMPTION_STORE_INVALID, self.open_store, state, test_root=root)
-            self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, anchor, test_root='relative/root')
-            self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, anchor, test_root='/')
-            # Production mode refuses a test_root outright.
-            self.assertCode(ap.TRUST_ANCHOR_INVALID, ap.load_trust_anchor, str(anchor), repo_root=REPO,
-                            run_dir=self.run_dir, test_root=str(unlisted), admin_uids=(0,),
-                            worker_uids=(os.getuid(),))
-        finally:
-            if saved_env is None:
-                os.environ.pop('TMPDIR', None)
-            else:
-                os.environ['TMPDIR'] = saved_env
-            tempfile.tempdir = saved_tempdir
-        # The same anchor loads when its directory is the explicit root.
-        self.assertEqual(self.load(anchor, test_root=str(unlisted)).anchor_id, ANCHOR_ID)
-
-    def test_production_mode_refuses_test_only_anchor(self):
-        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, test_only=False)
-        # The launch-handoff verifier obeys the same rule: a test-only verifier is never selected
-        # in production mode, and the default production verifier refuses every handoff.
-        injected = ap.TestOnlyHandoffVerifier('TEST-ONLY-handoff', ['launcher-key'])
-        self.assertCode(ap.HANDOFF_VERIFIER_NOT_SELECTABLE, ap.select_handoff_verifier,
-                        test_only=False, injected=injected)
-        self.assertIsInstance(ap.select_handoff_verifier(test_only=False), ap.UnprovisionedHandoffVerifier)
-
-    def test_test_only_mode_requires_label(self):
-        unlabelled = write_anchor(self.temp / 'unlabelled', anchor_id='prod-approval-anchor')
-        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, unlabelled)
+    def test_production_mode_refuses_non_admin_anchor(self):
+        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir,
+                        admin_uids=(os.getuid() + 1,), worker_uids=(os.getuid(),))
+        # The launch-handoff verifier obeys the same rule: the default refuses every handoff.
+        self.assertIsInstance(ap.select_handoff_verifier(), ap.UnprovisionedHandoffVerifier)
 
     def test_anchor_inside_repository_or_run_directory_is_refused(self):
         self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, repo_root=self.temp)
@@ -444,10 +398,10 @@ class ProductionOwnershipTests(ApprovalFixture):
     """Ownership checks use explicit uid allowlists; the verifier's own uid is not special."""
 
     def test_production_mode_requires_explicit_disjoint_uid_allowlists(self):
-        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, test_only=False)
-        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, test_only=False,
+        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, admin_uids=None, worker_uids=None)
+        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir,
                         admin_uids=(0,), worker_uids=None)
-        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, test_only=False,
+        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir,
                         admin_uids=(0, 1000), worker_uids=(1000,))
 
     def test_worker_owned_0755_directory_is_refused_when_not_an_admin_owner(self):
@@ -457,7 +411,7 @@ class ProductionOwnershipTests(ApprovalFixture):
         uid = os.getuid()
         # Our uid owns the directory. Here it is a worker uid, so it is refused.
         with self.assertRaises(em.VerificationError) as ctx:
-            ap._check_directory(str(worker_dir), admin=(0,), workers=(uid,), test_only=False,
+            ap._check_directory(str(worker_dir), admin=(0,), workers=(uid,),
                                 code=ap.TRUST_ANCHOR_INVALID)
         self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
         self.assertIn('owner', ctx.exception.detail)
@@ -469,7 +423,7 @@ class ProductionOwnershipTests(ApprovalFixture):
     def test_key_owned_by_worker_uid_is_refused_in_production_mode(self):
         key = self.anchor_dir / DEFAULT_SIGNERS['approver-a']
         self.assertCode(ap.TRUST_ANCHOR_INVALID, ap._load_key, str(key), admin=(0,),
-                        workers=(os.getuid(),), test_only=False)
+                        workers=(os.getuid(),))
 
     def _fake_lstat(self, uid, mode=0o040755):
         def fake(path, *args, **kwargs):
@@ -479,10 +433,10 @@ class ProductionOwnershipTests(ApprovalFixture):
 
     def test_root_owned_directory_passes_when_root_is_admin(self):
         with mock.patch.object(ap.os, 'lstat', self._fake_lstat(uid=0)):
-            ap._check_directory('/fixture/root-owned', admin=(0,), workers=(1000,), test_only=False,
+            ap._check_directory('/fixture/root-owned', admin=(0,), workers=(1000,),
                                 code=ap.TRUST_ANCHOR_INVALID)
             with self.assertRaises(em.VerificationError) as ctx:
-                ap._check_directory('/fixture/root-owned', admin=(1000,), workers=(), test_only=False,
+                ap._check_directory('/fixture/root-owned', admin=(1000,), workers=(),
                                     code=ap.TRUST_ANCHOR_INVALID)
             self.assertIn('owner', ctx.exception.detail)
 
@@ -503,6 +457,106 @@ class ProductionOwnershipTests(ApprovalFixture):
         # Root ownership passed every directory check; the refusal is the anchor.json
         # file-type check, reached because the simulated entry is a directory.
         self.assertEqual(ctx.exception.detail, 'must be a regular file')
+
+
+class ProductionOnlySurfaceTests(ApprovalFixture):
+    """The approval module has one acceptance path: the production one."""
+
+    def _params(self, func):
+        import inspect
+        return set(inspect.signature(func).parameters)
+
+    def test_no_test_parameters_on_the_public_entry_points(self):
+        banned = {'test_only', 'test_root', 'test_capability', 'mode'}
+        for func in (ap.load_trust_anchor, ap.RevocationState, ap.ConsumptionStore, ap.verify_approval,
+                     ap.AttemptContext, ap.verify_handoff, ap.TrustAnchor, ap.select_handoff_verifier):
+            with self.subTest(func=func.__name__):
+                self.assertEqual(self._params(func) & banned, set())
+
+    def test_module_exports_no_test_capability_or_test_verifier(self):
+        for name in ('TEST_CAPABILITY', '_grant_test_capability', '_test_root', 'TestOnlyHandoffVerifier',
+                     'TEST_ONLY_PREFIX', '_require_test_context'):
+            with self.subTest(name=name):
+                self.assertFalse(hasattr(ap, name))
+
+    def test_anchor_under_a_world_writable_ancestor_is_refused(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as other:
+            os.chmod(other, 0o700)
+            anchor = write_anchor(Path(other) / 'trust')
+            self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, anchor)
+
+    def test_missing_allowlists_refuse_state_and_store(self):
+        self.assertCode(ap.REVOCATION_STATE_INVALID, self.open_state, self.state_dir,
+                        admin_uids=None, worker_uids=None)
+        self.assertCode(ap.CONSUMPTION_STORE_INVALID, self.open_store, self.store_dir,
+                        admin_uids=None, worker_uids=None)
+
+    def test_non_admin_owner_refuses_state_and_store(self):
+        uids = {'admin_uids': (os.getuid() + 1,), 'worker_uids': (os.getuid(),)}
+        self.assertCode(ap.REVOCATION_STATE_INVALID, self.open_state, self.state_dir, **uids)
+        self.assertCode(ap.CONSUMPTION_STORE_INVALID, self.open_store, self.store_dir, **uids)
+
+    def test_overlapping_allowlists_refuse_state_and_store(self):
+        uids = {'admin_uids': (os.getuid(),), 'worker_uids': (os.getuid(),)}
+        self.assertCode(ap.REVOCATION_STATE_INVALID, self.open_state, self.state_dir, **uids)
+        self.assertCode(ap.CONSUMPTION_STORE_INVALID, self.open_store, self.store_dir, **uids)
+
+    def test_anchor_label_is_not_an_acceptance_signal(self):
+        # An unlabelled anchor loads exactly like a labelled one; the label grants nothing.
+        anchor = self.load(write_anchor(self.temp / 'prod-trust', anchor_id='prod-approval-anchor'))
+        self.assertEqual(anchor.anchor_id, 'prod-approval-anchor')
+        self.assertFalse(hasattr(anchor, 'test_only'))
+
+    def test_forged_attribute_on_a_verifier_changes_nothing(self):
+        class Rejecting(ap.HandoffVerifier):
+            algorithm = ap.HANDOFF_ALGORITHM
+
+            def verify(self, key_id, domain, message, value_hex):
+                return False
+        verifier = Rejecting()
+        verifier.test_only = True
+        self.assertCode(ap.HANDOFF_MALFORMED, ap.verify_handoff, b'{}', verifier, store=self.store, now=NOW,
+                        expected={})
+
+    def test_handoff_verifier_must_implement_the_public_protocol(self):
+        for bad in (object(), ap.HmacSha256Verifier({'k': b'x' * 32}), types.SimpleNamespace(
+                algorithm=ap.HANDOFF_ALGORITHM, verify=lambda *a: True)):
+            with self.subTest(bad=type(bad).__name__):
+                self.assertCode(ap.HANDOFF_VERIFIER_UNPROVISIONED, ap.verify_handoff, b'{}', bad,
+                                store=self.store, now=NOW, expected={})
+
+    def test_handoff_verifier_with_wrong_algorithm_is_refused(self):
+        class Symmetric(ap.HandoffVerifier):
+            algorithm = 'HMAC-SHA256'
+
+            def verify(self, key_id, domain, message, value_hex):
+                return True
+        self.assertCode(ap.HANDOFF_VERIFIER_UNPROVISIONED, ap.verify_handoff, b'{}', Symmetric(),
+                        store=self.store, now=NOW, expected={})
+
+    def test_select_handoff_verifier_default_and_injection(self):
+        self.assertIsInstance(ap.select_handoff_verifier(), ap.UnprovisionedHandoffVerifier)
+        fixed = fx.FixedAcceptHandoffVerifier(['k'])
+        self.assertIs(ap.select_handoff_verifier(fixed), fixed)
+        self.assertCode(ap.HANDOFF_VERIFIER_UNPROVISIONED, ap.select_handoff_verifier, object())
+
+    def test_unprovisioned_handoff_verifier_refuses_everything(self):
+        self.assertCode(ap.HANDOFF_VERIFIER_UNPROVISIONED, ap.UnprovisionedHandoffVerifier().verify,
+                        'k', ap.DOMAIN_HANDOFF, b'{}', 'ab' * 32)
+
+    def test_verify_approval_accepts_only_what_the_production_checks_accept(self):
+        # Same flow with an anchor loaded under non-admin allowlists is refused at load time,
+        # so no approval can be verified against it.
+        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir,
+                        admin_uids=(os.getuid() + 1,), worker_uids=(os.getuid(),))
+        self.assertEqual(self.verify(self.issue())['approval_id'], 'appr-1')
+
+    def test_fixture_directories_live_outside_the_stand_in_repository(self):
+        self.assertFalse(str(self.temp).startswith(str(fx.STAND_IN_REPO)))
+        self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, repo_root=self.temp)
+
+    def test_default_trust_anchor_directory_is_a_constant_outside_the_checkout(self):
+        self.assertTrue(ap.DEFAULT_TRUST_ANCHOR_DIR.startswith('/etc/'))
 
 
 if __name__ == '__main__':
