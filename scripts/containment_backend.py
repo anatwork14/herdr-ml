@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Protocol
 
+from containment_contract import Decision, Expectation, verify_for_release
+
 
 class ContainmentStatus(str, Enum):
     VERIFIED = "VERIFIED"
@@ -68,6 +70,10 @@ class ContainmentBackend(Protocol):
         """
         ...
 
+    def release(self, proof: object, expectation: Expectation, *, now_ns: Optional[int] = None) -> Decision:
+        """Release the boundary's resources only with a verified empty proof."""
+        ...
+
 
 class UnavailableContainmentBackend:
     """Safe default until a backend is implemented and independently validated."""
@@ -78,6 +84,14 @@ class UnavailableContainmentBackend:
             status=ContainmentStatus.UNAVAILABLE,
             reason="No production containment backend is configured",
         )
+
+    def release(self, proof: object, expectation: Expectation, *, now_ns: Optional[int] = None) -> Decision:
+        # Fail closed: this backend never established a boundary, so nothing
+        # can be released even if a caller presents a well-formed proof.
+        verdict = verify_for_release(proof, expectation, now_ns=now_ns)
+        if verdict.allowed:
+            return Decision(False, 'backend UNAVAILABLE: no established boundary to release')
+        return Decision(False, 'backend UNAVAILABLE: ' + verdict.reason)
 
 
 def get_backend() -> ContainmentBackend:
