@@ -1,0 +1,179 @@
+{
+ "daemon_task_states_at_generation": {
+  "0": {
+   "Stashed": {
+    "enqueue_at": null
+   }
+  },
+  "1": {
+   "Done": {
+    "end": "2026-11-04T23:14:48.203770056+07:00",
+    "enqueued_at": "2026-11-04T23:14:47.745047438+07:00",
+    "result": "Success",
+    "start": "2026-11-04T23:14:47.902047793+07:00"
+   }
+  },
+  "2": {
+   "Stashed": {
+    "enqueue_at": null
+   }
+  }
+ },
+ "queue_binding": [
+  {
+   "ambiguous_from": null,
+   "attempt_id": null,
+   "claimant": null,
+   "fence": 0,
+   "intent_token": "d1757efe577b4a8c9cd91bbb1a134c00",
+   "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "phase": "BOUND",
+   "project": "project-a",
+   "queue_instance": "40d809d889d61e244c9b0f4a3f79cfb2708fd874736b92668df207103eb4f0db",
+   "resolution": null,
+   "run_folder": "/tmp/p7w2-67e6flot/.runtime/project-a/runs/run-1",
+   "run_id": "run-1",
+   "task_id": "0",
+   "worker_id": null
+  },
+  {
+   "ambiguous_from": null,
+   "attempt_id": null,
+   "claimant": null,
+   "fence": 0,
+   "intent_token": "71e71794b885413fb7620e7007b399ad",
+   "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "phase": "BOUND",
+   "project": "project-a",
+   "queue_instance": "40d809d889d61e244c9b0f4a3f79cfb2708fd874736b92668df207103eb4f0db",
+   "resolution": null,
+   "run_folder": "/tmp/p7w2-67e6flot/.runtime/project-a/runs/run-2",
+   "run_id": "run-2",
+   "task_id": "1",
+   "worker_id": null
+  },
+  {
+   "ambiguous_from": null,
+   "attempt_id": "1c4fce95163c41f69d19f1439568adf9",
+   "claimant": "472779:6ca26690-aeec-4293-9c5c-5a0fa4c486fe:480470925",
+   "fence": 1,
+   "intent_token": "d62be6557db6465aaffd8cceebd32cd7",
+   "manifest_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "phase": "CLAIMED",
+   "project": "project-a",
+   "queue_instance": "40d809d889d61e244c9b0f4a3f79cfb2708fd874736b92668df207103eb4f0db",
+   "resolution": null,
+   "run_folder": "/tmp/p7w2-67e6flot/.runtime/project-a/runs/run-3",
+   "run_id": "run-3",
+   "task_id": "2",
+   "worker_id": "worker-1"
+  }
+ ],
+ "queue_events": [
+  {
+   "at": "2026-11-04 16:14:46",
+   "detail": "{\"intent_token\": \"d1757efe577b4a8c9cd91bbb1a134c00\", \"project\": \"project-a\"}",
+   "phase": "INTENT",
+   "run_id": "run-1",
+   "seq": 1
+  },
+  {
+   "at": "2026-11-04 16:14:46",
+   "detail": "{\"task_id\": \"0\"}",
+   "phase": "BOUND",
+   "run_id": "run-1",
+   "seq": 2
+  },
+  {
+   "at": "2026-11-04 16:14:46",
+   "detail": "{\"intent_token\": \"d1757efe577b4a8c9cd91bbb1a134c00\", \"task_id\": \"0\"}",
+   "phase": "ENQUEUE_ATTEMPTED",
+   "run_id": "run-1",
+   "seq": 3
+  },
+  {
+   "at": "2026-11-04 16:14:46",
+   "detail": "{\"detail\": \"exit 1\", \"intent_token\": \"d1757efe577b4a8c9cd91bbb1a134c00\"}",
+   "phase": "ENQUEUE_REFUSED",
+   "run_id": "run-1",
+   "seq": 4
+  },
+  {
+   "at": "2026-11-04 16:14:46",
+   "detail": "{\"intent_token\": \"71e71794b885413fb7620e7007b399ad\", \"project\": \"project-a\"}",
+   "phase": "INTENT",
+   "run_id": "run-2",
+   "seq": 5
+  },
+  {
+   "at": "2026-11-04 16:14:47",
+   "detail": "{\"task_id\": \"1\"}",
+   "phase": "BOUND",
+   "run_id": "run-2",
+   "seq": 6
+  },
+  {
+   "at": "2026-11-04 16:14:47",
+   "detail": "{\"intent_token\": \"71e71794b885413fb7620e7007b399ad\", \"task_id\": \"1\"}",
+   "phase": "ENQUEUE_ATTEMPTED",
+   "run_id": "run-2",
+   "seq": 7
+  },
+  {
+   "at": "2026-11-04 16:14:47",
+   "detail": "{\"detail\": \"exit 1\", \"intent_token\": \"71e71794b885413fb7620e7007b399ad\"}",
+   "phase": "ENQUEUE_REFUSED",
+   "run_id": "run-2",
+   "seq": 8
+  },
+  {
+   "at": "2026-11-04 16:14:47",
+   "detail": "{\"intent_token\": \"71e71794b885413fb7620e7007b399ad\", \"task_id\": \"1\"}",
+   "phase": "ENQUEUE_ATTEMPTED",
+   "run_id": "run-2",
+   "seq": 9
+  },
+  {
+   "at": "2026-11-04 16:14:47",
+   "detail": "{\"detail\": \"\", \"intent_token\": \"71e71794b885413fb7620e7007b399ad\"}",
+   "phase": "ENQUEUED",
+   "run_id": "run-2",
+   "seq": 10
+  },
+  {
+   "at": "2026-11-04 16:14:47",
+   "detail": "{\"intent_token\": \"d62be6557db6465aaffd8cceebd32cd7\", \"project\": \"project-a\"}",
+   "phase": "INTENT",
+   "run_id": "run-3",
+   "seq": 11
+  },
+  {
+   "at": "2026-11-04 16:14:47",
+   "detail": "{\"task_id\": \"2\"}",
+   "phase": "BOUND",
+   "run_id": "run-3",
+   "seq": 12
+  },
+  {
+   "at": "2026-11-04 16:14:48",
+   "detail": "{\"intent_token\": \"d62be6557db6465aaffd8cceebd32cd7\", \"task_id\": \"2\"}",
+   "phase": "ENQUEUE_ATTEMPTED",
+   "run_id": "run-3",
+   "seq": 13
+  },
+  {
+   "at": "2026-11-04 16:14:48",
+   "detail": "{\"detail\": \"exit 1\", \"intent_token\": \"d62be6557db6465aaffd8cceebd32cd7\"}",
+   "phase": "ENQUEUE_REFUSED",
+   "run_id": "run-3",
+   "seq": 14
+  },
+  {
+   "at": "2026-11-04 16:14:48",
+   "detail": "{\"attempt_id\": \"1c4fce95163c41f69d19f1439568adf9\", \"fence\": 1, \"task_id\": \"2\", \"worker_id\": \"worker-1\"}",
+   "phase": "CLAIMED",
+   "run_id": "run-3",
+   "seq": 15
+  }
+ ]
+}

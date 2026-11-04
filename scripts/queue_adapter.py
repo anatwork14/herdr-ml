@@ -36,7 +36,9 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -187,6 +189,7 @@ class PrivatePueue:
         self.config.write_text(json.dumps(config, indent=1, sort_keys=True) + '\n', encoding='utf-8')
         os.chmod(self.config, 0o600)
         self._daemon = None
+        self.peer = None  # identity of the process that answered the socket at start()
 
     # -- process environment -------------------------------------------------
     def env(self):
@@ -231,6 +234,11 @@ class PrivatePueue:
                 raise QueueAdapterError('Private daemon exited during startup (%s)' % self._daemon.returncode)
             try:
                 if self.client('status', timeout=2).returncode == 0:
+                    self.peer = self.peer_identity()
+                    if (self.peer['pid'] != self._daemon.pid or
+                            self.peer['exe_sha256'] != PINNED_SHA256['pueued']):
+                        self.kill()
+                        raise QueueAdapterError('Socket peer is not the pinned daemon this object started')
                     return self._daemon.pid
             except subprocess.TimeoutExpired:
                 pass
@@ -268,6 +276,73 @@ class PrivatePueue:
             self._daemon.wait(timeout=5)
 
     # -- identity and state ----------------------------------------------------
+    def peer_identity(self):
+        """Identity of the process that answers the private socket right now.
+
+        A probe connection reads SO_PEERCRED (pid and uid of the listener). The executable
+        is hashed through /proc/<pid>/exe and the start time comes from /proc/<pid>/stat, so
+        a reused pid is a different identity. The socket's device and inode must not change
+        during the probe. This authenticates the process that answered the probe. It does
+        not bind the separate pueue client connections that follow, so it is not a
+        transport-level proof (see reports/experiment-infra/QUEUE.md).
+        """
+        path = self.socket_path()
+        try:
+            before = os.stat(path, follow_symlinks=False)
+        except OSError as exc:
+            raise QueueAdapterError('Private daemon socket is missing') from exc
+        if not stat.S_ISSOCK(before.st_mode):
+            raise QueueAdapterError('Private daemon path is not a socket')
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            probe.settimeout(2.0)
+            probe.connect(str(path))
+            cred = probe.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+        except OSError as exc:
+            raise QueueAdapterError('Private daemon peer could not be probed: %s' % exc.__class__.__name__) from exc
+        finally:
+            probe.close()
+        pid, uid, _gid = struct.unpack('3i', cred)
+        after = os.stat(path, follow_symlinks=False)
+        if (after.st_dev, after.st_ino) != (before.st_dev, before.st_ino):
+            raise QueueAdapterError('Private daemon socket changed during the identity probe')
+        if uid != os.geteuid():
+            raise QueueAdapterError('Socket peer belongs to another account')
+        try:
+            exe_sha256 = sha256_file('/proc/%d/exe' % pid)
+            with open('/proc/%d/stat' % pid, 'r', encoding='ascii') as handle:
+                fields = handle.read().rsplit(')', 1)[1].split()
+            start_ticks = fields[19]
+        except (OSError, IndexError, ValueError) as exc:
+            raise QueueAdapterError('Socket peer process could not be inspected') from exc
+        return {'pid': pid, 'uid': uid, 'exe_sha256': exe_sha256, 'start_ticks': start_ticks,
+                'socket_dev': before.st_dev, 'socket_ino': before.st_ino}
+
+    def verify_peer(self):
+        """Raise unless the socket still answers from the process started here, unchanged since start.
+
+        A replaced socket file, a different process on the socket, or a restarted daemon
+        (new pid or start time) is refused.
+        """
+        if self.peer is None or not self.running():
+            raise QueueAdapterError('No started private daemon to verify')
+        live = self.peer_identity()
+        for key in ('pid', 'start_ticks', 'exe_sha256', 'socket_dev', 'socket_ino'):
+            if live[key] != self.peer[key]:
+                raise QueueAdapterError('Connected daemon %s differs from the started daemon; '
+                                        'replaced socket or restarted daemon refused' % key)
+        return live
+
+    def daemon_identity(self):
+        """Expected-versus-actual identity of the connected daemon.
+
+        queue_instance is the certificate in this daemon's state directory (the expected
+        queue instance is compared by the caller); peer is the live socket peer, verified
+        against the process this object started.
+        """
+        peer = self.verify_peer()
+        return {'queue_instance': self.instance_id(), 'peer': peer}
+
     def instance_id(self):
         """Queue instance identity: sha256 of this daemon's certificate on disk.
 
@@ -446,3 +521,49 @@ def reconcile(daemon, folder, *, _store_home=None):
         if row['task_id'] is not None:
             report['bound_task_present'] = row['task_id'] in report['tasks_for_intent']
     return report
+
+
+# -- callbacks (P7.4) -----------------------------------------------------------
+
+def issue_callback(daemon, folder, *, _store_home=None):
+    """Worker-side callback for a CLAIMED attempt, carrying the daemon peer seen at issuance."""
+    row = run_registry.inspect_queue(folder, _store_home=_store_home)
+    if row is None or row['phase'] != 'CLAIMED':
+        raise QueueAdapterError('No claimed queue binding to issue a callback for')
+    live = daemon.daemon_identity()
+    return {'queue_instance': row['queue_instance'], 'task_id': row['task_id'],
+            'worker_id': row['worker_id'], 'attempt_id': row['attempt_id'],
+            'fence': row['fence'], 'peer': live['peer']}
+
+
+CALLBACK_FIELDS = ('queue_instance', 'task_id', 'worker_id', 'attempt_id', 'fence')
+
+
+def verify_callback(daemon, folder, callback, *, _store_home=None):
+    """Accept a queue callback only for the exact claimed attempt on the daemon that issued it.
+
+    Distinguished checks: expected queue instance (the CLAIMED row), task ID, worker index
+    (worker_id), run attempt, ownership fence, and the connected daemon (live socket peer
+    must be the started process, and must be the process that issued the callback).
+    Refusals write nothing. Returns the verified identity.
+    """
+    row = run_registry.inspect_queue(folder, _store_home=_store_home)
+    if row is None or row['phase'] != 'CLAIMED':
+        raise QueueAdapterError('No claimed queue binding for this callback')
+    expected = {'queue_instance': row['queue_instance'], 'task_id': row['task_id'],
+                'worker_id': row['worker_id'], 'attempt_id': row['attempt_id'], 'fence': row['fence']}
+    if not isinstance(callback, dict):
+        raise QueueAdapterError('Callback is not a record')
+    for field in CALLBACK_FIELDS:
+        if callback.get(field) != expected[field]:
+            raise QueueAdapterError('Callback %s does not match the claimed attempt; stale or foreign callback refused'
+                                    % field)
+    live = daemon.daemon_identity()  # raises on socket replacement or daemon restart
+    if callback.get('peer') != live['peer']:
+        raise QueueAdapterError('Callback was issued by another daemon process; refused')
+    if live['queue_instance'] != expected['queue_instance']:
+        raise QueueAdapterError('Connected daemon queue instance differs from the expected queue instance')
+    return {'expected_queue_instance': expected['queue_instance'],
+            'connected_queue_instance': live['queue_instance'], 'connected_peer': live['peer'],
+            'task_id': expected['task_id'], 'worker_id': expected['worker_id'],
+            'attempt_id': expected['attempt_id'], 'fence': expected['fence']}
