@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "head_at_phase0": "d3742661073ec126c84bd30c1e6ecc6bbcb94ab4",
+  "gates": {
+    "RUN_OWNERSHIP_READY": {"status": "BLOCKED", "evidence": ["reports/experiment-infra/BASELINE.md", "reports/reviews/2026-11-03-manual-core-continuation.md"]},
+    "CONTAINMENT_READY": {"status": "BLOCKED", "evidence": ["reports/experiment-infra/baseline-raw/containment-probe.json"]},
+    "QUEUE_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]},
+    "PROVENANCE_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]},
+    "APPROVAL_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]},
+    "EXPERIMENT_RECOVERY_READY": {"status": "BLOCKED", "evidence": ["reports/reviews/2026-11-03-manual-core-continuation.md"]}
+  },
+  "baseline_tests": {"interpreter": "/mnt/ssd/genos2/.local/bin/python3.12", "version": "3.12.14", "command": "python3 -m unittest discover -s tests -v", "ran": 120, "result": "OK", "exit": 0, "log": "reports/experiment-infra/baseline-raw/py312-unittest.log"},
+  "python_3_10": "NOT_TESTED",
+  "python_3_11": "NOT_TESTED"
+}
