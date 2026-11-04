@@ -388,6 +388,12 @@ class TrustAnchorProvisioningTests(ApprovalFixture):
 
     def test_production_mode_refuses_test_only_anchor(self):
         self.assertCode(ap.TRUST_ANCHOR_INVALID, self.load, self.anchor_dir, test_only=False)
+        # The launch-handoff verifier obeys the same rule: a test-only verifier is never selected
+        # in production mode, and the default production verifier refuses every handoff.
+        injected = ap.TestOnlyHandoffVerifier('TEST-ONLY-handoff', ['launcher-key'])
+        self.assertCode(ap.HANDOFF_VERIFIER_NOT_SELECTABLE, ap.select_handoff_verifier,
+                        test_only=False, injected=injected)
+        self.assertIsInstance(ap.select_handoff_verifier(test_only=False), ap.UnprovisionedHandoffVerifier)
 
     def test_test_only_mode_requires_label(self):
         unlabelled = write_anchor(self.temp / 'unlabelled', anchor_id='prod-approval-anchor')
