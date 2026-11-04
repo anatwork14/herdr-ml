@@ -24,6 +24,12 @@ the signer's key produced the approval, so the verifier is as trusted as the
 keys it holds. An asymmetric verifier can be plugged in through
 SignatureVerifier once an external trust anchor is provisioned. Until then,
 APPROVAL_READY stays BLOCKED.
+
+Consumption is one protocol (ConsumptionStore.claim, consume_for_attempt). The attempt
+claim is written first and carries a state: consumed_not_launched, launched or fenced.
+A consumed-but-unlaunched attempt is never re-used; recovery fences it. Launch handoffs
+use an asymmetric HandoffVerifier that holds public keys only. No such verifier is
+provisioned, so handoffs are refused by default. See reports/experiment-infra/APPROVAL_CONSISTENCY.md.
 """
 import abc
 import datetime as dt
@@ -63,6 +69,32 @@ MAX_REVOCATION_BYTES = 1024 * 1024
 MAX_REVOKED = 4096
 MAX_LIFETIME_SECONDS = 24 * 3600
 TIME_FORMAT = '%Y-%m-%dT%H:%M:%SZ'
+
+CLAIM_KIND_APPROVAL = 'herdr-ml-approval-claim'
+CLAIM_KIND_ATTEMPT = 'herdr-ml-attempt-claim'
+STATE_CONSUMED_NOT_LAUNCHED = 'consumed_not_launched'
+STATE_LAUNCHED = 'launched'
+STATE_FENCED = 'fenced'
+ATTEMPT_STATES = (STATE_CONSUMED_NOT_LAUNCHED, STATE_LAUNCHED, STATE_FENCED)
+GRANT_KEYS = ('approval_sha256', 'approval_id', 'anchor_id', 'signer_id', 'worker_id', 'run_id',
+              'attempt_id', 'manifest_sha256')
+GRANT_ID_KEYS = ('approval_id', 'anchor_id', 'signer_id', 'worker_id', 'run_id', 'attempt_id')
+APPROVAL_CLAIM_KEYS = ('schema_version', 'kind', 'grant')
+ATTEMPT_CLAIM_KEYS = ('schema_version', 'kind', 'state', 'reason', 'grant')
+MAX_CLAIM_BYTES = 16 * 1024
+MAX_HANDOFF_BYTES = 16 * 1024
+HANDOFF_KIND = 'herdr-ml-launch-handoff'
+HANDOFF_KEYS = ('schema_version', 'kind', 'anchor_id', 'run_id', 'attempt_id', 'worker_id',
+                'manifest_sha256', 'consumption', 'issued_at', 'expires_at', 'signature')
+CONSUMPTION_KEYS = ('approval_sha256', 'grant_sha256')
+DOMAIN_HANDOFF = b'herdr-ml-launch-handoff-v1\n'
+HANDOFF_ALGORITHM = 'Ed25519'
+# Named crash boundaries for test fault hooks (see fault()). Each names a persistent write
+# or the instant right after it, so a test can stop the process at that exact point.
+CRASH_POINTS = ('claim:before_attempt_claim', 'claim:attempt_opened', 'claim:after_attempt_claim',
+                'claim:approval_opened', 'claim:after_approval_claim',
+                'launch:before_replace', 'launch:after_replace',
+                'fence:before_replace', 'fence:after_replace')
 APPROVAL_KEYS = ('schema_version', 'kind', 'approval_id', 'anchor_id', 'worker_id', 'run_id',
                  'attempt_id', 'manifest_sha256', 'resource_class', 'scope',
                  'output_destination_sha256', 'issued_at', 'expires_at', 'signature')
@@ -99,6 +131,21 @@ REVOCATION_STATE_ANCHOR_MISMATCH = 'REVOCATION_STATE_ANCHOR_MISMATCH'
 TRUST_ANCHOR_UNPROVISIONED = 'TRUST_ANCHOR_UNPROVISIONED'
 TRUST_ANCHOR_INVALID = 'TRUST_ANCHOR_INVALID'
 CONSUMPTION_STORE_INVALID = 'CONSUMPTION_STORE_INVALID'
+ATTEMPT_UNLAUNCHED = 'APPROVAL_ATTEMPT_UNLAUNCHED'
+ATTEMPT_FENCED = 'APPROVAL_ATTEMPT_FENCED'
+ATTEMPT_NOT_CONSUMED = 'APPROVAL_ATTEMPT_NOT_CONSUMED'
+HANDOFF_MALFORMED = 'HANDOFF_MALFORMED'
+HANDOFF_NONCANONICAL = 'HANDOFF_NONCANONICAL'
+HANDOFF_VERIFIER_UNPROVISIONED = 'HANDOFF_VERIFIER_UNPROVISIONED'
+HANDOFF_VERIFIER_NOT_SELECTABLE = 'HANDOFF_VERIFIER_NOT_SELECTABLE'
+HANDOFF_SIGNATURE_INVALID = 'HANDOFF_SIGNATURE_INVALID'
+HANDOFF_BINDING_MISMATCH = 'HANDOFF_BINDING_MISMATCH'
+HANDOFF_NOT_YET_VALID = 'HANDOFF_NOT_YET_VALID'
+HANDOFF_EXPIRED = 'HANDOFF_EXPIRED'
+HANDOFF_NOT_CONSUMED = 'HANDOFF_NOT_CONSUMED'
+HANDOFF_FENCED = 'HANDOFF_FENCED'
+HANDOFF_ALREADY_LAUNCHED = 'HANDOFF_ALREADY_LAUNCHED'
+HANDOFF_CONSUMPTION_MISMATCH = 'HANDOFF_CONSUMPTION_MISMATCH'
 
 
 def _utcnow():
@@ -493,12 +540,41 @@ def _claim_name(*parts):
     return sha256_hex(canonical_bytes(list(parts))) + '.claim'
 
 
-class ConsumptionStore(object):
-    """Single-use claims. The directory must be operated by the launcher, not the worker.
+def grant_digest(grant):
+    """Digest of the immutable grant (the approval binding). A handoff commits to it."""
+    return sha256_hex(canonical_bytes(grant))
 
-    Two claim files are created with O_EXCL and fsynced: one for the approval keyed by
-    (approval_id, run_id, attempt_id), then one for the attempt keyed by
-    (run_id, attempt_id). A second approval for the same attempt is refused.
+
+def fault(hook, point):
+    """Test-only crash boundary, named like run_ownership.fault. Production passes hook=None."""
+    if hook is None:
+        return
+    if point not in CRASH_POINTS:
+        raise VerificationError(CONSUMPTION_STORE_INVALID, 'unknown crash point %s' % point)
+    hook(point)
+
+
+def _grant_ok(grant):
+    return (isinstance(grant, dict) and set(grant) == set(GRANT_KEYS)
+            and all(em._is_id(grant[k]) for k in GRANT_ID_KEYS)
+            and _is_hex(grant['approval_sha256']) and _is_hex(grant['manifest_sha256']))
+
+
+class ConsumptionStore(object):
+    """Single-use claims for one attempt. The directory must be operated by the launcher.
+
+    Two claim files per consumption, keyed by the attempt (run_id, attempt_id) and by the
+    approval (approval_id, run_id, attempt_id). The ATTEMPT claim is created first and
+    the approval claim second, so a crash between them leaves the attempt claimed (the
+    authority) and never an approval consumed for an unclaimed attempt. The attempt claim
+    carries an explicit state:
+
+      consumed_not_launched  approval consumed for this attempt; launch not yet recorded
+      launched               mark_launched() ran after the job was started
+      fenced                 recovery fenced an unlaunched consumption; never reusable
+
+    consumed_not_launched is refused for re-use. Only fence_unlaunched() moves it on.
+    Every state change is an atomic replace of the attempt claim file.
     """
 
     def __init__(self, directory, *, repo_root, run_dir, admin_uids=None, worker_uids=None,
@@ -509,15 +585,44 @@ class ConsumptionStore(object):
             test_root=test_root)
         self._test_only = test_only
 
-    def claim(self, approval_id, *, run_id, attempt_id, record):
-        if not (em._is_id(approval_id) and em._is_id(run_id) and em._is_id(attempt_id)):
-            raise VerificationError(CONSUMPTION_STORE_INVALID, 'identifiers')
-        self._create(_claim_name('approval', approval_id, run_id, attempt_id),
-                     APPROVAL_CONSUMED, record)
-        self._create(_claim_name('attempt', run_id, attempt_id),
-                     APPROVAL_ATTEMPT_ALREADY_CLAIMED, record)
+    def _read(self, name, *, attempt):
+        """None when absent. Any irregular, unsafe or malformed claim refuses; nothing is written."""
+        path = os.path.join(self.directory, name)
+        try:
+            os.lstat(path)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'claim unreadable') from exc
+        _check_file(path, admin=self._admin, workers=self._workers, test_only=self._test_only,
+                    code=CONSUMPTION_STORE_INVALID)
+        document = parse_canonical(
+            read_bounded(path, MAX_CLAIM_BYTES, missing=CONSUMPTION_STORE_INVALID,
+                         unsafe=CONSUMPTION_STORE_INVALID),
+            MAX_CLAIM_BYTES, CONSUMPTION_STORE_INVALID, CONSUMPTION_STORE_INVALID,
+            CONSUMPTION_STORE_INVALID, CONSUMPTION_STORE_INVALID)
+        kind = CLAIM_KIND_ATTEMPT if attempt else CLAIM_KIND_APPROVAL
+        _keys(document, ATTEMPT_CLAIM_KEYS if attempt else APPROVAL_CLAIM_KEYS, CONSUMPTION_STORE_INVALID)
+        grant = document['grant']
+        if (type(document['schema_version']) is not int or document['schema_version'] != SCHEMA_VERSION
+                or document['kind'] != kind or not _grant_ok(grant)):
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'claim content')
+        if attempt:
+            state = document['state']
+            reason = document['reason']
+            if state not in ATTEMPT_STATES or (state == STATE_FENCED) != (reason != '') or (
+                    reason != '' and not em._is_id(reason)):
+                raise VerificationError(CONSUMPTION_STORE_INVALID, 'claim state')
+            expected_name = _claim_name('attempt', grant['run_id'], grant['attempt_id'])
+        else:
+            expected_name = _claim_name('approval', grant['approval_id'], grant['run_id'], grant['attempt_id'])
+        if expected_name != name:
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'claim does not match its grant')
+        return document
 
-    def _create(self, name, refusal, record):
+    def _create(self, name, refusal, record, *, hook, opened_point):
+        """O_EXCL create, write and fsync. A write failure removes the partial file: nothing
+        has been launched yet, so the claim was never durable and must not stay half-written."""
         path = os.path.join(self.directory, name)
         try:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
@@ -530,16 +635,120 @@ class ConsumptionStore(object):
         except OSError as exc:
             raise VerificationError(CONSUMPTION_STORE_INVALID, 'cannot create claim') from exc
         try:
-            payload = canonical_bytes(record)
+            fault(hook, opened_point)
+            try:
+                view = memoryview(canonical_bytes(record))
+                while view:
+                    view = view[os.write(fd, view):]
+                os.fsync(fd)
+            except OSError as exc:
+                _discard(path)
+                raise VerificationError(CONSUMPTION_STORE_INVALID, 'cannot record claim') from exc
+        finally:
+            os.close(fd)
+        _fsync_dir(self.directory)
+
+    def _replace(self, name, record, *, hook, prefix):
+        """Atomic state change: stage a private temp file, fsync, rename over the claim, fsync dir."""
+        path = os.path.join(self.directory, name)
+        temp = os.path.join(self.directory, '.%s.%s.tmp' % (name, secrets.token_hex(8)))
+        payload = canonical_bytes(record)
+        try:
+            fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                         | getattr(os, 'O_CLOEXEC', 0), 0o600)
+        except OSError as exc:
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'cannot stage state') from exc
+        try:
             view = memoryview(payload)
             while view:
                 view = view[os.write(fd, view):]
             os.fsync(fd)
-        except (OSError, VerificationError) as exc:
-            raise VerificationError(CONSUMPTION_STORE_INVALID, 'cannot record claim') from exc
-        finally:
+        except OSError as exc:
             os.close(fd)
+            _discard(temp)
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'cannot stage state') from exc
+        os.close(fd)
+        fault(hook, prefix + ':before_replace')
+        try:
+            os.replace(temp, path)
+        except OSError as exc:
+            _discard(temp)
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'cannot replace state') from exc
         _fsync_dir(self.directory)
+        fault(hook, prefix + ':after_replace')
+
+    @staticmethod
+    def _refuse_state(current):
+        if current['state'] == STATE_FENCED:
+            return VerificationError(ATTEMPT_FENCED, 'attempt fenced after an unlaunched consumption')
+        return VerificationError(APPROVAL_ATTEMPT_ALREADY_CLAIMED, 'attempt already launched')
+
+    @staticmethod
+    def _refuse_existing(existing, grant):
+        if existing['grant']['approval_sha256'] != grant['approval_sha256']:
+            return VerificationError(APPROVAL_ATTEMPT_ALREADY_CLAIMED,
+                                     'attempt already consumed by another approval')
+        if existing['state'] == STATE_CONSUMED_NOT_LAUNCHED:
+            return VerificationError(ATTEMPT_UNLAUNCHED,
+                                     'consumed but not launched; recovery must fence it, not reuse it')
+        return ConsumptionStore._refuse_state(existing)
+
+    def read_attempt(self, run_id, attempt_id):
+        """The validated attempt claim, or None. Read-only."""
+        return self._read(_claim_name('attempt', run_id, attempt_id), attempt=True)
+
+    def claim(self, approval_id, *, run_id, attempt_id, record, _fault=None):
+        """Consume the approval for exactly this attempt. Refusals write nothing."""
+        if not (em._is_id(approval_id) and em._is_id(run_id) and em._is_id(attempt_id)):
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'identifiers')
+        if not _grant_ok(record) or record['approval_id'] != approval_id or record['run_id'] != run_id \
+                or record['attempt_id'] != attempt_id:
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'grant does not match the claim key')
+        approval_name = _claim_name('approval', approval_id, run_id, attempt_id)
+        attempt_name = _claim_name('attempt', run_id, attempt_id)
+        if self._read(approval_name, attempt=False) is not None:
+            raise VerificationError(APPROVAL_CONSUMED, 'approval already consumed')
+        existing = self._read(attempt_name, attempt=True)
+        if existing is not None:
+            raise self._refuse_existing(existing, record)
+        fault(_fault, 'claim:before_attempt_claim')
+        self._create(attempt_name, APPROVAL_ATTEMPT_ALREADY_CLAIMED,
+                     {'schema_version': SCHEMA_VERSION, 'kind': CLAIM_KIND_ATTEMPT,
+                      'state': STATE_CONSUMED_NOT_LAUNCHED, 'reason': '', 'grant': record},
+                     hook=_fault, opened_point='claim:attempt_opened')
+        fault(_fault, 'claim:after_attempt_claim')
+        self._create(approval_name, APPROVAL_CONSUMED,
+                     {'schema_version': SCHEMA_VERSION, 'kind': CLAIM_KIND_APPROVAL, 'grant': record},
+                     hook=_fault, opened_point='claim:approval_opened')
+        fault(_fault, 'claim:after_approval_claim')
+
+    def mark_launched(self, run_id, attempt_id, *, approval_sha256, _fault=None):
+        """Record that the job was started for a consumed attempt. Only from consumed_not_launched."""
+        name = _claim_name('attempt', run_id, attempt_id)
+        current = self._read(name, attempt=True)
+        if current is None or current['grant']['approval_sha256'] != approval_sha256:
+            raise VerificationError(ATTEMPT_NOT_CONSUMED, 'no matching consumption to launch')
+        if current['state'] != STATE_CONSUMED_NOT_LAUNCHED:
+            raise self._refuse_state(current)
+        updated = dict(current, state=STATE_LAUNCHED)
+        self._replace(name, updated, hook=_fault, prefix='launch')
+        return updated
+
+    def fence_unlaunched(self, run_id, attempt_id, *, reason, _fault=None):
+        """Recovery: fence a consumed-but-not-launched attempt. Terminal; never re-used."""
+        if not em._is_id(reason):
+            raise VerificationError(CONSUMPTION_STORE_INVALID, 'fence reason')
+        name = _claim_name('attempt', run_id, attempt_id)
+        current = self._read(name, attempt=True)
+        if current is None:
+            raise VerificationError(ATTEMPT_NOT_CONSUMED, 'nothing to fence')
+        if current['state'] == STATE_FENCED:
+            return current
+        if current['state'] == STATE_LAUNCHED:
+            raise self._refuse_state(current)
+        updated = dict(current, state=STATE_FENCED, reason=reason)
+        self._replace(name, updated, hook=_fault, prefix='fence')
+        return updated
 
 
 # ---------------------------------------------------------------- revocations
@@ -621,15 +830,8 @@ def _sign(anchor, signer_id, domain, body):
     return anchor.verifier.sign(signer_id, domain, canonical_bytes(body))
 
 
-def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, store,
-                    now=None):
-    """Authorize one attempt. Raises VerificationError on any failure.
-
-    expected keys: worker_id, run_id, attempt_id, manifest_sha256, resource_class,
-    scope (dict), output (dict with root and path, the authorized destination).
-    The consumption claim is the last step, so a failed check never burns an approval.
-    """
-    now = now or _utcnow()
+def _authorize(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, now):
+    """Every check on an approval except the consumption claim. Raises VerificationError."""
     body = parse_canonical(approval_bytes, MAX_APPROVAL_BYTES, APPROVAL_MALFORMED,
                            APPROVAL_NONCANONICAL, APPROVAL_MALFORMED, APPROVAL_MALFORMED)
     _keys(body, APPROVAL_KEYS, APPROVAL_MALFORMED)
@@ -690,9 +892,194 @@ def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_stat
     if body['output_destination_sha256'] != digest_value(expected['output']):
         raise VerificationError(APPROVAL_DESTINATION_MISMATCH)
 
-    record = {'approval_sha256': sha256_hex(bytes(approval_bytes)), 'approval_id': body['approval_id'],
-              'anchor_id': anchor.anchor_id, 'signer_id': signer,
-              'worker_id': expected['worker_id'], 'run_id': body['run_id'],
-              'attempt_id': body['attempt_id'], 'manifest_sha256': body['manifest_sha256']}
-    store.claim(body['approval_id'], run_id=body['run_id'], attempt_id=body['attempt_id'], record=record)
+    return {'approval_sha256': sha256_hex(bytes(approval_bytes)), 'approval_id': body['approval_id'],
+            'anchor_id': anchor.anchor_id, 'signer_id': signer,
+            'worker_id': expected['worker_id'], 'run_id': body['run_id'],
+            'attempt_id': body['attempt_id'], 'manifest_sha256': body['manifest_sha256']}
+
+
+def verify_approval(approval_bytes, anchor, *, revocation_bytes, revocation_state, expected, store,
+                    now=None):
+    """Authorize and consume one attempt. Raises VerificationError on any failure.
+
+    expected keys: worker_id, run_id, attempt_id, manifest_sha256, resource_class,
+    scope (dict), output (dict with root and path, the authorized destination).
+    The consumption claim is the last step, so a failed check never burns an approval.
+    Note: this records the consumption only; the launch is recorded later with
+    ConsumptionStore.mark_launched. Launchers use consume_for_attempt instead.
+    """
+    now = now or _utcnow()
+    record = _authorize(approval_bytes, anchor, revocation_bytes=revocation_bytes,
+                        revocation_state=revocation_state, expected=expected, now=now)
+    store.claim(record['approval_id'], run_id=record['run_id'], attempt_id=record['attempt_id'],
+                record=record)
     return record
+
+
+class AttemptContext(object):
+    """Launcher-side trust context for one launch. Built only by the trusted launcher.
+
+    revocations is a callable returning the current revocation list bytes (or None), so
+    the boundary check sees revocations issued during authorization.
+    """
+
+    def __init__(self, *, store, anchor, revocation_state, revocations, worker_id, resource_class,
+                 scope, output):
+        if not callable(revocations) or not em._is_id(worker_id) or not em._is_id(resource_class):
+            raise VerificationError(APPROVAL_MALFORMED, 'attempt context')
+        self.store = store
+        self.anchor = anchor
+        self.revocation_state = revocation_state
+        self.revocations = revocations
+        self.worker_id = worker_id
+        self.resource_class = resource_class
+        self.scope = dict(scope)
+        self.output = dict(output)
+
+
+def consume_for_attempt(run_id, attempt_id, approval, manifest_digest, now, *, ctx, _fault=None):
+    """W1 boundary call, made last, once all other checks have passed.
+
+    Re-runs every approval check at `now` (expiry, revocation, binding) and then records the
+    consumption for exactly (run_id, attempt_id), or refuses with a reason code. A refusal
+    writes nothing except a revocation sequence advance, which is monotone and harmless.
+    On success the attempt is 'consumed_not_launched' until mark_launched runs. If a crash
+    leaves it there, recovery must call fence_unlaunched; the attempt is never re-used.
+    """
+    if not (em._is_id(run_id) and em._is_id(attempt_id) and _is_hex(manifest_digest)):
+        raise VerificationError(APPROVAL_MALFORMED, 'run, attempt or manifest digest')
+    if not isinstance(now, dt.datetime) or now.tzinfo is None:
+        raise VerificationError(APPROVAL_MALFORMED, 'now must be timezone-aware')
+    if not isinstance(approval, (bytes, bytearray)):
+        raise VerificationError(APPROVAL_MALFORMED, 'approval must be canonical bytes')
+    expected = {'worker_id': ctx.worker_id, 'run_id': run_id, 'attempt_id': attempt_id,
+                'manifest_sha256': manifest_digest, 'resource_class': ctx.resource_class,
+                'scope': ctx.scope, 'output': ctx.output}
+    record = _authorize(bytes(approval), ctx.anchor, revocation_bytes=ctx.revocations(),
+                        revocation_state=ctx.revocation_state, expected=expected, now=now)
+    ctx.store.claim(record['approval_id'], run_id=run_id, attempt_id=attempt_id, record=record,
+                    _fault=_fault)
+    return record
+
+
+# ---------------------------------------------------------------- launch handoff
+
+def handoff_body(*, anchor_id, run_id, attempt_id, worker_id, manifest_sha256, approval_sha256,
+                 grant_sha256, issued_at, expires_at, key_id):
+    """Unsigned handoff body. The launcher's signing service signs canonical_bytes of it."""
+    return {'schema_version': SCHEMA_VERSION, 'kind': HANDOFF_KIND, 'anchor_id': anchor_id,
+            'run_id': run_id, 'attempt_id': attempt_id, 'worker_id': worker_id,
+            'manifest_sha256': manifest_sha256,
+            'consumption': {'approval_sha256': approval_sha256, 'grant_sha256': grant_sha256},
+            'issued_at': _format_time(issued_at), 'expires_at': _format_time(expires_at),
+            'signature': {'algorithm': HANDOFF_ALGORITHM, 'signer_id': key_id, 'value': ''}}
+
+
+class HandoffVerifier(abc.ABC):
+    """Public-key-only verifier for launch handoffs. Holds no signing material.
+
+    Implementations must be asymmetric (algorithm HANDOFF_ALGORITHM). A symmetric MAC
+    is not a handoff verifier, whatever it holds.
+    """
+    algorithm = None
+    test_only = False
+
+    @abc.abstractmethod
+    def verify(self, key_id, domain, message, value_hex):
+        """Return True only for a valid signature over domain + message by key_id."""
+
+
+class UnprovisionedHandoffVerifier(HandoffVerifier):
+    """The default. No anchor, so every handoff is refused."""
+    algorithm = HANDOFF_ALGORITHM
+
+    def verify(self, key_id, domain, message, value_hex):
+        raise VerificationError(HANDOFF_VERIFIER_UNPROVISIONED,
+                                'no asymmetric handoff anchor is provisioned; refusing')
+
+
+class TestOnlyHandoffVerifier(HandoffVerifier):
+    """Test-only stand-in that exercises the binding checks without cryptography.
+
+    It accepts one fixed value for listed key ids. It requires a TEST-ONLY- label and is
+    refused by select_handoff_verifier in production mode.
+    """
+    algorithm = HANDOFF_ALGORITHM
+    test_only = True
+
+    def __init__(self, label, key_ids):
+        if not isinstance(label, str) or not label.startswith(TEST_ONLY_PREFIX):
+            raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE, 'test-only verifier needs a TEST-ONLY label')
+        self.label = label
+        self._key_ids = frozenset(key_ids)
+
+    def verify(self, key_id, domain, message, value_hex):
+        return key_id in self._key_ids and domain == DOMAIN_HANDOFF and value_hex == 'test-only-accept'
+
+
+def select_handoff_verifier(*, test_only, injected=None):
+    """Production selects only a non-test verifier, and none is provisioned today."""
+    if injected is None:
+        return UnprovisionedHandoffVerifier()
+    if not isinstance(injected, HandoffVerifier) or injected.algorithm != HANDOFF_ALGORITHM:
+        raise VerificationError(HANDOFF_VERIFIER_UNPROVISIONED, 'verifier must be asymmetric')
+    if injected.test_only != test_only:
+        raise VerificationError(HANDOFF_VERIFIER_NOT_SELECTABLE,
+                                'test-only verifiers are not selectable in production mode')
+    return injected
+
+
+def verify_handoff(handoff_bytes, verifier, *, store, now, expected):
+    """Worker-side check of a launch handoff. Returns the body when every check passes.
+
+    expected keys: anchor_id, worker_id, run_id, attempt_id, manifest_sha256. The handoff is
+    authorized only by a verifier signature (public key) AND by the consumption store's
+    current record for the attempt, which the worker can read but never write.
+    """
+    if not isinstance(verifier, HandoffVerifier) or verifier.algorithm != HANDOFF_ALGORITHM:
+        raise VerificationError(HANDOFF_VERIFIER_UNPROVISIONED, 'no asymmetric verifier')
+    body = parse_canonical(handoff_bytes, MAX_HANDOFF_BYTES, HANDOFF_MALFORMED, HANDOFF_NONCANONICAL,
+                           HANDOFF_MALFORMED, HANDOFF_MALFORMED)
+    _keys(body, HANDOFF_KEYS, HANDOFF_MALFORMED)
+    _keys(body['consumption'], CONSUMPTION_KEYS, HANDOFF_MALFORMED)
+    signature = body['signature']
+    _keys(signature, ('algorithm', 'signer_id', 'value'), HANDOFF_MALFORMED)
+    if (type(body['schema_version']) is not int or body['schema_version'] != SCHEMA_VERSION
+            or body['kind'] != HANDOFF_KIND):
+        raise VerificationError(HANDOFF_MALFORMED, 'schema version or kind')
+    for key in ('anchor_id', 'run_id', 'attempt_id', 'worker_id'):
+        if not em._is_id(body[key]):
+            raise VerificationError(HANDOFF_MALFORMED, key)
+    if not _is_hex(body['manifest_sha256']) or not _is_hex(body['consumption']['approval_sha256']) \
+            or not _is_hex(body['consumption']['grant_sha256']) or not em._is_id(signature['signer_id']):
+        raise VerificationError(HANDOFF_MALFORMED, 'digest or signer fields')
+    issued = _parse_time(body['issued_at'])
+    expires = _parse_time(body['expires_at'])
+    if expires <= issued or (expires - issued).total_seconds() > MAX_LIFETIME_SECONDS:
+        raise VerificationError(HANDOFF_MALFORMED, 'validity window')
+    if signature['algorithm'] != verifier.algorithm:
+        raise VerificationError(HANDOFF_SIGNATURE_INVALID, 'algorithm')
+    if not verifier.verify(signature['signer_id'], DOMAIN_HANDOFF,
+                           canonical_bytes({k: v for k, v in body.items() if k != 'signature'}),
+                           signature['value']):
+        raise VerificationError(HANDOFF_SIGNATURE_INVALID)
+    binding = {'anchor_id': expected['anchor_id'], 'worker_id': expected['worker_id'],
+               'run_id': expected['run_id'], 'attempt_id': expected['attempt_id'],
+               'manifest_sha256': expected['manifest_sha256']}
+    if any(body[k] != v for k, v in binding.items()):
+        raise VerificationError(HANDOFF_BINDING_MISMATCH)
+    if now < issued:
+        raise VerificationError(HANDOFF_NOT_YET_VALID)
+    if now >= expires:
+        raise VerificationError(HANDOFF_EXPIRED)
+    current = store.read_attempt(body['run_id'], body['attempt_id'])
+    if current is None:
+        raise VerificationError(HANDOFF_NOT_CONSUMED)
+    if current['state'] == STATE_FENCED:
+        raise VerificationError(HANDOFF_FENCED)
+    if current['state'] != STATE_CONSUMED_NOT_LAUNCHED:
+        raise VerificationError(HANDOFF_ALREADY_LAUNCHED)
+    if (current['grant']['approval_sha256'] != body['consumption']['approval_sha256']
+            or grant_digest(current['grant']) != body['consumption']['grant_sha256']):
+        raise VerificationError(HANDOFF_CONSUMPTION_MISMATCH)
+    return body
