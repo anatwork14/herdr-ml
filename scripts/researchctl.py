@@ -26,6 +26,7 @@ REQUIRED = ("DATA_READY", "BASELINE_READY", "GPU_READY")
 
 # Explicit path enables direct execution and importlib-based test loading.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_ownership
 import run_registry
 import process_identity
 
@@ -163,7 +164,7 @@ def cmd_status(args):
             submission = load_json(folder / "submission.json")
             registered = run_registry.inspect(folder)
             state = registered if registered is not None else load_json(folder / "status.json")
-        except (OSError, json.JSONDecodeError, sqlite3.Error):
+        except (OSError, json.JSONDecodeError, sqlite3.Error, run_registry.RegistryError):
             print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
             continue
         if not isinstance(submission, dict) or not isinstance(state, dict):
@@ -173,7 +174,7 @@ def cmd_status(args):
         label = state.get("state", "UNKNOWN")
         if registered is None and (folder / "execution.claim").exists():
             label = "UNKNOWN"
-        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED"):
+        if label in ("CLAIMED", "DISPATCHING", "RUNNING", "COMPLETED", "FAILED", "INTERRUPTED", "FENCED"):
             label = "UNKNOWN"
         print(f"{folder.name}\t{label}\t{submission.get('mode')}")
     return 0
@@ -282,7 +283,8 @@ def cmd_init_run(args):
     return execute(args.project, run_id)
 
 
-def execute(project_id, run_id):
+def execute(project_id, run_id, *, _fault=None):
+    """Run one claimed local diagnostic. _fault is a test-only crash hook; production passes None."""
     if signal.getsignal(signal.SIGCHLD) != signal.SIG_DFL:
         raise ResearchError("SIGCHLD disposition is not default; cannot safely pin and reap child identity")
     _, checkout, runtime = select_project(project_id)
@@ -314,6 +316,7 @@ def execute(project_id, run_id):
         token = run_registry.claim(folder, run_id, project_id, actual, state)
     except run_registry.RegistryError as exc:
         raise ResearchError(str(exc)) from exc
+    run_ownership.fault(_fault, "execute:claimed")
     if submission.get("mode") == "official":
         gate = gate_report(checkout, submission.get("gate_manifest"))
         current_git = git_metadata(checkout)
@@ -366,6 +369,7 @@ def execute(project_id, run_id):
                     run_registry.record_child(folder, token, child.pid)
                     run_registry.advance(folder, token, "DISPATCHING", "RUNNING")
                     atomic_json(status_file, {"state": "RUNNING", "started_at": now(), "updated_at": now()})
+                    run_ownership.fault(_fault, "execute:child_running")
                     if interrupted:
                         signal_group(signal.SIGTERM)
                     deadline = None
@@ -390,9 +394,10 @@ def execute(project_id, run_id):
             except BaseException:
                 stop_and_reap()
                 raise
+        run_ownership.fault(_fault, "execute:leader_exited")
         # Process groups cannot establish whether detached descendants survive.
         # Record the leader outcome without asserting whole-workload completion.
-        leader_state = "INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
+        leader_state ="INTERRUPTED" if interrupted else ("COMPLETED" if code == 0 else "FAILED")
         end_state = "UNKNOWN"
         result = {"state": end_state, "leader_state": leader_state,
                   "containment": "UNKNOWN", "exit_code": code, "leader_completed_at": now(),
@@ -400,6 +405,7 @@ def execute(project_id, run_id):
                   "stderr_sha256_after_leader_exit": sha_file(folder / "stderr.log"),
                   "log_hash_observed_at": now()}
         run_registry.finish(folder, token, result)
+        run_ownership.fault(_fault, "execute:before_release")
         atomic_json(folder / "result.json", result)
         atomic_json(status_file, {"state": end_state, "updated_at": now(), "exit_code": code})
         print(f"{end_state} run={run_id} exit={code} logs={folder}", flush=True)
