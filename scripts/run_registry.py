@@ -57,6 +57,10 @@ def _schema_tables(db):
     return {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
 
 
+def _user_tables(db):
+    return {name for name in _schema_tables(db) if not name.startswith('sqlite_')}
+
+
 def _unreadable(detail='could not be read or written'):
     return RegistryError('REGISTRY_UNREADABLE: registry.sqlite3 %s; not reset' % detail)
 
@@ -73,8 +77,9 @@ def _connect(folder, create=True, *, _fault=None):
     """Open the run-local registry for writing. Mutators pass create=False and never create a file.
 
     A new store gets its schema in one BEGIN IMMEDIATE transaction, so an interrupted
-    creation commits nothing. An existing file gets no DDL, so a refused mutator leaves
-    its schema unchanged. An incomplete schema is refused, not repaired. Any sqlite3
+    creation commits nothing. DDL runs only on a file with no user tables; an existing
+    file gets no DDL, so a refused call leaves its bytes unchanged. An incomplete schema
+    is refused before any write, not repaired. Any sqlite3
     error while opening or reading the store becomes RegistryError REGISTRY_UNREADABLE,
     and the file is left as it was.
     """
@@ -89,9 +94,15 @@ def _connect(folder, create=True, *, _fault=None):
         if 'run' not in _schema_tables(db):
             if not create:
                 raise RegistryError('No run record in registry; refusing to create one on a mutation')
+            if _user_tables(db):
+                # A partial store is refused before any write; DDL only ever runs on an empty file.
+                raise _unreadable('has an incomplete schema (missing run)')
             db.execute('BEGIN IMMEDIATE')
             try:
-                if 'run' not in _schema_tables(db):  # re-check under the write lock
+                user_tables = _user_tables(db)  # re-check under the write lock
+                if user_tables and 'run' not in user_tables:
+                    raise _unreadable('has an incomplete schema (missing run)')
+                if not user_tables:
                     db.execute(RUN_TABLE)
                     run_ownership.fault(_fault, 'schema:after_run_table')
                     db.execute('''CREATE TABLE IF NOT EXISTS child_identity (
@@ -375,6 +386,9 @@ def queue_intent(folder, run_id, manifest_sha256, queue_instance, *, project=Non
         _rollback(db)
         raise RegistryError('Queue intent or queue instance/task binding already exists; '
                             'never retry enqueue automatically') from exc
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -403,6 +417,9 @@ def queue_bind_task(folder, intent_token, task_id, *, _store_home=None, _fault=N
     except sqlite3.IntegrityError as exc:
         _rollback(db)
         raise RegistryError('Queue task ID is already bound to another run') from exc
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -421,6 +438,9 @@ def queue_mark_ambiguous(folder, intent_token, detail='', *, _store_home=None):
             raise RegistryError('Stale intent or queue response already resolved')
         _mark_ambiguous(db, row[0], 'INTENT', str(detail)[:1000])
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -457,6 +477,9 @@ def queue_claim(folder, run_id, manifest_sha256, queue_instance, task_id, worker
         _queue_event(db, run_id, 'CLAIMED', {'task_id': task_id, 'worker_id': worker_id,
                                              'attempt_id': attempt_id, 'fence': fence})
         db.execute('COMMIT')
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -487,6 +510,9 @@ def queue_recover(folder, *, _store_home=None):
         phase = db.execute('SELECT phase FROM queue_binding WHERE run_id=?', (run_id,)).fetchone()[0]
         db.execute('COMMIT')
         return phase
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -522,6 +548,9 @@ def queue_resolve_ambiguous(folder, proof, *, _store_home=None):
     except sqlite3.IntegrityError as exc:
         _rollback(db)
         raise RegistryError('Queue task ID is already bound to another run') from exc
+    except sqlite3.Error as exc:
+        _safe_rollback(db)
+        raise _unreadable() from exc
     except BaseException:
         _rollback(db)
         raise
@@ -536,9 +565,11 @@ def inspect_queue(folder, *, _store_home=None):
         rows = _dict_rows(db, 'SELECT run_id, project, queue_instance, manifest_sha256, intent_token, phase, '
                               'task_id, worker_id, attempt_id, fence, claimant, ambiguous_from, resolution '
                               'FROM queue_binding WHERE run_folder=?', (_folder_key(folder),))
-        return rows[0] if rows else None
+    except sqlite3.Error as exc:
+        raise _unreadable() from exc
     finally:
         db.close()
+    return rows[0] if rows else None
 
 
 def _verify_queued_claim(db, folder, run_id, digest, queue_instance, task_id, worker_id,
@@ -654,11 +685,11 @@ def claim(folder, run_id, project, digest, initial_state, *,
         if queue_db is not None:
             queue_db.execute('COMMIT')
     except sqlite3.Error as exc:
-        raise RegistryError('Run registry unavailable or legacy; fail closed') from exc
+        raise _unreadable() from exc
     finally:
         if queue_db is not None:
-            _rollback(queue_db)
-            queue_db.close()
+            _safe_rollback(queue_db)
+            _close_quietly(queue_db)
     run_ownership.fault(_fault, 'claim:after_commit')
     return token
 
@@ -847,8 +878,9 @@ def inspect(folder):
     """Read-only view. Rows without a recomputable v2 identity are reported UNKNOWN (LEGACY_FENCED)."""
     if not (Path(folder) / 'registry.sqlite3').is_file():
         return None
-    db = _open_readonly(folder)
+    db = None
     try:
+        db = _open_readonly(folder)
         rows = _optional_rows(db, 'SELECT * FROM run WHERE id=1')
         if not rows:
             return None
@@ -870,5 +902,7 @@ def inspect(folder):
             result['child']['pid_namespace'], result['child']['mount_namespace'] = child_ns
         result['events'] = _optional_rows(db, 'SELECT seq,at,state,detail FROM events ORDER BY seq')
         return result
+    except sqlite3.Error as exc:
+        raise _unreadable() from exc
     finally:
-        db.close()
+        _close_quietly(db)

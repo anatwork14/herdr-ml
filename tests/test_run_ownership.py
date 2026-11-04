@@ -295,7 +295,7 @@ class LocalOwnershipTests(OwnershipBase):
         with self.assertRaises(registry.RegistryError):
             self.claim(folder)
         self.assertEqual((folder / 'registry.sqlite3').read_bytes(), garbage)
-        with self.assertRaises(sqlite3.DatabaseError):
+        with self.assertRaisesRegex(registry.RegistryError, 'REGISTRY_UNREADABLE'):
             registry.inspect(folder)
         self.assertEqual((folder / 'registry.sqlite3').read_bytes(), garbage)
 

@@ -164,7 +164,7 @@ def cmd_status(args):
             submission = load_json(folder / "submission.json")
             registered = run_registry.inspect(folder)
             state = registered if registered is not None else load_json(folder / "status.json")
-        except (OSError, json.JSONDecodeError, sqlite3.Error):
+        except (OSError, json.JSONDecodeError, sqlite3.Error, run_registry.RegistryError):
             print(f"{folder.name}\tUNKNOWN\tmissing/corrupt record")
             continue
         if not isinstance(submission, dict) or not isinstance(state, dict):
