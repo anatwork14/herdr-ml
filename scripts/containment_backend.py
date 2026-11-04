@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import List, Optional, Protocol
 
+import containment_contract as contract
+from containment_contract import Decision, Expectation
+
 
 class ContainmentStatus(str, Enum):
     VERIFIED = "VERIFIED"
@@ -68,9 +71,21 @@ class ContainmentBackend(Protocol):
         """
         ...
 
+    def release(self, proof: object, expectation: Expectation) -> Decision:
+        """Release the boundary's resources only with a verified empty proof."""
+        ...
+
 
 class UnavailableContainmentBackend:
-    """Safe default until a backend is implemented and independently validated."""
+    """Safe default until a backend is implemented and independently validated.
+
+    The verifier argument exists so tests can exercise the refusal path with a
+    test-only verifier object. get_backend() never passes one, so the production
+    selector always uses the production verifier.
+    """
+
+    def __init__(self, *, verifier: Optional[contract.Verifier] = None):
+        self._verifier = verifier
 
     def establish(self, command: List[str], *, run_id: str) -> ContainmentResult:
         del command, run_id
@@ -78,6 +93,17 @@ class UnavailableContainmentBackend:
             status=ContainmentStatus.UNAVAILABLE,
             reason="No production containment backend is configured",
         )
+
+    def release(self, proof: object, expectation: Expectation) -> Decision:
+        # Fail closed: this backend never established a boundary, so nothing
+        # can be released even if a caller presents a well-formed proof.
+        if self._verifier is None:
+            verdict = contract.verify_for_release(proof, expectation)
+        else:
+            verdict = self._verifier.verify_for_release(proof, expectation)
+        if verdict.allowed:
+            return Decision(False, 'backend UNAVAILABLE: no established boundary to release')
+        return Decision(False, 'backend UNAVAILABLE: ' + verdict.reason)
 
 
 def get_backend() -> ContainmentBackend:

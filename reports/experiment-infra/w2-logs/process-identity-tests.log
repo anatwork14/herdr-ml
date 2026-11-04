@@ -1,0 +1,13 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w2-containment && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -p test_process_identity.py -v
+# exit code: 0
+test_absent_pid_is_only_not_visible (test_process_identity.IdentityTests.test_absent_pid_is_only_not_visible) ... ok
+test_live_current_process_matches (test_process_identity.IdentityTests.test_live_current_process_matches) ... ok
+test_malformed_values_and_unrecorded_namespaces_are_unknown (test_process_identity.IdentityTests.test_malformed_values_and_unrecorded_namespaces_are_unknown) ... ok
+test_matching_identity_and_zombie_are_distinct (test_process_identity.IdentityTests.test_matching_identity_and_zombie_are_distinct) ... ok
+test_missing_or_untrusted_metadata_is_unknown (test_process_identity.IdentityTests.test_missing_or_untrusted_metadata_is_unknown) ... ok
+test_pid_reuse_and_boot_change_are_never_a_match (test_process_identity.IdentityTests.test_pid_reuse_and_boot_change_are_never_a_match) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.008s
+
+OK

@@ -1,0 +1,13 @@
+# command: cd /mnt/ssd/genos2/workspace/herdr-ml-w2-containment && /mnt/ssd/genos2/.local/bin/python3.12 -m unittest discover -s tests -p test_containment_backend.py -v
+# exit code: 0
+test_caller_cannot_create_verified_result_with_arbitrary_proof (test_containment_backend.ContainmentBackendTests.test_caller_cannot_create_verified_result_with_arbitrary_proof) ... ok
+test_production_selector_is_unavailable (test_containment_backend.ContainmentBackendTests.test_production_selector_is_unavailable) ... ok
+test_release_is_refused_without_a_verified_proof (test_containment_backend.ContainmentBackendTests.test_release_is_refused_without_a_verified_proof) ... ok
+test_selector_module_does_not_import_test_support (test_containment_backend.ContainmentBackendTests.test_selector_module_does_not_import_test_support) ... ok
+test_unavailable_rejects_asserted_proof (test_containment_backend.ContainmentBackendTests.test_unavailable_rejects_asserted_proof) ... ok
+test_untrusted_objects_never_authorize_execution (test_containment_backend.ContainmentBackendTests.test_untrusted_objects_never_authorize_execution) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.000s
+
+OK
