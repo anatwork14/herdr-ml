@@ -6,7 +6,9 @@ Scope and non-claims:
   the adapter writes its own config, state directory and socket inside it. The
   default Pueue socket, config and the user's environment are never used, and a
   system `pueue` from PATH is never called. Binaries are accepted only by path and
-  only when their sha256 matches the pinned 4.0.4 release.
+  only when their sha256 matches the pinned 4.0.4 release. Each verified binary is
+  copied into <root>/bin (0700), the copy is re-verified, and only the copy is ever
+  executed, so a writer to the original directory cannot swap it after the check.
 - Production dispatch is disabled. `researchctl` does not import this module and
   its queued path stays BLOCKED by `require_supported_execution`.
 - Nothing here proves containment, completion or provenance. Daemon observations
@@ -22,8 +24,12 @@ Protocol (durable writes in run_registry):
    same run_id is refused by the registry.
 3. `claim_attempt` is idempotent for the same claimant process and binds the queue
    task to the queue-issued attempt and fence in the run-local registry.
-4. `reconcile` runs registry restart recovery, then only READS the daemon state.
-   It never adds, enqueues, restarts or removes tasks.
+4. `release` records ENQUEUE_ATTEMPTED before `pueue enqueue`; a timeout or lost
+   response fences the BOUND row AMBIGUOUS, and restart recovery does the same for
+   an attempt with no recorded outcome. Never retried.
+5. `reconcile` runs registry restart recovery, then only READS the daemon state.
+   It never adds, enqueues, restarts or removes tasks. Daemon errors, timeouts and
+   OS errors are reported as `daemon_error` with no state transition.
 """
 import hashlib
 import json
@@ -90,6 +96,40 @@ def verify_binary(path, role):
     return resolved
 
 
+def private_copy(source, bin_dir, role):
+    """Copy a verified binary into the owner-only bin_dir, re-verify the copy, return its path.
+
+    The copy is written to a fresh temporary file and renamed over <bin_dir>/<role>, so
+    a running daemon's executable is never truncated. The original path is never
+    executed by the adapter.
+    """
+    verified = verify_binary(source, role)
+    target = bin_dir / role
+    temp = bin_dir / ('.%s.%d.tmp' % (role, os.getpid()))
+    try:
+        fd = os.open(str(temp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o700)
+        with os.fdopen(fd, 'wb') as out, open(verified, 'rb') as src:
+            for block in iter(lambda: src.read(1 << 20), b''):
+                out.write(block)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(temp, 0o700)
+        os.replace(temp, target)
+    except OSError as exc:
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise BinaryUnavailable('%s binary could not be copied into the private root' % role) from exc
+    info = target.lstat()
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o077:
+        raise BinaryUnavailable('%s private copy is not an owner-only regular file' % role)
+    actual = sha256_file(target)
+    if actual != PINNED_SHA256[role]:
+        raise BinaryUnavailable('%s private copy checksum mismatch: %s' % (role, actual))
+    return target
+
+
 def task_label(run_id, intent_token):
     return '%s:%s:%s' % (LABEL_PREFIX, run_id, intent_token)
 
@@ -97,15 +137,16 @@ def task_label(run_id, intent_token):
 class PrivatePueue:
     """One private daemon rooted in a caller-owned 0700 directory.
 
-    Layout: <root>/pueue.yml, <root>/data (pueue_directory), <root>/run (runtime,
+    Layout: <root>/bin (verified private copies of pueue and pueued; the only binaries
+    executed), <root>/pueue.yml, <root>/data (pueue_directory), <root>/run (runtime,
     socket `s.sock`, pid file), <root>/xdg (empty XDG/HOME sandbox). The socket path
     is relative to <root>/run, so long roots stay under the unix socket length limit;
     every client and daemon call runs with cwd=<root>/run.
     """
 
     def __init__(self, root, pueue, pueued, *, timeout=10.0):
-        self.pueue = verify_binary(pueue, 'pueue')
-        self.pueued = verify_binary(pueued, 'pueued')
+        verify_binary(pueue, 'pueue')
+        verify_binary(pueued, 'pueued')
         root = Path(root)
         info = root.lstat()
         if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
@@ -116,6 +157,15 @@ class PrivatePueue:
         if self.root == default_config or default_config in self.root.parents:
             raise QueueAdapterError('Refusing to use the default Pueue configuration directory')
         self.timeout = timeout
+        self.bin = self.root / 'bin'
+        self.bin.mkdir(mode=0o700, exist_ok=True)
+        info = self.bin.lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or
+                info.st_mode & 0o077):
+            raise QueueAdapterError('Private binary directory must be an owner-only (0700) directory')
+        # Only these verified copies are executed; the caller's paths are never run.
+        self.pueue = private_copy(pueue, self.bin, 'pueue')
+        self.pueued = private_copy(pueued, self.bin, 'pueued')
         self.config = self.root / 'pueue.yml'
         self.data = self.root / 'data'
         self.runtime = self.root / 'run'
@@ -283,7 +333,12 @@ def submit(daemon, folder, run_id, manifest_sha256, command, *, _store_home=None
 
 
 def release(daemon, folder, *, _store_home=None):
-    """Enqueue the stashed task, only for a BOUND row on the same daemon instance."""
+    """Enqueue the stashed task, only for a BOUND row on the same daemon instance.
+
+    The attempt is recorded durably before `pueue enqueue`. A timeout or OS error
+    fences the row AMBIGUOUS (origin BOUND) and raises AmbiguousSubmission; nothing
+    is retried.
+    """
     row = run_registry.inspect_queue(folder, _store_home=_store_home)
     if row is None or row['phase'] != 'BOUND':
         raise QueueAdapterError('Only a BOUND task can be released to a worker')
@@ -292,9 +347,27 @@ def release(daemon, folder, *, _store_home=None):
     task = daemon.status()['tasks'].get(row['task_id'])
     if task is None or task.get('label') != task_label(row['run_id'], row['intent_token']):
         raise QueueAdapterError('Bound task is absent from the daemon or carries another label')
-    result = daemon.client('enqueue', row['task_id'])
+    # Durable marker BEFORE the external call: until an outcome is recorded, restart
+    # recovery fences this row AMBIGUOUS.
+    run_registry.queue_enqueue_attempted(folder, row['intent_token'], _store_home=_store_home)
+
+    def unknown(reason):
+        phase = run_registry.queue_enqueue_outcome(folder, row['intent_token'], 'ENQUEUE_UNKNOWN', reason,
+                                                   _store_home=_store_home)
+        raise AmbiguousSubmission('Enqueue outcome unknown (%s); queue row is %s, not retried'
+                                  % (reason, phase))
+
+    try:
+        result = daemon.client('enqueue', row['task_id'])
+    except subprocess.TimeoutExpired:
+        unknown('pueue enqueue timed out')
+    except OSError as exc:
+        unknown('pueue enqueue could not run: %s' % exc.__class__.__name__)
     if result.returncode:
+        run_registry.queue_enqueue_outcome(folder, row['intent_token'], 'ENQUEUE_REFUSED',
+                                           'exit %d' % result.returncode, _store_home=_store_home)
         raise QueueAdapterError('pueue enqueue failed; not retried: %s' % result.stderr.strip()[-300:])
+    run_registry.queue_enqueue_outcome(folder, row['intent_token'], 'ENQUEUED', _store_home=_store_home)
     return row['task_id']
 
 
@@ -352,6 +425,12 @@ def reconcile(daemon, folder, *, _store_home=None):
         state = daemon.status()
     except QueueAdapterError as exc:
         report['daemon_error'] = str(exc)
+        return report
+    except subprocess.TimeoutExpired:
+        report['daemon_error'] = 'Private daemon status timed out'
+        return report
+    except OSError as exc:
+        report['daemon_error'] = 'Private daemon status could not run: %s' % exc.__class__.__name__
         return report
     report['daemon_reachable'] = True
     report['instance_matches'] = instance == row['queue_instance']
