@@ -10,7 +10,7 @@ Roles per the mission: Lead (architecture, integration, gate assessment); worker
 | P0.2 | Create development worktree and branch | Lead | P0.1 | DONE | branch `feat/experiment-infrastructure-p1` at `d374266` |
 | P0.3 | Baseline test run, interpreters, preflight | Lead | P0.2 | DONE (3.12 only) | `BASELINE.md`, `baseline-raw/` |
 | P0.4 | Gate matrix, machine-readable gate file | Lead | P0.3 | DONE | `GATE_MATRIX.md`, `gate_matrix.json` |
-| P0.5 | Stacked draft PR against PR #2 | Lead | P0.4 | PENDING | — |
+| P0.5 | Stacked draft PR against PR #2 | Lead | P0.4 | DONE | PR #3 (draft, base `fix/p0-reliability-remediation`) |
 | P1.1 | Run state machine specification | W1 | P0.5 | NOT_STARTED | — |
 | P1.2 | Unique ownership, fencing token, execution identity | W1 | P1.1 | NOT_STARTED | — |
 | P1.3 | Cross-database crash protocol (conservative, fail-closed) | W1 | P1.2 | NOT_STARTED | — |
