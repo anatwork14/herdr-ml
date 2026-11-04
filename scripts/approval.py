@@ -58,6 +58,8 @@ DOMAIN_REVOCATION = b'herdr-ml-revocation-list-v1\n'
 # worker's writable scope. Production callers pass it explicitly. Nothing reads an
 # environment override, so a worker cannot redirect verification.
 DEFAULT_TRUST_ANCHOR_DIR = '/etc/herdr-ml/trust/execution-approval'
+PRODUCTION_ADMIN_UIDS = (0,)
+PRODUCTION_ANCHOR_DIR = DEFAULT_TRUST_ANCHOR_DIR
 REVOCATION_STATE_FILE = 'revocation-sequence.json'
 MIN_KEY_BYTES = 32
 MAX_KEY_BYTES = 4096
@@ -400,6 +402,16 @@ def load_trust_anchor(anchor_dir, *, repo_root, run_dir, admin_uids=None, worker
         keys[signer] = _load_key(os.path.join(real, filename), admin=admin, workers=workers)
     return TrustAnchor(anchor_id, workers_listed, signers, document['revoker'],
                        HmacSha256Verifier(keys))
+
+
+def load_production_trust_anchor(*, repo_root, run_dir, worker_uids):
+    """Production entry point: fixed anchor directory, administrative uid pinned to root.
+
+    There is no admin_uids or anchor directory parameter, so a caller cannot admit an
+    anchor it owns. worker_uids must be disjoint from PRODUCTION_ADMIN_UIDS (enforced).
+    """
+    return load_trust_anchor(PRODUCTION_ANCHOR_DIR, repo_root=repo_root, run_dir=run_dir,
+                             admin_uids=PRODUCTION_ADMIN_UIDS, worker_uids=worker_uids)
 
 
 # ---------------------------------------------------------------- state directories

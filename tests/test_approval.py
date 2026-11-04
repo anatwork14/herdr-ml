@@ -440,6 +440,30 @@ class ProductionOwnershipTests(ApprovalFixture):
                                     code=ap.TRUST_ANCHOR_INVALID)
             self.assertIn('owner', ctx.exception.detail)
 
+    def test_production_entry_point_pins_admin_uids_and_anchor_dir(self):
+        import inspect
+        self.assertEqual(ap.PRODUCTION_ADMIN_UIDS, (0,))
+        self.assertEqual(ap.PRODUCTION_ANCHOR_DIR, '/etc/herdr-ml/trust/execution-approval')
+        params = inspect.signature(ap.load_production_trust_anchor).parameters
+        self.assertEqual(sorted(params), ['repo_root', 'run_dir', 'worker_uids'])
+        # a self-owned anchor directory is refused: only root may own it
+        self.assertNotEqual(os.getuid(), 0)
+        with mock.patch.object(ap, 'PRODUCTION_ANCHOR_DIR', str(self.anchor_dir)):
+            with self.assertRaises(em.VerificationError) as ctx:
+                ap.load_production_trust_anchor(repo_root=REPO, run_dir=str(self.run_dir),
+                                                worker_uids=(os.getuid() + 1,))
+        self.assertEqual(ctx.exception.code, ap.TRUST_ANCHOR_INVALID)
+        # root-owned (simulated metadata) passes the ownership checks
+        with mock.patch.object(ap, 'PRODUCTION_ANCHOR_DIR', ap.DEFAULT_TRUST_ANCHOR_DIR):
+            with mock.patch.object(ap.os, 'lstat', self._fake_lstat(uid=0)):
+                with self.assertRaises(em.VerificationError) as ctx:
+                    ap.load_production_trust_anchor(repo_root=REPO, run_dir=str(self.run_dir),
+                                                    worker_uids=(1000,))
+        self.assertEqual(ctx.exception.detail, 'must be a regular file')
+        # a worker uid of 0 is refused (admin and worker must be disjoint)
+        with self.assertRaises(em.VerificationError):
+            ap.load_production_trust_anchor(repo_root=REPO, run_dir=str(self.run_dir), worker_uids=(0,))
+
     def test_production_default_path_applies_the_same_ownership_rule(self):
         # Simulated metadata only: every path reports the given owner. The real default
         # location is never opened or listed.
