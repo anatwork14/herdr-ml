@@ -3,6 +3,7 @@
 A: only the verified private copy in <root>/bin is executed, never the caller's path.
 B: reconcile reports status timeouts and OS errors as daemon_error, with no transition.
 C: an enqueue that times out ends AMBIGUOUS (origin BOUND) and is never retried.
+D: a non-zero (or signal-negative) enqueue exit after the daemon acted ends AMBIGUOUS, not BOUND.
 """
 import os
 from pathlib import Path
@@ -14,7 +15,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from test_queue_adapter import (Base, DIGEST, PINNED_ERROR, PINNED_PUEUE,  # noqa: E402
-                                PINNED_PUEUED, QUEUE)
+                                PINNED_PUEUED, QUEUE, harness)
 import queue_adapter as qa  # noqa: E402
 import run_registry as registry  # noqa: E402
 
@@ -101,6 +102,54 @@ class EnqueueTimeoutTests(Base):
         daemon = StubDaemon(label=qa.task_label('run-1', token))
         self.assertEqual(qa.release(daemon, folder, _store_home=self.home), '7')
         self.assertEqual(registry.queue_recover(folder, _store_home=self.home), 'BOUND')
+
+
+@unittest.skipIf(PINNED_ERROR, 'NOT_TESTED: pinned Pueue 4.0.4 binaries unavailable (%s)' % PINNED_ERROR)
+class EnqueueNonZeroExitTests(Base):
+    """The real enqueue reaches the private daemon, then the client reports a non-zero exit."""
+
+    def assert_nonzero_exit_is_ambiguous(self, code):
+        daemon_root = self.root / 'daemon'
+        daemon_root.mkdir(mode=0o700)
+        daemon = qa.PrivatePueue(daemon_root, PINNED_PUEUE, PINNED_PUEUED)
+        self.addCleanup(daemon.kill)
+        daemon.start()
+        folder = self.folder()
+        command = harness.worker_command(sys.executable, folder, self.home, self.root / 'result.json')
+        submitted = qa.submit(daemon, folder, 'run-1', DIGEST, command, _store_home=self.home)
+        real_client = daemon.client
+        enqueues = []
+
+        def lost_response_client(*args, **kwargs):
+            result = real_client(*args, **kwargs)
+            if args and args[0] == 'enqueue':
+                enqueues.append(args)
+                self.assertEqual(result.returncode, 0)
+                return subprocess.CompletedProcess(result.args, code, '', 'connection lost')
+            return result
+
+        daemon.client = lost_response_client
+        with self.assertRaisesRegex(qa.AmbiguousSubmission, 'exit %d' % code):
+            qa.release(daemon, folder, _store_home=self.home)
+        self.assertNotIn('Stashed', daemon.status()['tasks'][submitted['task_id']]['status'])
+        row = registry.inspect_queue(folder, _store_home=self.home)
+        self.assertEqual((row['phase'], row['ambiguous_from'], row['task_id']),
+                         ('AMBIGUOUS', 'BOUND', submitted['task_id']))
+        phases = [phase for (phase,) in self.events()]
+        self.assertEqual(phases[-3:], ['ENQUEUE_ATTEMPTED', 'ENQUEUE_UNKNOWN', 'AMBIGUOUS'])
+        self.assertNotIn('ENQUEUE_REFUSED', phases)
+        with self.assertRaises(qa.QueueAdapterError):
+            qa.release(daemon, folder, _store_home=self.home)
+        with self.assertRaises(registry.RegistryError):
+            registry.queue_enqueue_attempted(folder, row['intent_token'], _store_home=self.home)
+        self.assertEqual(enqueues, [('enqueue', submitted['task_id'])])
+        self.assertEqual(len(daemon.status()['tasks']), 1)
+
+    def test_nonzero_exit_after_real_enqueue_is_ambiguous_and_not_resubmitted(self):
+        self.assert_nonzero_exit_is_ambiguous(1)
+
+    def test_signal_negative_exit_after_real_enqueue_is_ambiguous_and_not_resubmitted(self):
+        self.assert_nonzero_exit_is_ambiguous(-9)
 
 
 @unittest.skipIf(PINNED_ERROR, 'NOT_TESTED: pinned Pueue 4.0.4 binaries unavailable (%s)' % PINNED_ERROR)

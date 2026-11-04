@@ -335,9 +335,9 @@ def submit(daemon, folder, run_id, manifest_sha256, command, *, _store_home=None
 def release(daemon, folder, *, _store_home=None):
     """Enqueue the stashed task, only for a BOUND row on the same daemon instance.
 
-    The attempt is recorded durably before `pueue enqueue`. A timeout or OS error
-    fences the row AMBIGUOUS (origin BOUND) and raises AmbiguousSubmission; nothing
-    is retried.
+    The attempt is recorded durably before `pueue enqueue`. A timeout, OS error or
+    any non-zero exit (including a negative code from a signal) fences the row
+    AMBIGUOUS (origin BOUND) and raises AmbiguousSubmission; nothing is retried.
     """
     row = run_registry.inspect_queue(folder, _store_home=_store_home)
     if row is None or row['phase'] != 'BOUND':
@@ -363,10 +363,11 @@ def release(daemon, folder, *, _store_home=None):
         unknown('pueue enqueue timed out')
     except OSError as exc:
         unknown('pueue enqueue could not run: %s' % exc.__class__.__name__)
-    if result.returncode:
-        run_registry.queue_enqueue_outcome(folder, row['intent_token'], 'ENQUEUE_REFUSED',
-                                           'exit %d' % result.returncode, _store_home=_store_home)
-        raise QueueAdapterError('pueue enqueue failed; not retried: %s' % result.stderr.strip()[-300:])
+    if result.returncode != 0:
+        # The client also exits non-zero when the response is lost after the daemon
+        # acted, and a signal gives a negative code: the task may be running, so
+        # every non-zero exit is unknown, never a refusal.
+        unknown('pueue enqueue exit %d: %s' % (result.returncode, (result.stderr or '').strip()[-300:]))
     run_registry.queue_enqueue_outcome(folder, row['intent_token'], 'ENQUEUED', _store_home=_store_home)
     return row['task_id']
 

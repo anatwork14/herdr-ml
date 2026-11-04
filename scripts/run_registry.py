@@ -456,7 +456,10 @@ def queue_mark_ambiguous(folder, intent_token, detail='', *, _store_home=None):
         db.close()
 
 
+# ENQUEUE_REFUSED is only read from history written before non-zero exits became
+# unknown; it is no longer accepted as a new outcome.
 ENQUEUE_EVENTS = ('ENQUEUE_ATTEMPTED', 'ENQUEUED', 'ENQUEUE_REFUSED', 'ENQUEUE_UNKNOWN')
+ENQUEUE_OUTCOMES = ('ENQUEUED', 'ENQUEUE_UNKNOWN')
 
 
 def _enqueue_pending(db, run_id):
@@ -495,11 +498,12 @@ def queue_enqueue_attempted(folder, intent_token, *, _store_home=None):
 def queue_enqueue_outcome(folder, intent_token, outcome, detail='', *, _store_home=None):
     """Record the outcome of the one enqueue call. Returns the resulting queue phase.
 
-    outcome is ENQUEUED, ENQUEUE_REFUSED (daemon answered with an error) or
-    ENQUEUE_UNKNOWN (timeout, OS error, lost response). An unknown outcome on a
-    BOUND row fences it AMBIGUOUS through the normal fencing path; it is never retried.
+    outcome is ENQUEUED or ENQUEUE_UNKNOWN (timeout, OS error, any non-zero exit,
+    lost response). An unknown outcome on a BOUND row fences it AMBIGUOUS through
+    the normal fencing path; it is never retried, and an AMBIGUOUS row cannot be
+    released again (queue_enqueue_attempted requires BOUND).
     """
-    if outcome not in ENQUEUE_EVENTS[1:]:
+    if outcome not in ENQUEUE_OUTCOMES:
         raise RegistryError('Unknown enqueue outcome %r' % outcome)
     db = _queue_connect(folder, _store_home)
     try:
